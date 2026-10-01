@@ -90,7 +90,7 @@ function M.boot(iso,bootInfo)
   local appCapabilities={
     terminal={"fs.user.*","fs.appdata.*","fs.temp.*","fs.system.read","fs.virtual.read","proc.signal"},
     files={"fs.user.*","fs.appdata.read","fs.temp.read","fs.system.read","fs.virtual.read"},
-    settings={"fs.user.read","fs.system.read","fs.virtual.read"},
+    settings={"fs.user.read","fs.appdata.*","fs.system.read","fs.virtual.read"},
   }
 
   local cascade=0

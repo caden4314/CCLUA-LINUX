@@ -57,15 +57,15 @@ function M.new(ctx)
     s:write(2,s.height,info:sub(1,s.width-1),p.muted or colors.lightGray,p.background or colors.black)
   end
 
-  function self.event(event,a,b)
+  function self.event(event,a,b,c)
     if event=="key" then
       if a==keys.up then self.selected=math.max(1,self.selected-1)
       elseif a==keys.down then self.selected=math.min(math.max(1,#self.entries),self.selected+1)
       elseif a==keys.enter then openSelected()
       elseif a==keys.backspace then self.path=parent(self.path);self.selected=1 end
     elseif event=="mouse_click" then
-      local _,_,y=a,b
-      local idx=y-2
+      local y=c
+      local idx=(tonumber(y) or 0)-2
       if idx>=1 and idx<=#self.entries then
         if self.selected==idx then openSelected() else self.selected=idx end
       end

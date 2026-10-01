@@ -290,6 +290,15 @@ function M.new(ctx)
     end
   end
 
+  local function drawInput(win)
+    local s=win.surface
+    s:fill(1,s.height,s.width,1," ",colors.white,colors.black)
+    local p=self.remoteSession and (self.remotePrompt or "[ssh]$ ") or prompt()
+    s:write(1,s.height,(p..self.input):sub(1,s.width),colors.white,colors.black)
+    local cursor=math.min(s.width,#p+#self.input+1)
+    if cursor>=1 then s:write(cursor,s.height,"_",colors.cyan,colors.black) end
+  end
+
   function self.draw(win)
     local s = win.surface
     s:clear(colors.black, colors.white)
@@ -307,12 +316,11 @@ function M.new(ctx)
       y = y + 1
       if y > visible then break end
     end
-    local p = self.remoteSession and (self.remotePrompt or "[ssh]$ ") or prompt()
-    s:write(1, s.height, (p .. self.input):sub(1, s.width), colors.white, colors.black)
-    local cursor = math.min(s.width, #p + #self.input + 1)
-    if cursor >= 1 then s:write(cursor, s.height, "_", colors.cyan, colors.black) end
+    drawInput(win)
   end
   function self.event(event, a, b, c, d)
+    local fastInput=false
+    local fullRedraw=false
     if event=="cclua_pkg_event" then
       if a=="list" and type(b)=="table" then
         push("CCLUA NET packages: "..(#b>0 and table.concat(b,", ") or "(none)"),colors.cyan)
@@ -321,6 +329,7 @@ function M.new(ctx)
       elseif a=="error" then
         push("pkg: "..tostring(b),colors.red)
       end
+      fullRedraw=true
     elseif event=="cclua_ssh_output" then
       local session,text,state,remotePrompt=a,b,c,d
       if session==self.remoteSession then
@@ -329,32 +338,41 @@ function M.new(ctx)
         if state=="closed" then
           self.remoteSession=nil;self.remotePrompt=nil
         end
+        fullRedraw=true
       end
     elseif event == "char" then
       self.input = self.input .. tostring(a)
+      fastInput=true
     elseif event == "paste" then
       self.input = self.input .. tostring(a or "")
+      fastInput=true
     elseif event == "key" then
       if a == keys.enter then
         local line = self.input
         self.input = ""
         execute(line)
+        fullRedraw=true
       elseif a == keys.backspace then
         self.input = self.input:sub(1, -2)
+        fastInput=true
       elseif a == keys.up then
         if #self.history > 0 then
           self.historyPos = math.max(1, self.historyPos - 1)
           self.input = self.history[self.historyPos] or ""
+          fastInput=true
         end
       elseif a == keys.down then
         if #self.history > 0 then
           self.historyPos = math.min(#self.history + 1, self.historyPos + 1)
           self.input = self.history[self.historyPos] or ""
+          fastInput=true
         end
       end
     end
     local win = ctx.compositor:getWindow(ctx.compositor.focused)
-    if win and win.app == self then self.draw(win) end
+    if win and win.app == self then
+      if fastInput and not fullRedraw then drawInput(win) else self.draw(win) end
+    end
   end
 
   push("CCLUA-LINUX terminal ready. Type 'help' for commands.", colors.cyan)
