@@ -134,6 +134,21 @@ function M.boot(iso,bootInfo)
   compositor:present(true)
 
   if bootInfo.smoke then
+    local probePid,probeErr=ctx.runtime:spawn("smoke-scheduler",function()
+      local event,value=os.pullEventRaw("cclua_scheduler_probe")
+      if event~="cclua_scheduler_probe" or value~="ok" then
+        error("scheduler probe received invalid event")
+      end
+      return "pass"
+    end)
+    if not probePid then error("scheduler probe spawn failed: "..tostring(probeErr),0) end
+    local probeDispatch,probeDispatchErr=ctx.runtime:dispatch("cclua_scheduler_probe","ok")
+    if not probeDispatch then error("scheduler probe dispatch failed: "..tostring(probeDispatchErr),0) end
+    local probe=ctx.scheduler:get(probePid)
+    if not probe or probe.state~="exited" or probe.result~="pass" then
+      error("scheduler probe did not exit cleanly",0)
+    end
+
     local rows=compositor:compose()
     local h=fs.open("/.cclua/smoke-frame.tsv","w")
     if h then
@@ -148,6 +163,11 @@ function M.boot(iso,bootInfo)
       d.write("version="..config.version.."\n")
       d.write("display="..compositor.width.."x"..compositor.height.."\n")
       d.write("iso_files="..tostring(iso.meta.files or "?").."\n")
+      local sched=ctx.scheduler:status()
+      d.write("scheduler.probe=pass\n")
+      d.write("scheduler.created="..tostring(sched.totalCreated or 0).."\n")
+      d.write("scheduler.resumes="..tostring(sched.totalResumes or 0).."\n")
+      d.write("scheduler.crashes="..tostring(sched.crashes or 0).."\n")
       local snap=ctx.services:snapshot()
       for name,state in pairs(snap) do
         d.write("service."..name.."="..state.state.."\n")

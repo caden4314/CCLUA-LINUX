@@ -1,4 +1,5 @@
 local M={}
+local Scheduler=ISO.require("system/kernel/scheduler.lua")
 
 function M.new(ctx)
   local self={
@@ -7,7 +8,21 @@ function M.new(ctx)
     eventCount=0,
     started=os.clock(),
     panic=nil,
+    scheduler=Scheduler.new(ctx),
   }
+  ctx.scheduler=self.scheduler
+
+  function self:spawn(name,fn,opts)
+    return self.scheduler:spawn(name,fn,opts)
+  end
+
+  function self:tasks(includeFinished)
+    return self.scheduler:list(includeFinished)
+  end
+
+  function self:kill(pid,reason)
+    return self.scheduler:kill(pid,reason,false)
+  end
 
   function self:dispatch(event,...)
     self.eventCount=self.eventCount+1
@@ -19,6 +34,13 @@ function M.new(ctx)
         self.panic="service dispatcher: "..tostring(err)
         return nil,self.panic
       end
+    end
+
+    -- Cooperative kernel/userspace tasks receive the same event stream next.
+    local tok,terr=pcall(self.scheduler.dispatch,self.scheduler,event,...)
+    if not tok then
+      self.panic="scheduler dispatcher: "..tostring(terr)
+      return nil,self.panic
     end
 
     -- Then the desktop/session receives the event.
@@ -55,6 +77,7 @@ function M.new(ctx)
       uptime=os.clock()-self.started,
       events=self.eventCount,
       panic=self.panic,
+      scheduler=self.scheduler:status(),
     }
   end
 

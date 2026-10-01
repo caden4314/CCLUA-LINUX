@@ -49,7 +49,7 @@ function M.new(ctx)
   commands.help = function()
     push("CCLUA-LINUX shell commands:", colors.cyan)
     push("help clear uname whoami pwd cd ls cat echo mkdir touch rm apps version neofetch")
-    push("services netstat net-role peripherals pkg ansi")
+    push("services ps kill netstat net-role peripherals pkg ansi")
     push("Installed .luapkg commands are resolved automatically.", colors.lightGray)
   end
 
@@ -146,6 +146,24 @@ function M.new(ctx)
       local c=s.state=="running" and colors.lime or s.state=="failed" and colors.red or colors.yellow
       push(string.format("%-16s %-10s restarts=%d",name,s.state,s.restarts or 0),c)
     end
+  end
+
+  commands.ps=function(args)
+    local all=args[2]=="-a" or args[2]=="--all"
+    local tasks=ctx.runtime and ctx.runtime:tasks(all) or {}
+    local s=ctx.runtime and ctx.runtime:status().scheduler or {}
+    push(string.format("PID   STATE      RESUMES  NAME  (active=%d crashes=%d)",s.active or 0,s.crashes or 0),colors.cyan)
+    for _,t in ipairs(tasks) do
+      local c=t.state=="running" and colors.lime or t.state=="crashed" and colors.red or colors.lightGray
+      push(string.format("%-5d %-10s %-8d %s",t.pid,t.state,t.resumes or 0,t.name),c)
+    end
+  end
+
+  commands.kill=function(args)
+    local pid=tonumber(args[2])
+    if not pid then push("Usage: kill <pid>",colors.yellow);return end
+    local ok,err=ctx.runtime:kill(pid,"terminated from shell")
+    if not ok then push("kill: "..tostring(err),colors.red) else push("Terminated PID "..pid,colors.lime) end
   end
 
   commands.netstat=function()
