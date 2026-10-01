@@ -1,5 +1,6 @@
 local M={}
-local Font=ISO.require("system/ui/font6x9.lua")
+local Font4x6=ISO.require("system/ui/font4x6.lua")
+local Font3x5=ISO.require("system/ui/font3x5.lua")
 
 local DEFAULT_PALETTE={
   [colors.white]={0.93,0.95,0.98},[colors.orange]={0.95,0.45,0.15},
@@ -44,21 +45,27 @@ function M.open()
   local requestedScale=readScale()
   local graphicsCapable=type(target.setGraphicsMode)=="function" and type(target.drawPixels)=="function"
   local pixelMode=graphicsCapable and (requestedScale=="0.5" or requestedScale=="0.25")
-  local cellW,cellH=6,9
-  if requestedScale=="0.5" then cellW,cellH=3,5
-  elseif requestedScale=="0.25" then cellW,cellH=2,3 end
+
+  local font,fontW,fontH,fontName
+  if requestedScale=="0.25" then
+    font,fontW,fontH,fontName=Font3x5,3,5,"font3x5"
+  else
+    font,fontW,fontH,fontName=Font4x6,4,6,"font4x6"
+  end
+  local cellW,cellH=fontW,fontH
 
   if pixelMode then
     local ok=pcall(target.setGraphicsMode,1)
     if not ok then pixelMode=false end
-  else
-    if graphicsCapable then pcall(target.setGraphicsMode,0) end
+  elseif graphicsCapable then
+    pcall(target.setGraphicsMode,0)
   end
 
   local self={
     target=target,kind=kind,palette={},frames=0,
     endpoint=pixelMode and "pixel16" or "text",
     requestedScale=requestedScale,cellWidth=cellW,cellHeight=cellH,
+    fontWidth=fontW,fontHeight=fontH,fontName=fontName,
     graphicsCapable=graphicsCapable,
   }
 
@@ -115,16 +122,16 @@ function M.open()
       logicalWidth=self.width,logicalHeight=self.height,
       pixelWidth=self.pixelWidth,pixelHeight=self.pixelHeight,
       cellWidth=self.cellWidth,cellHeight=self.cellHeight,
+      fontWidth=self.fontWidth,fontHeight=self.fontHeight,font=self.fontName,
       graphicsCapable=self.graphicsCapable,
     }
   end
 
-  local function sampleGlyph(code,dx,dy)
-    local glyph=Font[code] or Font[63] or {}
-    local sx=math.min(5,math.floor((dx+0.5)*6/self.cellWidth))
-    local sy=math.min(8,math.floor((dy+0.5)*9/self.cellHeight))
-    local mask=glyph[sy+1] or 0
-    return bit32.band(mask,bit32.lshift(1,5-sx))~=0
+  local function glyphPixel(code,dx,dy)
+    if code>127 then code=63 end
+    local glyph=font[code] or font[63] or {}
+    local mask=glyph[dy+1] or 0
+    return bit32.band(mask,bit32.lshift(1,fontW-1-dx))~=0
   end
 
   function self:blitLine(y,text,fg,bg)
@@ -134,6 +141,7 @@ function M.open()
       target.blit(text,fg,bg)
       return
     end
+
     local maxChars=math.min(#text,self.width)
     local rows={}
     for dy=0,self.cellHeight-1 do
@@ -143,7 +151,7 @@ function M.open()
         local f=colourIndex(fg:sub(i,i))
         local b=colourIndex(bg:sub(i,i))
         for dx=0,self.cellWidth-1 do
-          bytes[#bytes+1]=string.char(sampleGlyph(code,dx,dy) and f or b)
+          bytes[#bytes+1]=string.char(glyphPixel(code,dx,dy) and f or b)
         end
       end
       local remain=self.pixelWidth-(maxChars*self.cellWidth)
