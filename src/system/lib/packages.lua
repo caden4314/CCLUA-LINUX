@@ -5,6 +5,26 @@ local REGISTRY=ROOT.."/registry.db"
 local MAGIC="CCLUAPKG/1"
 local B64="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 
+local function safeToken(value,label)
+  value=tostring(value or "")
+  if value=="" or #value>64 or not value:match("^[%w][%w%._%-]*$") then
+    return nil,(label or "value").." contains unsafe characters"
+  end
+  if value=="." or value==".." then return nil,(label or "value").." is unsafe" end
+  return value
+end
+
+local function safeRel(path)
+  if type(path)~="string" or path=="" or path:sub(1,1)=="/" or path:find("\\",1,true) then
+    return nil,"unsafe package path"
+  end
+  if path:find("[%z\1-\31]") then return nil,"unsafe package path" end
+  for part in path:gmatch("[^/]+") do
+    if part=="." or part==".." or part=="" then return nil,"unsafe package path" end
+  end
+  return path
+end
+
 local function b64decode(data)
   data=tostring(data or ""):gsub("%s+","")
   local out,buffer,bits={},0,0
@@ -77,11 +97,17 @@ local function parse(raw)
   return {meta=meta,files=files}
 end
 
-local function parseCommands(value)
+local function parseCommands(value,files)
   local out={}
   for entry in tostring(value or ""):gmatch("[^;]+") do
     local name,path=entry:match("^([^:]+):(.+)$")
-    if name and path then out[name]=path end
+    if not name or not path then return nil,"invalid command mapping" end
+    local safeName,nerr=safeToken(name,"command name")
+    if not safeName then return nil,nerr end
+    local safePath,perr=safeRel(path)
+    if not safePath then return nil,perr end
+    if files and files[safePath]==nil then return nil,"command target missing: "..safePath end
+    out[safeName]=safePath
   end
   return out
 end
@@ -126,23 +152,63 @@ function M.new(ctx)
     end
     local pkg,err=parse(raw)
     if not pkg then return nil,err end
-    local name,version=pkg.meta.name,pkg.meta.version
-    local root=ROOT.."/"..name
-    local base=root.."/"..version
-    if fs.exists(root) then fs.delete(root) end
-    fs.makeDir(base)
-    for path,data in pairs(pkg.files) do
-      if path:find("..",1,true) or path:sub(1,1)=="/" then
-        if fs.exists(root) then fs.delete(root) end
-        return nil,"unsafe package path"
+    local name,nerr=safeToken(pkg.meta.name,"package name")
+    if not name then return nil,nerr end
+    local version,verr=safeToken(pkg.meta.version,"package version")
+    if not version then return nil,verr end
+    local arch=tostring(pkg.meta.architecture or "any")
+    if arch~="any" and arch~=ctx.config.architecture then
+      return nil,"package architecture mismatch: "..arch
+    end
+    for path in pairs(pkg.files) do
+      local _,perr=safeRel(path)
+      if perr then return nil,perr..": "..tostring(path) end
+    end
+    local commands,cerr=parseCommands(pkg.meta.commands,pkg.files)
+    if not commands then return nil,cerr end
+    for command in pairs(commands) do
+      local owner=self.registry.commands[command]
+      if owner and owner.package~=name then
+        return nil,"command already owned by package: "..tostring(owner.package)
       end
-      local target=fs.combine(base,path)
-      local dir=fs.getDir(target)
-      if dir~="" and not fs.exists(dir) then fs.makeDir(dir) end
-      local h=assert(fs.open(target,"w"));h.write(data);h.close()
     end
 
-    local commands=parseCommands(pkg.meta.commands)
+    local previousRegistry=loadRegistry()
+    ensure()
+    local root=ROOT.."/"..name
+    local stamp=tostring((os.epoch and os.epoch("utc")) or math.floor(os.clock()*1000))
+    local stage=ROOT.."/.stage-"..name.."-"..stamp
+    local backup=ROOT.."/.backup-"..name.."-"..stamp
+    local base=stage.."/"..version
+    if fs.exists(stage) then fs.delete(stage) end
+    fs.makeDir(base)
+    local wrote,writeErr=pcall(function()
+      for path,data in pairs(pkg.files) do
+        local target=fs.combine(base,path)
+        local dir=fs.getDir(target)
+        if dir~="" and not fs.exists(dir) then fs.makeDir(dir) end
+        local h=assert(fs.open(target,"w"),"cannot create "..target)
+        h.write(data);h.close()
+      end
+    end)
+    if not wrote then
+      if fs.exists(stage) then fs.delete(stage) end
+      return nil,"package staging failed: "..tostring(writeErr)
+    end
+
+    local hadPrevious=fs.exists(root)
+    local swapped,swapErr=pcall(function()
+      if hadPrevious then fs.move(root,backup) end
+      fs.move(stage,root)
+    end)
+    if not swapped then
+      if fs.exists(stage) then fs.delete(stage) end
+      if fs.exists(backup) and not fs.exists(root) then pcall(fs.move,backup,root) end
+      return nil,"package activation failed: "..tostring(swapErr)
+    end
+    for command,rec in pairs(self.registry.commands) do
+      if rec.package==name then self.registry.commands[command]=nil end
+    end
     for command,path in pairs(commands) do
       self.registry.commands[command]={
         package=name,version=version,path=path,
@@ -157,7 +223,14 @@ function M.new(ctx)
       description=pkg.meta.description or "",type=pkg.meta.type or "application",
       trusted=verified or source=="system-image",privileged=privileged,
     }
-    saveRegistry(self.registry)
+    local saved,saveErr=pcall(saveRegistry,self.registry)
+    if not saved then
+      self.registry=previousRegistry
+      if fs.exists(root) then fs.delete(root) end
+      if fs.exists(backup) then pcall(fs.move,backup,root) end
+      return nil,"package registry update failed: "..tostring(saveErr)
+    end
+    if fs.exists(backup) then fs.delete(backup) end
     os.queueEvent("cclua_package_installed",name,version)
     return self.registry.packages[name]
   end
@@ -165,7 +238,13 @@ function M.new(ctx)
   function self:runCommand(name,args,io)
     local rec=self.registry.commands[name]
     if not rec then return nil,"command not found" end
-    local path=ROOT.."/"..rec.package.."/"..rec.version.."/"..rec.path
+    local packageName,nerr=safeToken(rec.package,"registry package")
+    if not packageName then return nil,nerr end
+    local version,verr=safeToken(rec.version,"registry version")
+    if not version then return nil,verr end
+    local rel,perr=safeRel(rec.path)
+    if not rel then return nil,perr end
+    local path=ROOT.."/"..packageName.."/"..version.."/"..rel
     if not fs.exists(path) then return nil,"package command missing" end
     local h=fs.open(path,"r");if not h then return nil,"cannot open command" end
     local source=h.readAll();h.close()

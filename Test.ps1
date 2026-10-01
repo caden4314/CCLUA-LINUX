@@ -1,6 +1,6 @@
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
-$computerId = 2710
+$computerId = 2799
 $runtime = Join-Path $root ("runtime\computer\" + $computerId)
 $state = Join-Path $runtime '.cclua'
 $smoke = Join-Path $state 'smoke'
@@ -9,6 +9,10 @@ $craft = Join-Path $root 'tools\CraftOS-PC\CraftOS-PC_console.exe'
 
 & (Join-Path $root 'Build.ps1')
 if ($LASTEXITCODE -ne 0) { throw "Build failed with exit code $LASTEXITCODE" }
+
+if (Test-Path $runtime) { Remove-Item -Recurse -Force $runtime }
+python (Join-Path $root 'tools\prepare_runtime.py') --id $computerId
+if ($LASTEXITCODE -ne 0) { throw "Runtime preparation failed with exit code $LASTEXITCODE" }
 
 New-Item -ItemType Directory -Force -Path $state | Out-Null
 Remove-Item -Force -ErrorAction SilentlyContinue $result
@@ -27,6 +31,8 @@ $required = @(
     'CCLUA_LINUX_SMOKE_PASS',
     'scheduler.probe=pass',
     'scheduler.crashes=0',
+    'package.lua-ssh=pass',
+    'package.guard=pass',
     'service.netd=running',
     'service.diagnosticsd=running',
     'service.updated=running',

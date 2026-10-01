@@ -149,6 +149,19 @@ function M.boot(iso,bootInfo)
       error("scheduler probe did not exit cleanly",0)
     end
 
+    if not ctx.packages:findCommand("ssh") then
+      error("bundled lua-ssh package was not installed",0)
+    end
+    local badName="CCLUAPKG/1\nMETA name=../escape\nMETA version=1\nMETA architecture=cclua32\n"
+    local badNameRec=ctx.packages:installRaw(badName,"smoke")
+    if badNameRec then error("unsafe package name was accepted",0) end
+    local badCommand="CCLUAPKG/1\nMETA name=smoke-guard\nMETA version=1\nMETA architecture=cclua32\nMETA commands=x:../../escape.lua\n"
+    local badCommandRec=ctx.packages:installRaw(badCommand,"smoke")
+    if badCommandRec then error("unsafe package command path was accepted",0) end
+    local badArch="CCLUAPKG/1\nMETA name=smoke-arch\nMETA version=1\nMETA architecture=wrongarch\n"
+    local badArchRec=ctx.packages:installRaw(badArch,"smoke")
+    if badArchRec then error("foreign package architecture was accepted",0) end
+
     local rows=compositor:compose()
     local h=fs.open("/.cclua/smoke-frame.tsv","w")
     if h then
@@ -168,6 +181,8 @@ function M.boot(iso,bootInfo)
       d.write("scheduler.created="..tostring(sched.totalCreated or 0).."\n")
       d.write("scheduler.resumes="..tostring(sched.totalResumes or 0).."\n")
       d.write("scheduler.crashes="..tostring(sched.crashes or 0).."\n")
+      d.write("package.lua-ssh=pass\n")
+      d.write("package.guard=pass\n")
       local snap=ctx.services:snapshot()
       for name,state in pairs(snap) do
         d.write("service."..name.."="..state.state.."\n")
