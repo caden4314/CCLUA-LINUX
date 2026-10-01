@@ -73,6 +73,9 @@ function M.new(compositor)
         compositor:raise(win.id)
         if y == win.y and x >= win.x + win.width - 2 then
           self:close(win.id)
+        elseif y == win.y and x >= win.x + win.width - 5 then
+          compositor:minimize(win.id)
+          if self.desktopHandler and self.desktopHandler.draw then self.desktopHandler.draw() end
         elseif y == win.y then
           self.dragging = { id=win.id, dx=x-win.x, dy=y-win.y }
         else

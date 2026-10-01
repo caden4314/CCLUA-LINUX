@@ -11,10 +11,10 @@ local function replaceSegment(base, x, value)
   return base:sub(1, x - 1) .. value .. base:sub(x + take)
 end
 
-function M.new(display)
+function M.new(display,theme)
   local w, h = display:size()
   local self = {
-    display = display,
+    display = display,theme=theme,
     width = w, height = h,
     desktop = Surface.new(w, h, colors.white, colors.black),
     windows = {}, nextId = 1,
@@ -40,7 +40,7 @@ function M.new(display)
       x = math.max(1, math.min(opts.x or 2, self.width - outerW + 1)),
       y = math.max(2, math.min(opts.y or 3, self.height - outerH + 1)),
       width = outerW, height = outerH,
-      visible = opts.visible ~= false,
+      visible = opts.visible ~= false,minimized=false,
       app = opts.app,
       surface = Surface.new(outerW - 2, outerH - 2, colors.white, colors.black),
     }
@@ -64,6 +64,29 @@ function M.new(display)
       end
     end
     return false
+  end
+
+  function self:minimize(id)
+    local win=self:getWindow(id)
+    if not win then return false end
+    win.minimized=true
+    win.visible=false
+    if self.focused==id then
+      self.focused=nil
+      for i=#self.windows,1,-1 do
+        local other=self.windows[i]
+        if other.visible and not other.minimized then self.focused=other.id;break end
+      end
+    end
+    return true
+  end
+
+  function self:restore(id)
+    local win=self:getWindow(id)
+    if not win then return false end
+    win.minimized=false
+    win.visible=true
+    return self:raise(id)
   end
 
   function self:close(id)
@@ -105,14 +128,17 @@ function M.new(display)
     for _, win in ipairs(self.windows) do
       if win.visible then
         local active = win.id == self.focused
-        local titleBg = active and colors.blue or colors.gray
-        local borderBg = active and colors.blue or colors.gray
-        solid(rows, win.x, win.y, win.width, colors.white, titleBg)
+        local p=self.theme and self.theme:palette() or {}
+        local titleBg = active and (p.accentDim or colors.blue) or (p.panel or colors.gray)
+        local borderBg = active and (p.accentDim or colors.blue) or (p.panel or colors.gray)
+        local titleFg = p.text or colors.white
+        solid(rows, win.x, win.y, win.width, titleFg, titleBg)
         local title = " " .. win.title
-        paint(rows, win.x, win.y, title:sub(1, math.max(0, win.width - 4)),
-          string.rep(Surface.toBlit(colors.white), math.min(#title, math.max(0,win.width-4))),
-          string.rep(Surface.toBlit(titleBg), math.min(#title, math.max(0,win.width-4))))
-        solid(rows, win.x + win.width - 2, win.y, 2, colors.white, colors.red, "x ")
+        paint(rows, win.x, win.y, title:sub(1, math.max(0, win.width - 7)),
+          string.rep(Surface.toBlit(titleFg), math.min(#title, math.max(0,win.width-7))),
+          string.rep(Surface.toBlit(titleBg), math.min(#title, math.max(0,win.width-7))))
+        solid(rows, win.x + win.width - 5, win.y, 3, titleFg, titleBg, "_  ")
+        solid(rows, win.x + win.width - 2, win.y, 2, titleFg, p.danger or colors.red, "x ")
         for yy = 1, win.height - 2 do
           local sy = win.y + yy
           solid(rows, win.x, sy, 1, colors.white, borderBg)

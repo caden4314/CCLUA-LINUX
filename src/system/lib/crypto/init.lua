@@ -29,12 +29,20 @@ function M.random(count)
 end
 
 function M.keypair()
-  local private = ecc.generatePrivateKey()
-  local public = ecc.getPublicKey(private)
-  return {
-    private = private:toString(),
-    public = { x = public.x:toString(), y = public.y:toString() },
-  }
+  local lastErr
+  for attempt=1,8 do
+    local private=ecc.generatePrivateKey()
+    local ok,public=pcall(ecc.getPublicKey,private)
+    if ok and public and public.x and public.y then
+      return {
+        private=private:toString(),
+        public={x=public.x:toString(),y=public.y:toString()},
+      }
+    end
+    lastErr=public
+    if random.absorb then random.absorb("keypair-retry:"..attempt..":"..tostring(lastErr)) end
+  end
+  error("ECC key generation failed after retries: "..tostring(lastErr),2)
 end
 local function pubObject(public)
   return {x=bignum(tostring(public.x)),y=bignum(tostring(public.y))}

@@ -8,6 +8,7 @@ function M.boot(iso,bootInfo)
   local Display=ISO.require("system/drivers/display.lua")
   local Peripherals=ISO.require("system/drivers/peripherals.lua")
   local BootUI=ISO.require("system/ui/boot.lua")
+  local Theme=ISO.require("system/ui/theme.lua")
   local Compositor=ISO.require("system/ui/compositor.lua")
   local WM=ISO.require("system/ui/wm.lua")
   local Packages=ISO.require("system/lib/packages.lua")
@@ -24,7 +25,8 @@ function M.boot(iso,bootInfo)
   ctx.peripherals=Peripherals.new(ctx)
   BootUI.run(display,ctx,bootInfo.smoke)
 
-  local compositor=Compositor.new(display)
+  ctx.theme=Theme.new(vfs,config.theme)
+  local compositor=Compositor.new(display,ctx.theme)
   local wm=WM.new(compositor)
   ctx.compositor,ctx.wm=compositor,wm
   ctx.packages=Packages.new(ctx)
@@ -182,6 +184,22 @@ function M.boot(iso,bootInfo)
     if not terminalProc or terminalProc.session~="desktop" or not terminalProc.pty then
       error("terminal process/session/pty was not initialized",0)
     end
+    local themeList=ctx.theme and ctx.theme:list() or {}
+    local themePalette=ctx.theme and ctx.theme:palette() or {}
+    if #themeList<3 or not themePalette.accent or not themePalette.background then
+      error("theme manager did not initialize",0)
+    end
+    local terminalWin
+    for _,win in ipairs(ctx.compositor.windows) do
+      if win.title=="Terminal" then terminalWin=win;break end
+    end
+    if not terminalWin then error("terminal window was not created",0) end
+    if not ctx.compositor:minimize(terminalWin.id) or not terminalWin.minimized or terminalWin.visible then
+      error("window minimize failed",0)
+    end
+    if not ctx.compositor:restore(terminalWin.id) or terminalWin.minimized or not terminalWin.visible then
+      error("window restore failed",0)
+    end
     if not ctx.processes:has(terminalProc.pid,"fs.user.read") or
        ctx.processes:has(terminalProc.pid,"fs.system.write") then
       error("terminal capability set is invalid",0)
@@ -264,6 +282,8 @@ function M.boot(iso,bootInfo)
       d.write("process.pty=pass\n")
       d.write("process.capabilities=pass\n")
       d.write("process.created="..tostring(procStatus.created or 0).."\n")
+      d.write("ui.theme=pass\n")
+      d.write("ui.windowing=pass\n")
       d.write("service.dependencies=pass\n")
       d.write("package.lua-ssh=pass\n")
       d.write("package.guard=pass\n")
