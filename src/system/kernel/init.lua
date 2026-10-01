@@ -162,6 +162,19 @@ function M.boot(iso,bootInfo)
     local badArchRec=ctx.packages:installRaw(badArch,"smoke")
     if badArchRec then error("foreign package architecture was accepted",0) end
 
+    local userProbe=config.user.home.."/.cclua-smoke"
+    local homeProbe="/home/"..config.user.name.."/.cclua-smoke"
+    local wok,werr=vfs.write(userProbe,"user-data",false)
+    if not wok then error("user VFS write failed: "..tostring(werr),0) end
+    local aliasData=vfs.read(homeProbe)
+    if aliasData~="user-data" then error("/home alias did not resolve user data",0) end
+    local appOk,appErr=vfs.write("/AppData/smoke/state","app-data",false)
+    if not appOk then error("AppData VFS write failed: "..tostring(appErr),0) end
+    local tempOk,tempErr=vfs.write("/Temp/smoke.tmp","temp-data",false)
+    if not tempOk then error("Temp VFS write failed: "..tostring(tempErr),0) end
+    local sysOk,sysErr=vfs.write("/System/.cclua-smoke","forbidden",false)
+    if sysOk or sysErr~="read-only filesystem" then error("/System write guard failed",0) end
+
     local rows=compositor:compose()
     local h=fs.open("/.cclua/smoke-frame.tsv","w")
     if h then
@@ -183,9 +196,16 @@ function M.boot(iso,bootInfo)
       d.write("scheduler.crashes="..tostring(sched.crashes or 0).."\n")
       d.write("package.lua-ssh=pass\n")
       d.write("package.guard=pass\n")
+      d.write("vfs.home-alias=pass\n")
+      d.write("vfs.system-readonly=pass\n")
+      d.write("vfs.mutable-roots=pass\n")
       local snap=ctx.services:snapshot()
       for name,state in pairs(snap) do
         d.write("service."..name.."="..state.state.."\n")
+        if state.lastError then
+          local cleanErr=tostring(state.lastError):gsub("[\r\n]+"," ")
+          d.write("service."..name..".error="..cleanErr.."\n")
+        end
       end
       d.close()
     end

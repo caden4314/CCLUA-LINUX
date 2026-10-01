@@ -23,6 +23,7 @@ function M.new(iso, config)
   local self = {}
   local base = "/.cclua/data"
   local userRoot = base .. "/users/" .. config.user.name
+  local homeAlias = "/home/" .. config.user.name
   local appRoot = base .. "/apps"
   local tempRoot = base .. "/tmp"
   ensure(base); ensure(base .. "/users"); ensure(userRoot); ensure(appRoot); ensure(tempRoot)
@@ -41,8 +42,8 @@ function M.new(iso, config)
     elseif path == "/Temp" or path:sub(1, 6) == "/Temp/" then
       local rel = path == "/Temp" and "" or path:sub(7)
       return "host", fs.combine(tempRoot, rel), false
-    elseif path == "/home/" .. config.user.name or path:sub(1, #(config.user.home .. "/")) == config.user.home .. "/" then
-      local rel = path == "/home/" .. config.user.name and "" or path:sub(#("/home/" .. config.user.name) + 2)
+    elseif path == homeAlias or path:sub(1, #(homeAlias .. "/")) == homeAlias .. "/" then
+      local rel = path == homeAlias and "" or path:sub(#homeAlias + 2)
       return "host", fs.combine(userRoot, rel), false
     end
     return "virtual", path, true
