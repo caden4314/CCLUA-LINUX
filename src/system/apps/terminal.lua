@@ -19,6 +19,7 @@ function M.new(ctx)
 
   local function push(text, colour)
     text = tostring(text or "")
+    if ctx.pty then pcall(ctx.pty.write,ctx.pty,text.."\n") end
     if text == "" then self.lines[#self.lines+1] = {text="", colour=colour}; return end
     for line in (text .. "\n"):gmatch("(.-)\n") do
       self.lines[#self.lines+1] = {text=line, colour=colour or colors.lightGray}
@@ -26,6 +27,7 @@ function M.new(ctx)
   end
 
   local function pushAnsi(text)
+    if ctx.pty then pcall(ctx.pty.write,ctx.pty,tostring(text or "")) end
     for _,line in ipairs(ANSI.parse(text,colors.lightGray,colors.black)) do
       self.lines[#self.lines+1]={text=line.text,fg=line.fg,bg=line.bg}
     end
@@ -150,19 +152,20 @@ function M.new(ctx)
 
   commands.ps=function(args)
     local all=args[2]=="-a" or args[2]=="--all"
-    local tasks=ctx.runtime and ctx.runtime:tasks(all) or {}
-    local s=ctx.runtime and ctx.runtime:status().scheduler or {}
-    push(string.format("PID   STATE      RESUMES  NAME  (active=%d crashes=%d)",s.active or 0,s.crashes or 0),colors.cyan)
+    local tasks=ctx.runtime and ctx.runtime:processList(all) or {}
+    local s=ctx.runtime and ctx.runtime:status().processes or {}
+    push(string.format("PID   STATE      USER     KIND    SESSION   NAME  (active=%d denied=%d)",s.active or 0,s.denied or 0),colors.cyan)
     for _,t in ipairs(tasks) do
       local c=t.state=="running" and colors.lime or t.state=="crashed" and colors.red or colors.lightGray
-      push(string.format("%-5d %-10s %-8d %s",t.pid,t.state,t.resumes or 0,t.name),c)
+      push(string.format("%-5d %-10s %-8s %-7s %-9s %s",t.pid,t.state,t.user,t.kind,t.session,t.name),c)
     end
   end
 
   commands.kill=function(args)
     local pid=tonumber(args[2])
     if not pid then push("Usage: kill <pid>",colors.yellow);return end
-    local ok,err=ctx.runtime:kill(pid,"terminated from shell")
+    local caller=ctx.process and ctx.process.pid or nil
+    local ok,err=ctx.processes:signal(pid,"TERM",caller)
     if not ok then push("kill: "..tostring(err),colors.red) else push("Terminated PID "..pid,colors.lime) end
   end
 
@@ -276,7 +279,7 @@ function M.new(ctx)
       local ok,result=ctx.packages:runCommand(args[1],args,{
         write=function(s) pushAnsi(tostring(s)) end,
         cwd=function() return self.cwd end,
-      })
+      },ctx)
       if not ok then
         push(args[1]..": "..tostring(result),colors.red)
       elseif type(result)=="table" and result.remoteSession then

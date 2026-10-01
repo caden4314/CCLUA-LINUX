@@ -35,6 +35,7 @@ function M.new(ctx)
         uptime=runtime.uptime or os.clock(),
         events=runtime.events or 0,
         scheduler=runtime.scheduler or {},
+        processes=runtime.processes or {},
       },
       display={
         backend=ctx.display.kind,

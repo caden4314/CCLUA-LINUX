@@ -8,6 +8,7 @@ local PORT=22
 function M.new(ctx)
   local self={ctx=ctx,sessions={},accepted=0,rejected=0,lastError=nil}
   local hostKey=auth.hostKey()
+  local sendSecure
 
   local function net()
     return ctx.services and ctx.services:get("netd")
@@ -56,10 +57,33 @@ function M.new(ctx)
       id=msg.session,peer=meta.src,peerPort=meta.srcPort,
       user=msg.user or ctx.config.user.name,
       key=material:sub(1,32),serverNonce=serverNonce,
-      rx=0,tx=0,shell=Shell.new(ctx,msg.user or ctx.config.user.name),
+      rx=0,tx=0,shell=nil,pid=nil,
       clientPublic=msg.userPublic,
     }
     self.sessions[msg.session]=session
+    local pid,perr=ctx.runtime:spawnProcess("ssh-session:"..msg.session,function(processCtx)
+      session.shell=Shell.new(processCtx,session.user)
+      while true do
+        local _,action,value=os.pullEventRaw("cclua_ssh_session")
+        if action=="EXEC" then
+          local output,code=session.shell:exec(value or "")
+          if processCtx.pty then processCtx.pty:write(output) end
+          sendSecure(session,{op="OUTPUT",text=output,code=code,prompt=session.shell:prompt(),closed=session.shell.closed})
+          if session.shell.closed then self.sessions[session.id]=nil;return true end
+        elseif action=="CLOSE" then
+          self.sessions[session.id]=nil
+          return true
+        end
+      end
+    end,{
+      kind="session",session="ssh:"..msg.session,user=session.user,pty=true,
+      capabilities={"fs.user.*","fs.appdata.*","fs.temp.*","fs.system.read","fs.virtual.read"},
+    })
+    if not pid then
+      self.sessions[msg.session]=nil
+      return reject(meta,msg.session,"session process failed: "..tostring(perr))
+    end
+    session.pid=pid
     self.accepted=self.accepted+1
 
     local welcome={
@@ -74,7 +98,7 @@ function M.new(ctx)
     send(meta.src,meta.srcPort,welcome)
   end
 
-  local function sendSecure(s,body)
+  sendSecure=function(s,body)
     s.tx=s.tx+1
     local plain=textutils.serialize(body,{compact=true})
     local secure=crypto.seal(s.key,crypto.random(12),plain,secureAad(s.id,s.tx,"server"))
@@ -94,12 +118,12 @@ function M.new(ctx)
     s.rx=msg.seq
 
     if body.op=="EXEC" then
-      local output,code=s.shell:exec(body.line or "")
-      sendSecure(s,{op="OUTPUT",text=output,code=code,prompt=s.shell:prompt(),closed=s.shell.closed})
-      if s.shell.closed then self.sessions[s.id]=nil end
+      local sent,err=ctx.processes:send(s.pid,"cclua_ssh_session","EXEC",body.line or "")
+      if not sent then self.lastError="ssh session dispatch failed: "..tostring(err) end
     elseif body.op=="PING" then
       sendSecure(s,{op="PONG"})
     elseif body.op=="CLOSE" then
+      if s.pid then ctx.processes:send(s.pid,"cclua_ssh_session","CLOSE") end
       self.sessions[s.id]=nil
     end
   end
@@ -120,6 +144,9 @@ function M.new(ctx)
 
   function self.stop()
     local n=net();if n and n.unbind then n:unbind(PORT) end
+    for _,session in pairs(self.sessions) do
+      if session.pid then pcall(ctx.processes.signal,ctx.processes,session.pid,"TERM") end
+    end
     self.sessions={}
   end
 

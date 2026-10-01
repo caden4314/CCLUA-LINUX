@@ -82,7 +82,7 @@ function M.new(ctx,user)
       local success,result=ctx.packages:runCommand(c,a,{
         write=function(s) chunks[#chunks+1]=tostring(s) end,
         cwd=function() return self.cwd end,
-      })
+      },ctx)
       if not success then return err(c..": "..tostring(result)) end
       return table.concat(chunks),0
     end

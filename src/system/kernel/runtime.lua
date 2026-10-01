@@ -1,5 +1,6 @@
 local M={}
 local Scheduler=ISO.require("system/kernel/scheduler.lua")
+local Processes=ISO.require("system/kernel/processes.lua")
 
 function M.new(ctx)
   local self={
@@ -11,9 +12,15 @@ function M.new(ctx)
     scheduler=Scheduler.new(ctx),
   }
   ctx.scheduler=self.scheduler
+  self.processes=Processes.new(ctx,self.scheduler)
+  ctx.processes=self.processes
 
   function self:spawn(name,fn,opts)
     return self.scheduler:spawn(name,fn,opts)
+  end
+
+  function self:spawnProcess(name,fn,opts)
+    return self.processes:spawn(name,fn,opts)
   end
 
   function self:tasks(includeFinished)
@@ -21,7 +28,12 @@ function M.new(ctx)
   end
 
   function self:kill(pid,reason)
+    if self.processes:get(pid) then return self.processes:signal(pid,"TERM") end
     return self.scheduler:kill(pid,reason,false)
+  end
+
+  function self:processList(includeFinished)
+    return self.processes:list(includeFinished)
   end
 
   function self:dispatch(event,...)
@@ -78,6 +90,7 @@ function M.new(ctx)
       events=self.eventCount,
       panic=self.panic,
       scheduler=self.scheduler:status(),
+      processes=self.processes:status(),
     }
   end
 

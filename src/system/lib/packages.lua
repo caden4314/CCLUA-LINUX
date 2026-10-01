@@ -235,7 +235,7 @@ function M.new(ctx)
     return self.registry.packages[name]
   end
 
-  function self:runCommand(name,args,io)
+  function self:runCommand(name,args,io,execCtx)
     local rec=self.registry.commands[name]
     if not rec then return nil,"command not found" end
     local packageName,nerr=safeToken(rec.package,"registry package")
@@ -249,6 +249,7 @@ function M.new(ctx)
     local h=fs.open(path,"r");if not h then return nil,"cannot open command" end
     local source=h.readAll();h.close()
     io=io or {}
+    local runCtx=execCtx or ctx
     local function emit(...)
       local t={}
       for i=1,select("#",...) do t[#t+1]=tostring(select(i,...)) end
@@ -256,7 +257,7 @@ function M.new(ctx)
       if io.write then io.write(s.."\n") else print(s) end
     end
     local env=setmetatable({
-      CCLUA={ctx=ctx,io=io,package=rec.package,command=name},
+      CCLUA={ctx=runCtx,io=io,package=rec.package,command=name},
       print=emit,
       write=function(s) if io.write then io.write(tostring(s)) else write(tostring(s)) end end,
     },{__index=_G})
@@ -265,11 +266,11 @@ function M.new(ctx)
     local ok,result=pcall(fn)
     if not ok then return nil,result end
     if type(result)=="function" then
-      local rok,r=pcall(result,args or {},io,ctx)
+      local rok,r=pcall(result,args or {},io,runCtx)
       if not rok then return nil,r end
       return true,r
     elseif type(result)=="table" and type(result.main)=="function" then
-      local rok,r=pcall(result.main,args or {},io,ctx)
+      local rok,r=pcall(result.main,args or {},io,runCtx)
       if not rok then return nil,r end
       return true,r
     end

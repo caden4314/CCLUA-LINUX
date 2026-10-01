@@ -42,6 +42,12 @@ function M.new(ctx)
       finish(task,"crashed",nil,err)
       return nil,task.lastError
     end
+    if task.killPending then
+      local reason=task.killPending
+      task.killPending=nil
+      finish(task,"killed",nil,reason)
+      return true
+    end
     if coroutine.status(task.co)=="dead" then
       finish(task,"exited",result[1],nil)
       return true,result[1]
@@ -87,12 +93,27 @@ function M.new(ctx)
     return true
   end
 
+  function self:send(pid,event,...)
+    pid=tonumber(pid)
+    local task=pid and self.tasks[pid] or nil
+    if not task then return nil,"task not found" end
+    if FINAL[task.state] then return nil,"task finished" end
+    if task.state~="waiting" then return nil,"task not waiting" end
+    if task.filter~=nil and task.filter~=event then return nil,"task is waiting for "..tostring(task.filter) end
+    task.events=task.events+1
+    return resumeTask(task,event,...)
+  end
+
   function self:kill(pid,reason,internal)
     pid=tonumber(pid)
     local task=pid and self.tasks[pid] or nil
     if not task then return nil,"task not found" end
     if FINAL[task.state] then return nil,"task already finished" end
     if task.protected and not internal then return nil,"protected task" end
+    if task.state=="running" then
+      task.killPending=reason or "terminated"
+      return true
+    end
     finish(task,"killed",nil,reason or "terminated")
     return true
   end
