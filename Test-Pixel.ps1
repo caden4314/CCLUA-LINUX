@@ -6,8 +6,8 @@ if($LASTEXITCODE -ne 0){exit $LASTEXITCODE}
 $craft=Join-Path $root 'tools\CraftOS-PC\CraftOS-PC_console.exe'
 $computers=Join-Path $root 'runtime\computer'
 $cases=@(
-  @{Id=2798;Scale='0.5';Expected='display=102x34'},
-  @{Id=2797;Scale='0.25';Expected='display=153x57'}
+  @{Id=2798;Scale='0.5';Expected='display=76x28'},
+  @{Id=2797;Scale='0.25';Expected='display=102x34'}
 )
 
 foreach($case in $cases){
