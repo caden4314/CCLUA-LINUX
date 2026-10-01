@@ -34,6 +34,17 @@ function M.boot(iso,bootInfo)
     local ok,err=ctx.packages:installRaw(iso.read("system/packages/lua-ssh.luapkg"),"system-image")
     if not ok then os.queueEvent("cclua_package_error","lua-ssh",err) end
   end
+  vfs:setCommandProvider(function()
+    local names={}
+    local seen={}
+    for _,pkg in ipairs(ctx.packages:list()) do
+      for command in pairs(pkg.commands or {}) do
+        if not seen[command] then seen[command]=true;names[#names+1]=command end
+      end
+    end
+    table.sort(names)
+    return names
+  end)
   ctx.services=Services.new(ctx)
   ctx.runtime=Runtime.new(ctx)
 
@@ -204,6 +215,11 @@ function M.boot(iso,bootInfo)
        ctx.processes:has(terminalProc.pid,"fs.system.write") then
       error("terminal capability set is invalid",0)
     end
+    local filesWin,filesErr=ctx.openApp("files")
+    if not filesWin then error("Files app failed to open: "..tostring(filesErr),0) end
+    local filesProc=filesWin.app and filesWin.app.processPid and ctx.processes:get(filesWin.app.processPid)
+    if not filesProc or filesProc.state~="waiting" then error("Files app process is not healthy",0) end
+    ctx.wm:close(filesWin.id)
     local deniedWrite,deniedErr=ctx.processes:context(terminalProc.pid).vfs.write("/System/.process-smoke","forbidden",false)
     if deniedWrite or not tostring(deniedErr):find("capability denied",1,true) then
       error("process VFS capability guard failed",0)
@@ -246,11 +262,19 @@ function M.boot(iso,bootInfo)
     if badArchRec then error("foreign package architecture was accepted",0) end
 
     local userProbe=config.user.home.."/.cclua-smoke"
-    local homeProbe="/home/"..config.user.name.."/.cclua-smoke"
+    local legacyProbe="/Users/"..config.user.name.."/.cclua-smoke"
     local wok,werr=vfs.write(userProbe,"user-data",false)
     if not wok then error("user VFS write failed: "..tostring(werr),0) end
-    local aliasData=vfs.read(homeProbe)
-    if aliasData~="user-data" then error("/home alias did not resolve user data",0) end
+    local aliasData=vfs.read(legacyProbe)
+    if aliasData~="user-data" then error("/Users compatibility alias did not resolve user data",0) end
+    local osRelease=vfs.read("/etc/os-release")
+    local procVersion=vfs.read("/proc/version")
+    local binList=vfs.list("/bin") or {}
+    local foundSsh=false
+    for _,name in ipairs(binList) do if name=="ssh" then foundSsh=true;break end end
+    if not osRelease or not osRelease:find("ID=cclua-linux",1,true) then error("/etc/os-release missing",0) end
+    if not procVersion or not procVersion:find(config.kernel,1,true) then error("/proc/version missing",0) end
+    if not foundSsh then error("/bin did not expose installed ssh command",0) end
     local appOk,appErr=vfs.write("/AppData/smoke/state","app-data",false)
     if not appOk then error("AppData VFS write failed: "..tostring(appErr),0) end
     local tempOk,tempErr=vfs.write("/Temp/smoke.tmp","temp-data",false)
@@ -284,6 +308,10 @@ function M.boot(iso,bootInfo)
       d.write("process.created="..tostring(procStatus.created or 0).."\n")
       d.write("ui.theme=pass\n")
       d.write("ui.windowing=pass\n")
+      d.write("ui.files=pass\n")
+      d.write("vfs.linux=pass\n")
+      local displayInfo=display:describe()
+      d.write("display.endpoint="..tostring(displayInfo.endpoint).."\n")
       d.write("service.dependencies=pass\n")
       d.write("package.lua-ssh=pass\n")
       d.write("package.guard=pass\n")

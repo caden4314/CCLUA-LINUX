@@ -1,6 +1,6 @@
 local M={}
 local SCALE_PATH="/AppData/settings/ui-scale"
-local SCALES={"1.0","0.5"}
+local SCALES={"1.0","0.5","0.25"}
 
 function M.new(ctx)
   local self={ctx=ctx,cursor=1,status=nil}
@@ -16,8 +16,8 @@ function M.new(ctx)
   local function readScale()
     local value=ctx.vfs.read(SCALE_PATH)
     value=type(value)=="string" and value:gsub("%s+","") or nil
-    if value=="1.0" or value=="0.5" then return value end
-    return "0.5"
+    if value=="1.0" or value=="0.5" or value=="0.25" then return value end
+    return "1.0"
   end
 
   local function saveScale(value)
@@ -79,7 +79,10 @@ function M.new(ctx)
       local selected=self.cursor==#list+i
       local bg=selected and (p.selection or colors.blue) or (p.background or colors.black)
       local mark=active and "* " or "  "
-      local label=value=="0.5" and "0.5  Compact / high density" or "1.0  Standard"
+      local label
+      if value=="0.25" then label="0.25 Pixel / ultra-dense"
+      elseif value=="0.5" then label="0.5  Pixel / compact"
+      else label="1.0  Text / standard" end
       s:write(3,y,(mark..label):sub(1,s.width-4),p.text or colors.white,bg)
     end
 

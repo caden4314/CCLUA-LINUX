@@ -9,7 +9,8 @@ return {
     id = 1000,
     name = "caden",
     displayName = "Caden",
-    home = "/Users/caden",
+    home = "/home/caden",
+    legacyHome = "/Users/caden",
   },
   theme = {
     accent = colors.cyan,

@@ -50,8 +50,9 @@ function M.new(ctx)
 
   commands.help = function()
     push("CCLUA-LINUX shell commands:", colors.cyan)
-    push("help clear uname whoami pwd cd ls cat echo mkdir touch rm apps version neofetch")
-    push("services ps kill netstat net-role peripherals pkg ansi")
+    push("help clear uname hostname id whoami pwd cd ls cat echo mkdir touch rm")
+    push("which env date uptime mount ps kill services netstat net-role peripherals pkg ansi")
+    push("apps version neofetch")
     push("Installed .luapkg commands are resolved automatically.", colors.lightGray)
   end
 
@@ -68,6 +69,56 @@ function M.new(ctx)
   end
 
   commands.whoami = function() push(ctx.config.user.name) end
+
+  commands.hostname=function()
+    local data=ctx.vfs.read("/etc/hostname")
+    push((data or ctx.config.name):gsub("%s+$",""))
+  end
+
+  commands.id=function()
+    local uid=ctx.config.user.id or 1000
+    local user=ctx.config.user.name
+    push(string.format("uid=%d(%s) gid=%d(%s) groups=%d(%s)",uid,user,uid,user,uid,user))
+  end
+
+  commands.uptime=function()
+    local data=ctx.vfs.read("/proc/uptime")
+    local seconds=tonumber(type(data)=="string" and data:match("^[%d%.]+")) or 0
+    local mins=math.floor(seconds/60)
+    local hrs=math.floor(mins/60)
+    mins=mins%60
+    push(string.format("up %02d:%02d",hrs,mins))
+  end
+
+  commands.env=function()
+    push("HOME="..ctx.config.user.home)
+    push("USER="..ctx.config.user.name)
+    push("LOGNAME="..ctx.config.user.name)
+    push("SHELL=/bin/cclsh")
+    push("PATH=/bin:/usr/bin")
+    push("TERM=cclua")
+  end
+
+  commands.date=function()
+    if os.date then push(os.date("%a %b %d %H:%M:%S %Y")) else push(tostring(os.time())) end
+  end
+
+  commands.mount=function()
+    push("system.luaiso on /System type luaiso (ro)")
+    push("linuxfs on / type cclua-vfs (ro,virtual)")
+    push("userdata on /home/"..ctx.config.user.name.." type cclua-data (rw)")
+    push("appdata on /AppData type cclua-data (rw)")
+    push("tmpfs on /Temp type cclua-tmp (rw)")
+  end
+
+  commands.which=function(args)
+    local name=args[2]
+    if not name then push("which: missing command",colors.red);return end
+    if commands[name] then push("/bin/"..name);return end
+    if ctx.packages and ctx.packages:findCommand(name) then push("/usr/bin/"..name);return end
+    push("which: no "..name.." in (/bin:/usr/bin)",colors.red)
+  end
+
   commands.pwd = function() push(self.cwd) end
 
   commands.cd = function(args)
@@ -135,8 +186,12 @@ function M.new(ctx)
     push("Kernel: " .. ctx.config.kernel)
     push("Arch: " .. ctx.config.architecture)
     push("Host: Computer #" .. tostring(os.getComputerID()))
-    push("Shell: cclsh 0.2")
-    push("Display: " .. tostring(ctx.compositor.width) .. "x" .. tostring(ctx.compositor.height) .. " cells")
+    push("Shell: cclsh 0.3")
+    local di=ctx.display and ctx.display.describe and ctx.display:describe() or {}
+    push("Display: "..tostring(di.endpoint or "text").." "..tostring(ctx.compositor.width).."x"..tostring(ctx.compositor.height).." logical")
+    if di.pixelWidth and di.pixelHeight then
+      push("Pixels: "..tostring(di.pixelWidth).."x"..tostring(di.pixelHeight).."  scale="..tostring(di.scale or "1.0"))
+    end
     push("ISO: " .. tostring(ctx.iso.meta.version or "?") .. " / " .. tostring(ctx.iso.meta.files or "?") .. " files")
   end
 

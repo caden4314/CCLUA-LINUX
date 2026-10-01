@@ -1,4 +1,5 @@
 local M = {}
+local LinuxFS=ISO.require("system/kernel/linuxfs.lua")
 
 local function clean(path)
   path = tostring(path or "/"):gsub("\\", "/")
@@ -21,9 +22,11 @@ end
 
 function M.new(iso, config)
   local self = {}
+  local linux=LinuxFS.new(config)
   local base = "/.cclua/data"
   local userRoot = base .. "/users/" .. config.user.name
   local homeAlias = "/home/" .. config.user.name
+  local legacyHome = "/Users/" .. config.user.name
   local appRoot = base .. "/apps"
   local tempRoot = base .. "/tmp"
   ensure(base); ensure(base .. "/users"); ensure(userRoot); ensure(appRoot); ensure(tempRoot)
@@ -33,9 +36,9 @@ function M.new(iso, config)
     if path == "/System" or path:sub(1, 8) == "/System/" then
       local rel = path == "/System" and "system" or ("system/" .. path:sub(9))
       return "iso", rel, true
-    elseif path == "/Users/" .. config.user.name or path:sub(1, #(config.user.home .. "/")) == config.user.home .. "/" then
-      local rel = path == config.user.home and "" or path:sub(#config.user.home + 2)
-      return "host", fs.combine(userRoot, rel), false
+    elseif path == legacyHome or path:sub(1,#(legacyHome.."/"))==legacyHome.."/" then
+      local rel = path == legacyHome and "" or path:sub(#legacyHome+2)
+      return "host",fs.combine(userRoot,rel),false
     elseif path == "/AppData" or path:sub(1, 9) == "/AppData/" then
       local rel = path == "/AppData" and "" or path:sub(10)
       return "host", fs.combine(appRoot, rel), false
@@ -45,6 +48,8 @@ function M.new(iso, config)
     elseif path == homeAlias or path:sub(1, #(homeAlias .. "/")) == homeAlias .. "/" then
       local rel = path == homeAlias and "" or path:sub(#homeAlias + 2)
       return "host", fs.combine(userRoot, rel), false
+    elseif linux:exists(path) then
+      return "linux", path, true
     end
     return "virtual", path, true
   end
@@ -59,11 +64,13 @@ function M.new(iso, config)
       for p in pairs(iso.files) do if p:sub(1, #prefix) == prefix then return true end end
       return false
     elseif kind == "host" then return fs.exists(target)
+    elseif kind == "linux" then return linux:exists(clean(path))
     else return path == "/" or path == "/Users" or path == "/System" or path == "/AppData" or path == "/Temp" or path == "/home" end
   end
   function self.isDir(path)
     local kind, target = map(path)
     if kind == "host" then return fs.exists(target) and fs.isDir(target) end
+    if kind == "linux" then return linux:isDir(clean(path)) end
     if kind == "iso" then
       local prefix = target:gsub("/+$", "") .. "/"
       for p in pairs(iso.files) do if p:sub(1, #prefix) == prefix then return true end end
@@ -81,8 +88,10 @@ function M.new(iso, config)
     elseif kind == "iso" then
       local prefix = target:gsub("/+$", "")
       return iso.list(prefix)
+    elseif kind == "linux" then
+      return linux:list(path)
     elseif path == "/" then
-      return {"AppData", "System", "Temp", "Users", "home"}
+      return {"AppData", "System", "Temp", "Users", "bin", "boot", "dev", "etc", "home", "mnt", "opt", "proc", "run", "srv", "usr", "var"}
     elseif path == "/Users" then
       return {config.user.name}
     elseif path == "/home" then
@@ -94,6 +103,7 @@ function M.new(iso, config)
   function self.read(path)
     local kind, target = map(path)
     if kind == "iso" then return iso.read(target) end
+    if kind == "linux" then return linux:read(clean(path)) end
     if kind ~= "host" or not fs.exists(target) or fs.isDir(target) then return nil, "not a file" end
     local h = fs.open(target, "r")
     if not h then return nil, "open failed" end
@@ -134,7 +144,12 @@ function M.new(iso, config)
     }
   end
 
+  function self:setCommandProvider(fn)
+    linux:setCommandProvider(fn)
+  end
+
   self.userRoot, self.appRoot, self.tempRoot = userRoot, appRoot, tempRoot
+  self.linux=linux
   return self
 end
 

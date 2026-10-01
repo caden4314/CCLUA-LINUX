@@ -1,6 +1,12 @@
 local M = {}
 
 function M.new(compositor)
+  local function mapPoint(x,y)
+    local display=compositor.display
+    if display and display.mapInput then return display:mapInput(x,y) end
+    return x,y
+  end
+
   local self = {
     compositor = compositor,
     apps = {},
@@ -68,6 +74,7 @@ function M.new(compositor)
 
     if event == "mouse_click" then
       local button, x, y = a, b, c
+      x,y=mapPoint(x,y)
       local win = compositor:windowAt(x,y)
       if win then
         compositor:raise(win.id)
@@ -88,10 +95,11 @@ function M.new(compositor)
       return
     end
     if event == "mouse_drag" and self.dragging then
+      local mx,my=mapPoint(b,c)
       local win = compositor:getWindow(self.dragging.id)
       if win then
-        win.x = b - self.dragging.dx
-        win.y = c - self.dragging.dy
+        win.x = mx - self.dragging.dx
+        win.y = my - self.dragging.dy
         clampWindow(win)
       end
       compositor:present()
@@ -101,6 +109,7 @@ function M.new(compositor)
       return
     elseif event == "monitor_touch" then
       local x, y = b, c
+      x,y=mapPoint(x,y)
       local win = compositor:windowAt(x,y)
       if win then
         compositor:raise(win.id)
