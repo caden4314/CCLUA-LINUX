@@ -1,0 +1,11 @@
+build/
+dist/
+runtime/
+__pycache__/
+*.pyc
+*.pyo
+*.log
+*.tmp
+*.bak
+.vscode/*.log
+tools/CraftOS-PC/

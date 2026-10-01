@@ -1,0 +1,12 @@
+{
+  "name": "lua-ssh",
+  "version": "0.1.0",
+  "description": "Encrypted keyed remote shell for CCLUA NET",
+  "type": "system-tool",
+  "architecture": "cclua32",
+  "commands": {
+    "ssh": "bin/ssh.lua",
+    "ssh-keygen": "bin/ssh-keygen.lua",
+    "ssh-authorize": "bin/ssh-authorize.lua"
+  }
+}
