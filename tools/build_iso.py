@@ -15,6 +15,15 @@ DEFAULT_META = {
     "format": "1",
 }
 
+TEXT_SUFFIXES = {".lua", ".json", ".txt", ".md", ".cfg", ".ini", ".luapkg"}
+
+def source_bytes(path: Path) -> bytes:
+    data = path.read_bytes()
+    if path.suffix.lower() in TEXT_SUFFIXES:
+        text = data.decode("utf-8-sig")
+        return text.replace("\r\n", "\n").replace("\r", "\n").encode("utf-8")
+    return data
+
 def b64(data: bytes) -> str:
     return base64.b64encode(data).decode("ascii")
 
@@ -24,7 +33,7 @@ def collect(src: Path) -> list[tuple[str, bytes]]:
         if not path.is_file():
             continue
         rel = path.relative_to(src).as_posix()
-        files.append((rel, path.read_bytes()))
+        files.append((rel, source_bytes(path)))
     return files
 def build(src: Path, output: Path, meta: dict[str, str]) -> dict:
     files = collect(src)
