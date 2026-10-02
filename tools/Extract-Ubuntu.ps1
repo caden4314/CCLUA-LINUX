@@ -23,19 +23,52 @@ if (-not (Test-Path $iso)) { throw "ISO not found: $iso" }
 $work = Join-Path $RepoRoot "extracted\ubuntu-22.04.5\$Role"
 $isoTree = Join-Path $work "iso"
 $rootfs = Join-Path $work "rootfs"
-$squash = Join-Path $isoTree "casper\filesystem.squashfs"
 
+if (Test-Path $rootfs) { Remove-Item $rootfs -Recurse -Force }
 New-Item -ItemType Directory -Path $isoTree -Force | Out-Null
 New-Item -ItemType Directory -Path $rootfs -Force | Out-Null
 
-Write-Host "Extracting ISO payload for $Role..."
-& $SevenZip x $iso "-o$isoTree" "casper/filesystem.squashfs" "casper/filesystem.manifest" "casper/filesystem.size" -y
-if ($LASTEXITCODE -ne 0) { throw "ISO extraction failed with exit code $LASTEXITCODE" }
-if (-not (Test-Path $squash)) { throw "filesystem.squashfs not found after ISO extraction" }
+if ($Role -eq "desktop") {
+    $members = @(
+        "casper/filesystem.squashfs",
+        "casper/filesystem.manifest",
+        "casper/filesystem.size"
+    )
+    $layers = @("filesystem.squashfs")
+} else {
+    $members = @(
+        "casper/install-sources.yaml",
+        "casper/filesystem.manifest",
+        "casper/filesystem.size",
+        "casper/ubuntu-server-minimal.squashfs",
+        "casper/ubuntu-server-minimal.manifest",
+        "casper/ubuntu-server-minimal.size",
+        "casper/ubuntu-server-minimal.ubuntu-server.squashfs",
+        "casper/ubuntu-server-minimal.ubuntu-server.manifest",
+        "casper/ubuntu-server-minimal.ubuntu-server.size"
+    )
+    # Ubuntu's install-sources.yaml marks ubuntu-server as the default
+    # fsimage-layered source. Apply the minimized base first, then the
+    # normal Ubuntu Server layer.
+    $layers = @(
+        "ubuntu-server-minimal.squashfs",
+        "ubuntu-server-minimal.ubuntu-server.squashfs"
+    )
+}
 
-Write-Host "Extracting SquashFS root filesystem..."
-& $SevenZip x $squash "-o$rootfs" -y
-if ($LASTEXITCODE -ne 0) { throw "SquashFS extraction failed with exit code $LASTEXITCODE" }
+Write-Host "Extracting ISO payload for $Role..."
+$args = @("x", $iso, "-o$isoTree", "-y") + $members
+& $SevenZip @args
+if ($LASTEXITCODE -ne 0) { throw "ISO extraction failed with exit code $LASTEXITCODE" }
+
+foreach ($layer in $layers) {
+    $squash = Join-Path $isoTree "casper\$layer"
+    if (-not (Test-Path $squash)) { throw "SquashFS layer not found: $squash" }
+
+    Write-Host "Extracting SquashFS layer: $layer"
+    & $SevenZip x $squash "-o$rootfs" -aoa -y
+    if ($LASTEXITCODE -ne 0) { throw "SquashFS extraction failed for $layer with exit code $LASTEXITCODE" }
+}
 
 Write-Host "Root filesystem ready: $rootfs"
 Get-ChildItem $rootfs | Select-Object Name,Mode | Format-Table -AutoSize
