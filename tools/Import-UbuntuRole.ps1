@@ -24,6 +24,10 @@ Write-Host "=== Semantic rootfs analysis ==="
 python "$RepoRoot\tools\analyze_rootfs.py" $rootfs --role $Role --output-dir "$gen\analysis"
 if ($LASTEXITCODE -ne 0) { throw "analyze_rootfs failed" }
 
+Write-Host "=== Import dpkg package database ==="
+python "$RepoRoot\tools\import_dpkg_db.py" $rootfs --output "$gen\dpkg-database.json"
+if ($LASTEXITCODE -ne 0) { throw "import_dpkg_db failed" }
+
 Write-Host "=== Parse systemd ==="
 python "$RepoRoot\tools\parse_systemd.py" $rootfs --output "$gen\systemd.json"
 if ($LASTEXITCODE -ne 0) { throw "parse_systemd failed" }
