@@ -1,0 +1,8 @@
+﻿PRETTY_NAME="CCLUA Ubuntu 22.04.5 LTS Server"
+NAME="Ubuntu"
+VERSION_ID="22.04"
+VERSION="22.04.5 LTS (Jammy Jellyfish) [CCLUA]"
+VERSION_CODENAME=jammy
+ID=ubuntu
+ID_LIKE=debian
+CCLUA_VERSION="0.1.0-dev"
