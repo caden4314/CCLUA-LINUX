@@ -1,0 +1,132 @@
+{
+  "schema": 1,
+  "ubuntu_reference": "22.04.5",
+  "entries": [
+    {
+      "ubuntu": "systemd",
+      "kind": "service-manager",
+      "replacement": "cclua-init",
+      "state": "planned",
+      "tier": 0
+    },
+    {
+      "ubuntu": "procps",
+      "kind": "package",
+      "replacement": "cclua-proc",
+      "state": "planned",
+      "tier": 2
+    },
+    {
+      "ubuntu": "coreutils",
+      "kind": "package",
+      "replacement": "cclua-coreutils",
+      "state": "planned",
+      "tier": 1
+    },
+    {
+      "ubuntu": "iproute2",
+      "kind": "package",
+      "replacement": "cclua-iproute2",
+      "state": "planned",
+      "tier": 3
+    },
+    {
+      "ubuntu": "apt",
+      "kind": "package",
+      "replacement": "cclua-apt",
+      "state": "planned",
+      "tier": 4
+    },
+    {
+      "ubuntu": "dpkg",
+      "kind": "package",
+      "replacement": "cclua-pkgdb",
+      "state": "planned",
+      "tier": 4
+    },
+    {
+      "ubuntu": "openssh-client",
+      "kind": "package",
+      "replacement": "lua-ssh-client",
+      "state": "planned",
+      "tier": 3
+    },
+    {
+      "ubuntu": "openssh-server",
+      "kind": "package",
+      "replacement": "lua-ssh-server",
+      "state": "planned",
+      "tier": 5
+    },
+    {
+      "ubuntu": "NetworkManager",
+      "kind": "service",
+      "replacement": "cclua-netd",
+      "state": "planned",
+      "tier": 3
+    },
+    {
+      "ubuntu": "systemd-resolved",
+      "kind": "service",
+      "replacement": "cclua-resolved",
+      "state": "planned",
+      "tier": 3
+    },
+    {
+      "ubuntu": "rsyslog/systemd-journald",
+      "kind": "logging",
+      "replacement": "cclua-journald",
+      "state": "planned",
+      "tier": 0
+    },
+    {
+      "ubuntu": "cron",
+      "kind": "service",
+      "replacement": "cclua-crond",
+      "state": "planned",
+      "tier": 5
+    },
+    {
+      "ubuntu": "/proc",
+      "kind": "pseudo-filesystem",
+      "replacement": "procfs.lua",
+      "state": "planned",
+      "tier": 0
+    },
+    {
+      "ubuntu": "/dev",
+      "kind": "pseudo-filesystem",
+      "replacement": "devfs.lua",
+      "state": "planned",
+      "tier": 0
+    },
+    {
+      "ubuntu": "/sys",
+      "kind": "pseudo-filesystem",
+      "replacement": "sysfs.lua",
+      "state": "planned",
+      "tier": 0
+    },
+    {
+      "ubuntu": "GNOME Shell",
+      "kind": "desktop-shell",
+      "replacement": "cclua-desktop",
+      "state": "planned",
+      "tier": 6
+    },
+    {
+      "ubuntu": "Nautilus",
+      "kind": "desktop-app",
+      "replacement": "cclua-files",
+      "state": "planned",
+      "tier": 6
+    },
+    {
+      "ubuntu": "gnome-terminal",
+      "kind": "desktop-app",
+      "replacement": "cclua-terminal",
+      "state": "planned",
+      "tier": 6
+    }
+  ]
+}
