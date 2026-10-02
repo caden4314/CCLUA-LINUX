@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "distribution": "Ubuntu",
+  "release": "22.04.5",
+  "codename": "jammy",
+  "architecture": "amd64",
+  "base_url": "https://releases.ubuntu.com/22.04.5/",
+  "checksum_file": "SHA256SUMS",
+  "signature_file": "SHA256SUMS.gpg",
+  "images": {
+    "desktop": {
+      "iso": "ubuntu-22.04.5-desktop-amd64.iso",
+      "manifest": "ubuntu-22.04.5-desktop-amd64.manifest",
+      "file_list": "ubuntu-22.04.5-desktop-amd64.list"
+    },
+    "server": {
+      "iso": "ubuntu-22.04.5-live-server-amd64.iso",
+      "manifest": "ubuntu-22.04.5-live-server-amd64.manifest",
+      "file_list": "ubuntu-22.04.5-live-server-amd64.list"
+    }
+  }
+}
