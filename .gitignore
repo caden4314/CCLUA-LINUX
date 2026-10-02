@@ -1,0 +1,9 @@
+.cache/
+build/
+generated/
+extracted/
+*.iso
+*.img
+*.squashfs
+__pycache__/
+*.pyc
