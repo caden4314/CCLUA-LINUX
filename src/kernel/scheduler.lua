@@ -47,7 +47,29 @@ function M.new(kernel)
    if not seen[pid] then seen[pid]=true; local p=kernel.process.get(pid); if p and p.state=="runnable" then self:resume(p,table.unpack(ev or {})) end end
   end
  end
- function s:run() self.running=true; while self.running do self:dispatch({}); local ev={os.pullEventRaw()}; self:dispatch(ev) end end
+ function s:run()
+  self.running=true
+  while self.running do
+   self:dispatch({})
+   while #self.runnable>0 do self:dispatch({}) end
+
+   local soonest=nil
+   local now=(os.epoch and os.epoch("utc")) or 0
+   for _,p in ipairs(kernel.process.all()) do
+    if p.state=="sleeping" and p.wake_at then
+     if not soonest or p.wake_at<soonest then soonest=p.wake_at end
+    end
+   end
+
+   if soonest and os.startTimer then
+    local delay=math.max(0.05,(soonest-now)/1000)
+    os.startTimer(delay)
+   end
+
+   local ev={os.pullEventRaw()}
+   self:dispatch(ev)
+  end
+ end
  function s:stop() self.running=false end
  return s
 end

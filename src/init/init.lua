@@ -32,6 +32,12 @@ local function register_services()
     enabled=true,
     exec=load_service("/usr/lib/cclua/services/crond.lua")
   }
+  k.services:register{
+    name="peripherald.service",
+    description="CCLUA peripheral inventory and hotplug monitor",
+    enabled=true,
+    exec=load_service("/usr/lib/cclua/services/peripherald.lua")
+  }
 end
 
 local function spawn_console()

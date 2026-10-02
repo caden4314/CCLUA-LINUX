@@ -42,6 +42,12 @@ function Copy-Tree {
     Copy-Item (Join-Path $Source "*") $Destination -Recurse -Force
 }
 
+$Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+function Write-Utf8NoBom {
+    param([string]$Path,[string]$Content)
+    [System.IO.File]::WriteAllText($Path, $Content, $Utf8NoBom)
+}
+
 foreach ($Machine in $Machines) {
     $Disk = Join-Path $ComputerRoot ([string]$Machine.Id)
     New-Item -ItemType Directory -Path $Disk -Force | Out-Null
@@ -62,7 +68,7 @@ foreach ($Machine in $Machines) {
     New-Item -ItemType Directory -Path (Join-Path $Disk "tmp") -Force | Out-Null
 
     # Machine-specific identity.
-    Set-Content -Path (Join-Path $Disk "etc\hostname") -Value $Machine.Hostname -Encoding UTF8
+    Write-Utf8NoBom -Path (Join-Path $Disk "etc\hostname") -Content ($Machine.Hostname + [Environment]::NewLine)
 
     $Config = [ordered]@{
         schema = 1
@@ -78,7 +84,8 @@ foreach ($Machine in $Machines) {
         ubuntu_reference = "22.04.5"
         channel = "development"
     }
-    $Config | ConvertTo-Json -Depth 5 | Set-Content -Path (Join-Path $Disk "etc\cclua\machine.json") -Encoding UTF8
+    $ConfigJson = $Config | ConvertTo-Json -Depth 5
+    Write-Utf8NoBom -Path (Join-Path $Disk "etc\cclua\machine.json") -Content ($ConfigJson + [Environment]::NewLine)
 
     # Startup is intentionally tiny: establish identity, then hand off to PID 1.
     $Startup = @"
@@ -110,7 +117,7 @@ if not ok then
     end
 end
 "@
-    Set-Content -Path (Join-Path $Disk "startup.lua") -Value $Startup -Encoding UTF8
+    Write-Utf8NoBom -Path (Join-Path $Disk "startup.lua") -Content $Startup
 
     Write-Host ("DEPLOYED ID {0} | {1} | {2} | {3}" -f $Machine.Id,$Machine.Label,$Machine.Role,$Machine.Address)
 }
