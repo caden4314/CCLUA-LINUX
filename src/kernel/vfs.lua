@@ -11,6 +11,13 @@ local function norm(path)
 end
 function M.normalize(p)return norm(p)end
 function M.mount(p,prov)mounts[norm(p)]=prov;return true end
+function M.unmount(p)
+ p=norm(p)
+ if p=="/" or p=="/proc" or p=="/dev" or p=="/sys" then return nil,"EBUSY" end
+ if not mounts[p] then return nil,"EINVAL" end
+ mounts[p]=nil
+ return true
+end
 function M.mounts()return mounts end
 local function resolve(path)
  local p=norm(path);local best=nil;local prov=nil

@@ -55,9 +55,11 @@ foreach ($Machine in $Machines) {
     # Shared image/runtime.
     Copy-Tree (Join-Path $RepoRoot "src\kernel") (Join-Path $Disk "System\kernel")
     Copy-Tree (Join-Path $RepoRoot "src\init")   (Join-Path $Disk "System\init")
-    Copy-Tree (Join-Path $RepoRoot "src\usr")    (Join-Path $Disk "usr")
-    Copy-Tree (Join-Path $RepoRoot "src\lib")    (Join-Path $Disk "lib")
-    Copy-Tree (Join-Path $RepoRoot "src\etc")    (Join-Path $Disk "etc")
+    Copy-Tree (Join-Path $RepoRoot "src\usr")     (Join-Path $Disk "usr")
+    Copy-Tree (Join-Path $RepoRoot "src\usr\bin") (Join-Path $Disk "bin")
+    Copy-Tree (Join-Path $RepoRoot "src\usr\sbin") (Join-Path $Disk "sbin")
+    Copy-Tree (Join-Path $RepoRoot "src\lib")     (Join-Path $Disk "lib")
+    Copy-Tree (Join-Path $RepoRoot "src\etc")     (Join-Path $Disk "etc")
 
     # Required writable state.
     New-Item -ItemType Directory -Path (Join-Path $Disk "root") -Force | Out-Null
