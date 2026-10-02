@@ -10,6 +10,32 @@ function M.new(kernel)
     return unit
   end
 
+  function self:load_ubuntu_reference(path)
+    path=path or "/usr/share/cclua/ubuntu-systemd-units.json"
+    local host=path:gsub("^/","")
+    if not fs.exists(host) then return 0 end
+    local h=fs.open(host,"r")
+    if not h then return 0 end
+    local raw=h.readAll();h.close()
+    local data=textutils.unserializeJSON(raw)
+    if type(data)~="table" or type(data.units)~="table" then return 0 end
+    local n=0
+    for _,ref in ipairs(data.units) do
+      if ref.name and not self.units[ref.name] then
+        self.units[ref.name]={
+          name=ref.name,
+          description=ref.description or "Ubuntu 22.04.5 unit",
+          state="inactive",
+          enabled=false,
+          reference=true,
+          ubuntu=ref,
+        }
+        n=n+1
+      end
+    end
+    return n
+  end
+
   function self:get(name)
     if self.units[name] then return self.units[name] end
     if not tostring(name):find("%.") and self.units[name..".service"] then return self.units[name..".service"] end

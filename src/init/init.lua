@@ -8,6 +8,9 @@ local init,err=k.process.create{
 if not init then k.panic.raise(k,"cannot create PID 1",{error=err}) end
 
 local function register_services()
+  local imported=k.services:load_ubuntu_reference()
+  k.log.write("info","init","imported Ubuntu systemd unit metadata",{units=imported},1)
+
   local function load_service(path)
     local ok,fn=pcall(dofile,path)
     if not ok then error(fn,0) end
@@ -15,19 +18,25 @@ local function register_services()
   end
 
   k.services:register{
-    name="journald.service",
+    name="systemd-journald.service",
     description="CCLUA journal service",
     enabled=true,
     exec=load_service("/usr/lib/cclua/services/journald.lua")
   }
   k.services:register{
-    name="netd.service",
-    description="CCLUA network service",
+    name="systemd-networkd.service",
+    description="Network Service",
     enabled=true,
     exec=load_service("/usr/lib/cclua/services/netd.lua")
   }
   k.services:register{
-    name="crond.service",
+    name="systemd-resolved.service",
+    description="Network Name Resolution",
+    enabled=true,
+    exec=load_service("/usr/lib/cclua/services/resolved.lua")
+  }
+  k.services:register{
+    name="cron.service",
     description="CCLUA periodic scheduler",
     enabled=true,
     exec=load_service("/usr/lib/cclua/services/crond.lua")
