@@ -1,0 +1,165 @@
+{
+  "schema": 1,
+  "source": "Ubuntu 22.04.5 Desktop/Server manifest intersection",
+  "tiers": [
+    {
+      "tier": 0,
+      "name": "kernel-and-runtime-foundation",
+      "packages": [
+        {
+          "ubuntu": "base-files",
+          "target": "cclua-base-files",
+          "strategy": "transform-data-and-layout"
+        },
+        {
+          "ubuntu": "systemd",
+          "target": "cclua-init",
+          "strategy": "native-service-runtime"
+        },
+        {
+          "ubuntu": "systemd-sysv",
+          "target": "cclua-boot-compat",
+          "strategy": "native-boot-compat"
+        },
+        {
+          "ubuntu": "util-linux",
+          "target": "cclua-util-linux",
+          "strategy": "native-lua-commands-and-libs"
+        },
+        {
+          "ubuntu": "procps",
+          "target": "cclua-proc",
+          "strategy": "procfs-backed-native-tools"
+        },
+        {
+          "ubuntu": "passwd",
+          "target": "cclua-users",
+          "strategy": "native-user-database"
+        },
+        {
+          "ubuntu": "login",
+          "target": "cclua-login",
+          "strategy": "native-session-login"
+        },
+        {
+          "ubuntu": "mount",
+          "target": "cclua-mount",
+          "strategy": "vfs-native-tools"
+        },
+        {
+          "ubuntu": "dbus",
+          "target": "cclua-ipc",
+          "strategy": "cclua-ipc-compat"
+        }
+      ]
+    },
+    {
+      "tier": 1,
+      "name": "shell-and-core-userland",
+      "packages": [
+        {
+          "ubuntu": "bash",
+          "target": "cclua-shell",
+          "strategy": "behavioral-reimplementation"
+        },
+        {
+          "ubuntu": "dash",
+          "target": "cclua-sh",
+          "strategy": "shell-compat-mode"
+        },
+        {
+          "ubuntu": "coreutils",
+          "target": "cclua-coreutils",
+          "strategy": "native-lua-commands"
+        },
+        {
+          "ubuntu": "findutils",
+          "target": "cclua-findutils",
+          "strategy": "native-lua-commands"
+        },
+        {
+          "ubuntu": "grep",
+          "target": "cclua-grep",
+          "strategy": "native-lua-command"
+        },
+        {
+          "ubuntu": "sed",
+          "target": "cclua-sed",
+          "strategy": "native-lua-command"
+        },
+        {
+          "ubuntu": "hostname",
+          "target": "cclua-hostname",
+          "strategy": "native-lua-command"
+        }
+      ]
+    },
+    {
+      "tier": 2,
+      "name": "networking",
+      "packages": [
+        {
+          "ubuntu": "netbase",
+          "target": "cclua-netbase",
+          "strategy": "transform-config-and-data"
+        },
+        {
+          "ubuntu": "iproute2",
+          "target": "cclua-iproute2",
+          "strategy": "native-network-tools"
+        },
+        {
+          "ubuntu": "iputils-ping",
+          "target": "cclua-ping",
+          "strategy": "native-network-tool"
+        },
+        {
+          "ubuntu": "openssh-client",
+          "target": "lua-ssh-client",
+          "strategy": "native-secure-remote-shell"
+        },
+        {
+          "ubuntu": "wget",
+          "target": "cclua-wget",
+          "strategy": "cc-http-native"
+        }
+      ]
+    },
+    {
+      "tier": 3,
+      "name": "packages-and-archives",
+      "packages": [
+        {
+          "ubuntu": "dpkg",
+          "target": "cclua-pkgdb",
+          "strategy": "native-package-database"
+        },
+        {
+          "ubuntu": "apt",
+          "target": "cclua-apt",
+          "strategy": "native-package-manager"
+        },
+        {
+          "ubuntu": "tar",
+          "target": "cclua-tar",
+          "strategy": "native-archive-tool"
+        },
+        {
+          "ubuntu": "gzip",
+          "target": "cclua-gzip",
+          "strategy": "native-or-library-compression"
+        },
+        {
+          "ubuntu": "xz-utils",
+          "target": "cclua-xz",
+          "strategy": "native-or-converter-side-support"
+        },
+        {
+          "ubuntu": "ca-certificates",
+          "target": "cclua-ca-certificates",
+          "strategy": "transform-data"
+        }
+      ]
+    }
+  ]
+}
