@@ -71,9 +71,14 @@ foreach ($layer in $layers) {
     & $SevenZip l -slt $squash | Set-Content -Path $catalog -Encoding UTF8
 
     Write-Host "Extracting SquashFS layer: $layer"
+    $oldErrorPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
     & $SevenZip x $squash "-o$rootfs" -aoa -y
-    if ($LASTEXITCODE -gt 1) { throw "SquashFS extraction failed for $layer with exit code $LASTEXITCODE" }
-    if ($LASTEXITCODE -eq 1) {
+    $extractCode = $LASTEXITCODE
+    $ErrorActionPreference = $oldErrorPreference
+
+    if ($extractCode -gt 1) { throw "SquashFS extraction failed for $layer with exit code $extractCode" }
+    if ($extractCode -eq 1) {
         Write-Warning "SquashFS layer $layer extracted with link/metadata warnings; catalog preserved at $catalog"
     }
 }
