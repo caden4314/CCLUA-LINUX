@@ -59,15 +59,23 @@ if ($Role -eq "desktop") {
 Write-Host "Extracting ISO payload for $Role..."
 $args = @("x", $iso, "-o$isoTree", "-y") + $members
 & $SevenZip @args
-if ($LASTEXITCODE -ne 0) { throw "ISO extraction failed with exit code $LASTEXITCODE" }
+if ($LASTEXITCODE -gt 1) { throw "ISO extraction failed with exit code $LASTEXITCODE" }
+if ($LASTEXITCODE -eq 1) { Write-Warning "ISO extraction completed with warnings" }
 
 foreach ($layer in $layers) {
     $squash = Join-Path $isoTree "casper\$layer"
     if (-not (Test-Path $squash)) { throw "SquashFS layer not found: $squash" }
 
+    Write-Host "Cataloging SquashFS layer: $layer"
+    $catalog = Join-Path $isoTree "casper\$layer.slt.txt"
+    & $SevenZip l -slt $squash | Set-Content -Path $catalog -Encoding UTF8
+
     Write-Host "Extracting SquashFS layer: $layer"
     & $SevenZip x $squash "-o$rootfs" -aoa -y
-    if ($LASTEXITCODE -ne 0) { throw "SquashFS extraction failed for $layer with exit code $LASTEXITCODE" }
+    if ($LASTEXITCODE -gt 1) { throw "SquashFS extraction failed for $layer with exit code $LASTEXITCODE" }
+    if ($LASTEXITCODE -eq 1) {
+        Write-Warning "SquashFS layer $layer extracted with link/metadata warnings; catalog preserved at $catalog"
+    }
 }
 
 Write-Host "Root filesystem ready: $rootfs"
