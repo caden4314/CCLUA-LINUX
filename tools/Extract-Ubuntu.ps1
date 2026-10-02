@@ -71,15 +71,26 @@ foreach ($layer in $layers) {
     & $SevenZip l -slt $squash | Set-Content -Path $catalog -Encoding UTF8
 
     Write-Host "Extracting SquashFS layer: $layer"
-    $oldErrorPreference = $ErrorActionPreference
-    $ErrorActionPreference = "Continue"
-    & $SevenZip x $squash "-o$rootfs" -aoa -y
-    $extractCode = $LASTEXITCODE
-    $ErrorActionPreference = $oldErrorPreference
+    $safeLayer = $layer -replace '[^A-Za-z0-9._-]','_'
+    $stdoutLog = Join-Path $isoTree "casper\$safeLayer.extract.stdout.log"
+    $stderrLog = Join-Path $isoTree "casper\$safeLayer.extract.stderr.log"
 
-    if ($extractCode -gt 1) { throw "SquashFS extraction failed for $layer with exit code $extractCode" }
+    $arguments = @(
+        "x",
+        ('"' + $squash + '"'),
+        ('"-o' + $rootfs + '"'),
+        "-aoa",
+        "-y"
+    )
+    $proc = Start-Process -FilePath $SevenZip -ArgumentList $arguments -Wait -PassThru -NoNewWindow -RedirectStandardOutput $stdoutLog -RedirectStandardError $stderrLog
+    $extractCode = $proc.ExitCode
+
+    if ($extractCode -gt 1) {
+        throw "SquashFS extraction failed for $layer with exit code $extractCode; see $stderrLog"
+    }
     if ($extractCode -eq 1) {
-        Write-Warning "SquashFS layer $layer extracted with link/metadata warnings; catalog preserved at $catalog"
+        $warningCount = (Get-Content $stderrLog -ErrorAction SilentlyContinue | Measure-Object -Line).Lines
+        Write-Warning "SquashFS layer $layer extracted with $warningCount warning lines; metadata catalog preserved at $catalog"
     }
 }
 
