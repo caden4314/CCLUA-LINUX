@@ -42,6 +42,27 @@ function Copy-Tree {
     Copy-Item (Join-Path $Source "*") $Destination -Recurse -Force
 }
 
+function Replace-Tree {
+    param([string]$Source,[string]$Destination)
+    if (-not (Test-Path $Source)) { return }
+    if (Test-Path $Destination) { Remove-Item $Destination -Recurse -Force }
+    New-Item -ItemType Directory -Path $Destination -Force | Out-Null
+    Copy-Item (Join-Path $Source "*") $Destination -Recurse -Force
+}
+
+function Copy-TreeDefaults {
+    param([string]$Source,[string]$Destination)
+    if (-not (Test-Path $Source)) { return }
+    New-Item -ItemType Directory -Path $Destination -Force | Out-Null
+    Get-ChildItem $Source -Recurse -File | ForEach-Object {
+        $relative = $_.FullName.Substring($Source.Length).TrimStart('\')
+        $target = Join-Path $Destination $relative
+        $parent = Split-Path $target -Parent
+        New-Item -ItemType Directory -Path $parent -Force | Out-Null
+        if (-not (Test-Path $target)) { Copy-Item $_.FullName $target }
+    }
+}
+
 $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 function Write-Utf8NoBom {
     param([string]$Path,[string]$Content)
@@ -52,14 +73,17 @@ foreach ($Machine in $Machines) {
     $Disk = Join-Path $ComputerRoot ([string]$Machine.Id)
     New-Item -ItemType Directory -Path $Disk -Force | Out-Null
 
-    # Shared image/runtime.
-    Copy-Tree (Join-Path $RepoRoot "src\kernel") (Join-Path $Disk "System\kernel")
-    Copy-Tree (Join-Path $RepoRoot "src\init")   (Join-Path $Disk "System\init")
-    Copy-Tree (Join-Path $RepoRoot "src\usr")     (Join-Path $Disk "usr")
-    Copy-Tree (Join-Path $RepoRoot "src\usr\bin") (Join-Path $Disk "bin")
-    Copy-Tree (Join-Path $RepoRoot "src\usr\sbin") (Join-Path $Disk "sbin")
-    Copy-Tree (Join-Path $RepoRoot "src\lib")     (Join-Path $Disk "lib")
-    Copy-Tree (Join-Path $RepoRoot "src\etc")     (Join-Path $Disk "etc")
+    # Shared immutable image/runtime trees are replaced on every deploy.
+    Replace-Tree (Join-Path $RepoRoot "src\kernel")   (Join-Path $Disk "System\kernel")
+    Replace-Tree (Join-Path $RepoRoot "src\init")     (Join-Path $Disk "System\init")
+    Replace-Tree (Join-Path $RepoRoot "src\usr")      (Join-Path $Disk "usr")
+    Replace-Tree (Join-Path $RepoRoot "src\usr\bin") (Join-Path $Disk "bin")
+    Replace-Tree (Join-Path $RepoRoot "src\usr\sbin") (Join-Path $Disk "sbin")
+    Replace-Tree (Join-Path $RepoRoot "src\lib")      (Join-Path $Disk "lib")
+
+    # /etc is persistent machine state. Seed defaults, but preserve local edits.
+    Copy-TreeDefaults (Join-Path $RepoRoot "src\etc") (Join-Path $Disk "etc")
+    Copy-Item (Join-Path $RepoRoot "src\etc\os-release") (Join-Path $Disk "etc\os-release") -Force
 
     # Required writable state.
     New-Item -ItemType Directory -Path (Join-Path $Disk "root") -Force | Out-Null
