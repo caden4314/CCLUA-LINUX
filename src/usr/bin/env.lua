@@ -1,0 +1,1 @@
+return {main=function(ctx,args) local keys={}for k in pairs(ctx.process.environment or {})do keys[#keys+1]=k end;table.sort(keys);for _,k in ipairs(keys)do print(k.."="..tostring(ctx.process.environment[k]))end;return 0 end}

@@ -38,6 +38,12 @@ local function register_services()
     enabled=true,
     exec=load_service("/usr/lib/cclua/services/peripherald.lua")
   }
+  k.services:register{
+    name="dashboard.service",
+    description="CCLUA monitor statistics dashboard",
+    enabled=true,
+    exec=load_service("/usr/lib/cclua/services/dashboard.lua")
+  }
 end
 
 local function spawn_console()

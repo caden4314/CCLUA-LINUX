@@ -1,0 +1,1 @@
+return {main=function(ctx,args) if #args==0 then print("touch: missing file operand");return 1 end;for _,p in ipairs(args)do if p:sub(1,1)~="/" then p=ctx.kernel.vfs.normalize(ctx.process.cwd.."/"..p)end;if not ctx.kernel.vfs.exists(p)then local h=ctx.kernel.vfs.open(p,"w");if h and h.close then h.close()end end end;return 0 end}
