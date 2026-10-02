@@ -85,13 +85,27 @@ foreach ($layer in $layers) {
     $proc = Start-Process -FilePath $SevenZip -ArgumentList $arguments -Wait -PassThru -NoNewWindow -RedirectStandardOutput $stdoutLog -RedirectStandardError $stderrLog
     $extractCode = $proc.ExitCode
 
-    if ($extractCode -gt 1) {
-        throw "SquashFS extraction failed for $layer with exit code $extractCode; see $stderrLog"
+    if ($extractCode -ne 0) {
+        $errorLines = @(Get-Content $stderrLog -ErrorAction SilentlyContinue | Where-Object { $_.Trim() -ne "" })
+        $unexpected = @($errorLines | Where-Object {
+            $_ -notmatch '^ERROR: Cannot create symbolic link' -and
+            $_ -notmatch '^ERROR: Dangerous link path was ignored'
+        })
+        if ($unexpected.Count -gt 0) {
+            $sample = ($unexpected | Select-Object -First 5) -join " | "
+            throw "SquashFS extraction failed for $layer; unexpected 7-Zip errors: $sample"
+        }
+        Write-Warning "SquashFS layer $layer extracted with $($errorLines.Count) expected Windows symlink warnings; metadata catalog preserved at $catalog"
     }
-    if ($extractCode -eq 1) {
-        $warningCount = (Get-Content $stderrLog -ErrorAction SilentlyContinue | Measure-Object -Line).Lines
-        Write-Warning "SquashFS layer $layer extracted with $warningCount warning lines; metadata catalog preserved at $catalog"
-    }
+}
+
+$requiredPaths = @(
+    (Join-Path $rootfs "usr"),
+    (Join-Path $rootfs "usr\lib\os-release"),
+    (Join-Path $rootfs "var\lib\dpkg\status")
+)
+foreach ($required in $requiredPaths) {
+    if (-not (Test-Path $required)) { throw "Extracted rootfs validation failed; missing $required" }
 }
 
 Write-Host "Root filesystem ready: $rootfs"
