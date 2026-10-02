@@ -1,0 +1,55 @@
+{
+  "schema": 1,
+  "kernel_abi": 1,
+  "syscall_abi": 1,
+  "vfs_abi": 1,
+  "device_abi": 1,
+  "ipc_abi": 1,
+  "process_states": [
+    "new",
+    "runnable",
+    "running",
+    "sleeping",
+    "waiting",
+    "stopped",
+    "zombie",
+    "exited",
+    "killed",
+    "crashed"
+  ],
+  "signals": [
+    "TERM",
+    "KILL",
+    "INT",
+    "HUP",
+    "STOP",
+    "CONT",
+    "CHLD"
+  ],
+  "capabilities": [
+    "fs.read",
+    "fs.write",
+    "fs.mount",
+    "proc.spawn",
+    "proc.signal",
+    "proc.inspect",
+    "user.admin",
+    "service.control",
+    "net.bind",
+    "net.admin",
+    "device.access",
+    "system.reboot",
+    "system.update",
+    "kernel.inspect"
+  ],
+  "pseudo_filesystems": [
+    "procfs",
+    "devfs",
+    "sysfs"
+  ],
+  "fd_defaults": {
+    "stdin": 0,
+    "stdout": 1,
+    "stderr": 2
+  }
+}
