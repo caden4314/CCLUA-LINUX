@@ -23,6 +23,8 @@ local runtime = {
   changed = false,
   nodes = {},
   tick = 0,
+  restartRequired = false,
+  restartAt = nil,
 }
 
 local monitor, monitorName
@@ -109,7 +111,7 @@ end
 local function statusColor(state)
   state=tostring(state or ""):upper()
   if state=="HEALTHY" or state=="CURRENT" then return colors.lime end
-  if state=="BOOTING" or state=="CHECKING" or state=="UPDATING" then return colors.yellow end
+  if state=="BOOTING" or state=="CHECKING" or state=="UPDATING" or state=="RESTARTING" then return colors.yellow end
   if state=="DEGRADED" or state=="FAILED" then return colors.red end
   return colors.lightGray
 end
@@ -259,6 +261,27 @@ local function rawUrl(sha, path)
   return "https://raw.githubusercontent.com/" .. CFG.owner .. "/" .. CFG.repo .. "/" .. sha .. "/" .. path
 end
 
+local function refreshManagerCode(sha)
+  local body,err=request(rawUrl(sha,"manager/github_bridge.lua"))
+  if not body then return nil,err end
+
+  local current=readAll("/github_bridge.lua")
+  if current==body then return false end
+
+  local fn,lerr=load(body,"@github_bridge.lua","t",_ENV)
+  if not fn then return nil,"manager syntax check failed: "..tostring(lerr) end
+
+  local ok,werr=writeAll("/github_bridge.lua.new",body)
+  if not ok then return nil,werr end
+  if fs.exists("/github_bridge.lua.old") then fs.delete("/github_bridge.lua.old") end
+  if fs.exists("/github_bridge.lua") then fs.move("/github_bridge.lua","/github_bridge.lua.old") end
+  fs.move("/github_bridge.lua.new","/github_bridge.lua")
+
+  runtime.restartRequired=true
+  runtime.restartAt=os.clock()+2
+  return true
+end
+
 local function currentCommit()
   local obj, err = requestJson(repoApi("commits/" .. textutils.urlEncode(CFG.ref)))
   if not obj then return nil, err end
@@ -325,6 +348,12 @@ local function stageCommit(sha)
   state.updatedAt = os.epoch and os.epoch("utc") or 0
   local ok, serr = saveState(state)
   if not ok then return nil, serr end
+
+  local refreshed,rerr=refreshManagerCode(sha)
+  if refreshed==nil then
+    runtime.lastError="manager refresh: "..tostring(rerr)
+  end
+
   return state
 end
 
@@ -443,6 +472,12 @@ function M.run()
       M.sync(false)
       poll = os.startTimer(CFG.pollSeconds)
     elseif event=="timer" and a==ui then
+      if runtime.restartRequired and runtime.restartAt and os.clock()>=runtime.restartAt then
+        runtime.state="RESTARTING"
+        draw()
+        sleep(0.25)
+        os.reboot()
+      end
       draw()
       ui=os.startTimer(0.5)
     elseif event == "rednet_message" then
