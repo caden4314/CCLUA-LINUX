@@ -25,6 +25,10 @@ local runtime = {
   tick = 0,
   restartRequired = false,
   restartAt = nil,
+  currentFile = nil,
+  currentAction = nil,
+  downloadedBytes = 0,
+  delta = { added = 0, changed = 0, removed = 0, unchanged = 0 },
 }
 
 local monitor, monitorName
@@ -154,6 +158,22 @@ local function draw()
       monitor.write(clipped(s,w-math.max(1,x)+1))
     end
 
+    local function progressBar(y,current,total)
+      if y<1 or y>h then return end
+      local width=math.max(8,w-4)
+      local pct=total>0 and math.max(0,math.min(1,current/total)) or 1
+      local filled=math.floor(width*pct+0.5)
+      monitor.setCursorPos(3,y)
+      monitor.setBackgroundColor(colors.gray)
+      monitor.write(string.rep(" ",width))
+      if filled>0 then
+        monitor.setCursorPos(3,y)
+        monitor.setBackgroundColor(colors.lime)
+        monitor.write(string.rep(" ",filled))
+      end
+      monitor.setBackgroundColor(colors.black)
+    end
+
     monitor.setBackgroundColor(colors.black)
     monitor.clear()
 
@@ -175,17 +195,27 @@ local function draw()
       lamp and colors.lime or colors.gray)
 
     text(2,11,"UPDATE",colors.cyan)
-    if runtime.total>0 and (runtime.state=="UPDATING" or runtime.state=="CHECKING") then
-      local pct=math.floor((runtime.progress/math.max(1,runtime.total))*100)
-      text(2,12,("Progress   %d/%d (%d%%)"):format(runtime.progress,runtime.total,pct),colors.yellow)
+    local busy=runtime.state=="UPDATING" or runtime.state=="CHECKING"
+    if busy then
+      local action=runtime.currentAction or (runtime.state=="CHECKING" and "CHECK" or "WORK")
+      local file=runtime.currentFile or "repository metadata"
+      text(2,12,("%-9s %s"):format(action,clipped(file,w-13)),colors.yellow)
+      progressBar(13,runtime.progress,runtime.total)
+      local pct=runtime.total>0 and math.floor((runtime.progress/runtime.total)*100) or 100
+      text(2,14,("Progress   %d/%d  %d%%"):format(runtime.progress,runtime.total,pct),colors.lightGray)
     else
       text(2,12,("Last check %s"):format(runtime.lastCheck or "-"),colors.lightGray)
+      text(2,13,("Result     %s"):format(runtime.changed and "UPDATED" or "CURRENT"),
+        runtime.changed and colors.yellow or colors.lime)
+      text(2,14,("Commit     %s"):format(tostring(state.commit or "-"):sub(1,12)),colors.lightGray)
     end
-    text(2,13,("Result     %s"):format(runtime.changed and "UPDATED" or "CURRENT"),
-      runtime.changed and colors.yellow or colors.lime)
-    if runtime.lastError then text(2,14,"Error      "..runtime.lastError,colors.red) end
+    local d=runtime.delta or {}
+    text(2,15,("Delta      +%d  ~%d  -%d  =%d"):format(
+      d.added or 0,d.changed or 0,d.removed or 0,d.unchanged or 0
+    ),colors.lightGray)
+    if runtime.lastError then text(2,16,"Error      "..runtime.lastError,colors.red) end
 
-    local networkY=runtime.lastError and 16 or 15
+    local networkY=runtime.lastError and 18 or 17
     text(2,networkY,"NETWORK",colors.cyan)
     text(2,networkY+1,("Modem      %s"):format(modemName or "not attached"),
       modemName and colors.lime or colors.orange)
@@ -295,65 +325,167 @@ local function getTree(sha)
   return obj.tree or {}
 end
 
+local function sourceManifest(tree,commit)
+  local manifest={schema=1,commit=commit,files={}}
+  for _,item in ipairs(tree or {}) do
+    if item.type=="blob" and type(item.path)=="string" and item.path:sub(1,4)=="src/" then
+      local rel=item.path:sub(5)
+      manifest.files[rel]={sha=item.sha,size=item.size or 0}
+    end
+  end
+  return manifest
+end
+
+local function readManifest(slot,state)
+  local raw=readAll(join(slot,".manifest.json"))
+  if raw then
+    local ok,data=pcall(textutils.unserializeJSON,raw)
+    if ok and type(data)=="table" and type(data.files)=="table" then return data end
+  end
+  if state and state.commit then
+    local oldTree=getTree(state.commit)
+    if oldTree then return sourceManifest(oldTree,state.commit) end
+  end
+  return {schema=1,commit=state and state.commit or nil,files={}}
+end
+
 local function removeTree(path)
   if fs.exists(path) then fs.delete(path) end
 end
 
 local function stageCommit(sha)
-  local state = loadState()
-  local inactive = state.activeSlot == "A" and "B" or "A"
-  local slot = join(CFG.root, inactive)
-  removeTree(slot)
-  ensureDir(slot)
+  local state=loadState()
+  local active=join(CFG.root,state.activeSlot or "A")
+  local inactive=state.activeSlot=="A" and "B" or "A"
+  local slot=join(CFG.root,inactive)
 
-  local tree, err = getTree(sha)
-  if not tree then return nil, err end
+  runtime.currentAction="TREE"
+  runtime.currentFile="comparing Git trees"
+  runtime.progress=0
+  runtime.total=0
+  runtime.downloadedBytes=0
+  runtime.delta={added=0,changed=0,removed=0,unchanged=0}
+  setRuntime("CHECKING")
 
-  local wanted={}
-  for _,item in ipairs(tree) do
-    if item.type=="blob" and type(item.path)=="string" and item.path:sub(1,4)=="src/" then
-      wanted[#wanted+1]=item
+  local tree,err=getTree(sha)
+  if not tree then return nil,err end
+  local nextManifest=sourceManifest(tree,sha)
+  local previous=readManifest(active,state)
+
+  local added,changed,removed,unchanged={},{},{},{}
+  for rel,meta in pairs(nextManifest.files) do
+    local old=previous.files and previous.files[rel] or nil
+    if not old then
+      added[#added+1]=rel
+    elseif old.sha~=meta.sha then
+      changed[#changed+1]=rel
+    else
+      unchanged[#unchanged+1]=rel
     end
   end
-  runtime.total=#wanted
+  for rel in pairs(previous.files or {}) do
+    if not nextManifest.files[rel] then removed[#removed+1]=rel end
+  end
+  table.sort(added);table.sort(changed);table.sort(removed);table.sort(unchanged)
+
+  runtime.delta={
+    added=#added,changed=#changed,removed=#removed,unchanged=#unchanged
+  }
+  runtime.total=#added+#changed+#removed
   runtime.progress=0
+  runtime.currentAction="STAGE"
+  runtime.currentFile="copying last-known-good slot"
   setRuntime("UPDATING")
 
-  local files, bytes = 0, 0
-  for _, item in ipairs(wanted) do
-    local rel = item.path:sub(5)
-    local body, ferr = request(rawUrl(sha, item.path))
-    if not body then
-      removeTree(slot)
-      return nil, "download " .. item.path .. ": " .. tostring(ferr)
-    end
-    local ok, werr = writeAll(join(slot, rel), body)
-    if not ok then
-      removeTree(slot)
-      return nil, "write " .. rel .. ": " .. tostring(werr)
-    end
-    files = files + 1
-    bytes = bytes + #body
-    runtime.progress=files
-    if files%5==0 or files==#wanted then draw() end
+  removeTree(slot)
+  ensureDir(CFG.root)
+  if fs.exists(active) then
+    local ok,copyErr=pcall(fs.copy,active,slot)
+    if not ok then return nil,"stage copy failed: "..tostring(copyErr) end
+  else
+    ensureDir(slot)
+  end
+
+  if fs.exists(join(slot,".manifest.json")) then fs.delete(join(slot,".manifest.json")) end
+  if fs.exists(join(slot,".commit")) then fs.delete(join(slot,".commit")) end
+
+  local function advance(action,rel)
+    runtime.currentAction=action
+    runtime.currentFile=rel
+    runtime.progress=runtime.progress+1
+    draw()
     sleep(0)
   end
 
-  writeAll(join(slot, ".commit"), sha .. "\n")
-  state.activeSlot = inactive
-  state.commit = sha
-  state.ref = CFG.ref
-  state.files = files
-  state.bytes = bytes
-  state.updatedAt = os.epoch and os.epoch("utc") or 0
-  local ok, serr = saveState(state)
-  if not ok then return nil, serr end
+  for _,rel in ipairs(removed) do
+    local target=join(slot,rel)
+    if fs.exists(target) then fs.delete(target) end
+    advance("REMOVE",rel)
+  end
 
+  local function downloadFile(rel,action)
+    runtime.currentAction=action
+    runtime.currentFile=rel
+    draw()
+    local body,ferr=request(rawUrl(sha,"src/"..rel))
+    if not body then return nil,"download src/"..rel..": "..tostring(ferr) end
+    local ok,werr=writeAll(join(slot,rel),body)
+    if not ok then return nil,"write "..rel..": "..tostring(werr) end
+    runtime.downloadedBytes=runtime.downloadedBytes+#body
+    runtime.progress=runtime.progress+1
+    draw()
+    sleep(0)
+    return true
+  end
+
+  for _,rel in ipairs(changed) do
+    local ok,derr=downloadFile(rel,"CHANGE")
+    if not ok then removeTree(slot);return nil,derr end
+  end
+  for _,rel in ipairs(added) do
+    local ok,derr=downloadFile(rel,"ADD")
+    if not ok then removeTree(slot);return nil,derr end
+  end
+
+  runtime.currentAction="VERIFY"
+  runtime.currentFile="writing manifest"
+  draw()
+
+  local manifestJson=textutils.serializeJSON(nextManifest)
+  local mok,merr=writeAll(join(slot,".manifest.json"),manifestJson)
+  if not mok then removeTree(slot);return nil,merr end
+  writeAll(join(slot,".commit"),sha.."\n")
+
+  local files,bytes=0,0
+  for _,meta in pairs(nextManifest.files) do
+    files=files+1
+    bytes=bytes+(meta.size or 0)
+  end
+
+  state.activeSlot=inactive
+  state.commit=sha
+  state.ref=CFG.ref
+  state.files=files
+  state.bytes=bytes
+  state.updatedAt=os.epoch and os.epoch("utc") or 0
+  state.lastDelta={
+    added=#added,changed=#changed,removed=#removed,unchanged=#unchanged,
+    downloadedBytes=runtime.downloadedBytes
+  }
+  local ok,serr=saveState(state)
+  if not ok then return nil,serr end
+
+  runtime.currentAction="MANAGER"
+  runtime.currentFile="checking manager bridge"
+  draw()
   local refreshed,rerr=refreshManagerCode(sha)
   if refreshed==nil then
     runtime.lastError="manager refresh: "..tostring(rerr)
   end
 
+  runtime.progress=runtime.total
+  runtime.currentAction=nil
+  runtime.currentFile=nil
   return state
 end
 
@@ -375,6 +507,10 @@ end
 function M.sync(force)
   runtime.lastCheck=os.date and os.date("%H:%M:%S") or tostring(os.epoch("utc"))
   runtime.changed=false
+  runtime.currentAction="CHECK"
+  runtime.currentFile="GitHub HEAD"
+  runtime.progress=0
+  runtime.total=0
   setRuntime("CHECKING")
 
   local sha, err = currentCommit()
@@ -386,7 +522,10 @@ function M.sync(force)
   local state = loadState()
   if not force and state.commit == sha and fs.exists(M.activeRoot()) then
     runtime.progress=0
-    runtime.total=state.files or 0
+    runtime.total=0
+    runtime.currentAction=nil
+    runtime.currentFile=nil
+    runtime.delta={added=0,changed=0,removed=0,unchanged=state.files or 0}
     setRuntime("HEALTHY")
     return state, false
   end
@@ -398,8 +537,8 @@ function M.sync(force)
   end
 
   runtime.changed=true
-  runtime.progress=nextState.files or 0
-  runtime.total=nextState.files or 0
+  runtime.currentAction=nil
+  runtime.currentFile=nil
   setRuntime("HEALTHY")
   return nextState, true
 end
@@ -447,6 +586,7 @@ function M.run()
 
   modemName = findWirelessModem()
   if modemName and not rednet.isOpen(modemName) then rednet.open(modemName) end
+  if modemName then pcall(rednet.host,CFG.protocol,"LINUX_NETWORK") end
 
   term.setBackgroundColor(colors.black)
   term.setTextColor(colors.white)
@@ -486,6 +626,7 @@ function M.run()
       chooseMonitor()
       modemName=findWirelessModem()
       if modemName and not rednet.isOpen(modemName) then pcall(rednet.open,modemName) end
+      if modemName then pcall(rednet.host,CFG.protocol,"LINUX_NETWORK") end
       draw()
     elseif event=="terminate" then
       pcall(redstone.setOutput,CFG.statusSide,false)
