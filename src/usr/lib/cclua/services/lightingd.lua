@@ -18,6 +18,9 @@ return function(ctx)
   local lightMonitorName=nil
   local lightMonitorWidth=0
   local lightMonitorHeight=0
+  local touchZones={}
+  local CONTROL_STATE="/var/lib/cclua/lighting-control.json"
+  local roomDesired={}
   local expected_state
   local room_summary
 
@@ -30,6 +33,19 @@ return function(ctx)
     settings=config.read_json("/etc/cclua/lighting.json",settings or {})
     leverSide=settings.lever_side or "front"
     leverEnabled=settings.lever_enabled~=false
+  end
+
+  local function load_control_state()
+    local saved=config.read_json(CONTROL_STATE,{})
+    roomDesired=type(saved.rooms)=="table" and saved.rooms or {}
+  end
+
+  local function save_control_state()
+    config.write_json(CONTROL_STATE,{
+      schema=1,
+      rooms=roomDesired,
+      updated_at=os.epoch and os.epoch("utc") or 0
+    })
   end
 
   local function choose_light_monitor()
@@ -155,6 +171,8 @@ return function(ctx)
       if not ok then errors[#errors+1]=name..": "..tostring(err) end
     end
     desired=value==true
+    for _,room in ipairs(room_entries()) do roomDesired[room.name]=desired end
+    save_control_state()
     lastError=#errors>0 and table.concat(errors,"; ") or nil
     ctx.kernel.log.write(
       #errors==0 and "info" or "error",
@@ -177,6 +195,8 @@ return function(ctx)
       local ok,err=set_relay(name,value)
       if not ok then errors[#errors+1]=name..": "..tostring(err) end
     end
+    roomDesired[room.name]=value==true
+    save_control_state()
     lastError=#errors>0 and table.concat(errors,"; ") or nil
     ctx.kernel.log.write(
       #errors==0 and "info" or "error",
@@ -246,6 +266,8 @@ return function(ctx)
       local w,h=mon.getSize()
       lightMonitorWidth=w
       lightMonitorHeight=h
+      touchZones={}
+
       mon.setBackgroundColor(colors.black)
       mon.setTextColor(colors.white)
       mon.clear()
@@ -253,86 +275,80 @@ return function(ctx)
       local function clip(s,n)
         s=tostring(s or "")
         if n<=0 then return "" end
-        if #s>n then return s:sub(1,n) end
-        return s
+        return #s>n and s:sub(1,n) or s
       end
 
-      local function line(y,text,fg,bg)
+      local function centered(y,s,fg,bg)
         if y<1 or y>h then return end
+        s=clip(s,w)
+        local x=math.max(1,math.floor((w-#s)/2)+1)
         mon.setCursorPos(1,y)
         mon.setBackgroundColor(bg or colors.black)
         mon.setTextColor(fg or colors.white)
-        mon.write(clip(text,w))
-        local used=math.min(#tostring(text),w)
-        if used<w then mon.write(string.rep(" ",w-used)) end
+        mon.write(string.rep(" ",w))
+        mon.setCursorPos(x,y)
+        mon.write(s)
       end
 
-      local function relay_bar(y,startId,endId)
+      local function fill_row(y,bg)
         if y<1 or y>h then return end
-        local prefix=(startId==0 and "0-7 " or "8-F ")
-        if w<12 then prefix=(startId==0 and "0:" or "8:") end
         mon.setCursorPos(1,y)
-        mon.setBackgroundColor(colors.black)
-        mon.setTextColor(colors.lightGray)
-        mon.write(clip(prefix,w))
-
-        local x=#prefix+1
-        for id=startId,endId do
-          if x>w then break end
-          local name="redstone_relay_"..tostring(id)
-          mon.setCursorPos(x,y)
-          local present=peripheral.hasType(name,"redstone_relay")
-          local on=present and relay_is_on(name)
-          mon.setTextColor(not present and colors.red or (on and colors.lime or colors.gray))
-          mon.write(not present and "!" or (on and "#" or "."))
-          x=x+1
-        end
-        if x<=w then
-          mon.setCursorPos(x,y)
-          mon.setBackgroundColor(colors.black)
-          mon.write(string.rep(" ",w-x+1))
-        end
+        mon.setBackgroundColor(bg)
+        mon.write(string.rep(" ",w))
       end
 
-      line(1," LIGHTING",colors.white,colors.blue)
+      local summaries=room_summary()
+      local byName={}
+      for _,r in ipairs(summaries) do byName[r.name]=r end
 
-      local lever=read_lever()
-      local lightWord=desired and "ON" or "OFF"
-      local leverWord=lever==nil and "--" or (lever and "ON" or "OFF")
-      line(2,("LIGHT %-3s L %-3s"):format(lightWord,leverWord),
-        desired and colors.lime or colors.lightGray)
+      centered(1,"LIGHTING",colors.white,colors.blue)
 
-      local expected=settings.expected_relays or {}
-      local expectedCount=#expected>0 and #expected or #relays
-      local okRelays=#relays>=expectedCount
-      line(3,("RELAYS %d/%d %s"):format(#relays,expectedCount,okRelays and "OK" or "ERR"),
-        okRelays and colors.lime or colors.red)
+      local relayHealthy=true
+      for _,r in ipairs(summaries) do if not r.healthy then relayHealthy=false end end
+      centered(2,("%d RELAYS %s"):format(#relays,relayHealthy and "OK" or "ERR"),
+        relayHealthy and colors.lime or colors.red,colors.black)
 
-      if h>=4 then
-        local summaries=room_summary()
-        if animationActive then
-          line(4,"ANIM  RUN",colors.yellow)
-        elseif #summaries>0 then
-          local r=summaries[1]
-          local short=((settings.room_short_names or {})[r.name])
-          if not short then
-            short=r.name:gsub("[^%w]",""):upper():sub(1,3)
-          end
-          line(4,("%s %-5s %d/%d"):format(short,r.state,r.present,r.relay_count),
-            r.healthy and (r.state=="ON" and colors.lime or colors.lightGray) or colors.red)
-        else
-          line(4,"ANIM  IDLE",colors.gray)
-        end
+      local rooms=room_entries()
+      local count=math.min(2,#rooms)
+      local top=4
+      local bottom=math.max(top,h-3)
+      local gap=1
+      local available=bottom-top+1
+      local buttonHeight=math.max(4,math.floor((available-gap*math.max(0,count-1))/math.max(1,count)))
+
+      for i=1,count do
+        local room=rooms[i]
+        local summary=byName[room.name] or {state="MISSING",healthy=false,present=0,relay_count=#room.relays,on=0}
+        local y1=top+(i-1)*(buttonHeight+gap)
+        local y2=math.min(bottom,y1+buttonHeight-1)
+
+        local bg=colors.gray
+        local fg=colors.white
+        if not summary.healthy then bg=colors.red
+        elseif summary.state=="ON" then bg=colors.green
+        elseif summary.state=="MIXED" then bg=colors.orange
+        else bg=colors.gray end
+
+        for y=y1,y2 do fill_row(y,bg) end
+
+        local label=((settings.room_short_names or {})[room.name]) or room.name
+        local mid=math.floor((y1+y2)/2)
+        centered(mid-1,label:upper(),fg,bg)
+        centered(mid,summary.state,fg,bg)
+        centered(mid+1,("%d/%d"):format(summary.present or 0,summary.relay_count or #room.relays),fg,bg)
+
+        touchZones[#touchZones+1]={room=room.name,x1=1,x2=w,y1=y1,y2=y2}
       end
-      if h>=5 then relay_bar(5,0,7) end
-      if h>=6 then relay_bar(6,8,15) end
 
-      if h>=7 then
-        local fault=lastError
-        local _,missing=expected_state()
-        if not fault and #missing>0 then fault="MISS "..tostring(#missing) end
-        line(h,fault and ("FAULT "..fault) or "STATUS OK",
-          fault and colors.red or colors.lime)
+      if count==0 then centered(math.floor(h/2),"NO ROOMS",colors.red,colors.black) end
+
+      local footer=h
+      if animationActive then
+        centered(footer,"ANIMATION",colors.black,colors.yellow)
+      elseif lastError then
+        centered(footer,"FAULT",colors.white,colors.red)
+      else
+        centered(footer,"TAP TO TOGGLE",colors.lightGray,colors.black)
       end
     end)
 
@@ -342,7 +358,28 @@ return function(ctx)
       },ctx.process.pid)
       lightMonitor=nil
       lightMonitorName=nil
+      touchZones={}
     end
+  end
+
+  local function handle_monitor_touch(name,x,y)
+    if name~=lightMonitorName or animationActive then return false end
+    for _,zone in ipairs(touchZones) do
+      if x>=zone.x1 and x<=zone.x2 and y>=zone.y1 and y<=zone.y2 then
+        local summary=nil
+        for _,r in ipairs(room_summary()) do
+          if r.name==zone.room then summary=r break end
+        end
+        local turnOn=not (summary and summary.state=="ON")
+        local ok,err=set_room(zone.room,turnOn,"touch:"..tostring(name))
+        ctx.kernel.log.write(ok and "info" or "error","lightingd","touch room toggle",{
+          room=zone.room,value=turnOn,x=x,y=y,error=err
+        },ctx.process.pid)
+        render_light_monitor()
+        return true
+      end
+    end
+    return false
   end
 
   expected_state=function()
@@ -381,6 +418,7 @@ return function(ctx)
         off=math.max(0,present-on),
         missing_relays=missing,
         healthy=#missing==0,
+        desired=roomDesired[room.name],
         state=state
       }
     end
@@ -574,13 +612,23 @@ return function(ctx)
 
   discover()
   reload_settings()
+  load_control_state()
   choose_light_monitor()
   local lever=read_lever()
   if leverEnabled and lever~=nil then
     lastLever=lever
     set_all(lever,"lever-initial:"..leverSide)
   elseif #relays>0 then
-    set_all(desired,"configured-default")
+    local configuredRooms=room_entries()
+    if #configuredRooms>0 then
+      for _,room in ipairs(configuredRooms) do
+        local value=roomDesired[room.name]
+        if value==nil then value=settings.default_on~=false end
+        set_room(room.name,value,"persisted-state")
+      end
+    else
+      set_all(desired,"configured-default")
+    end
   else
     lastError="no redstone relays discovered"
     ctx.kernel.log.write("warning","lightingd",lastError,nil,ctx.process.pid)
@@ -605,6 +653,8 @@ return function(ctx)
       choose_light_monitor()
       if #relays>0 and not animationActive then set_all(desired,"peripheral-change") end
       heartbeat()
+    elseif ev=="monitor_touch" then
+      if handle_monitor_touch(a,b,c) then heartbeat() end
     elseif ev=="monitor_resize" then
       choose_light_monitor()
       render_light_monitor()

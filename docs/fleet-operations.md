@@ -34,16 +34,22 @@ cclua-lightctl on
 cclua-lightctl off
 cclua-lightctl animate
 cclua-lightctl rooms
-cclua-lightctl room Server Room status
-cclua-lightctl room Server Room on
-cclua-lightctl room Server Room off
-cclua-lightctl room Server Room animate
+cclua-lightctl room Hallway status
+cclua-lightctl room Hallway on
+cclua-lightctl room Hallway off
+cclua-lightctl room SRV status
+cclua-lightctl room SRV on
+cclua-lightctl room SRV off
+cclua-lightctl room SRV animate
 cclua-lightctl set redstone_relay_4 on
 ```
 
 Lighting rooms are configured in `/etc/cclua/lighting.json`. Room commands only
-touch the relays assigned to that room; the physical front lever remains the
-building-wide master switch when it is moved.
+touch the relays assigned to that room. When a lighting monitor is configured,
+the lighting controller renders a dedicated touch UI and each room button
+toggles that room independently. Room states are persisted across automatic
+updates and reboots. A lever input is optional and can be disabled with
+`lever_enabled=false`.
 
 ## Central app deployment
 
