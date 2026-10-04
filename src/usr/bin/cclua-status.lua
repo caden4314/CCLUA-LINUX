@@ -34,7 +34,9 @@ return {main=function(ctx,args)
   print(("Manager:     %s"):format(machine.manager or "-"))
   print(("Peers:       %d"):format(#(net.peers or {})))
   print(("Update:      %s"):format(update.state or update.phase or "IDLE"))
-  print(("Build:       %s"):format(short(update.commit or update.build or update.version)))
+  print(("Installed:   %s"):format(short(update.current_commit or update.commit or update.build or update.version)))
+  print(("Available:   %s"):format(short(update.available_commit or update.manager_commit)))
+  print(("Manager:     %s"):format(update.manager_state or (update.manager_id and ("ID "..tostring(update.manager_id))) or "-"))
   print(("Lamp:        %s / %s"):format(
     status.lamp_side or machine.status_light_side or "bottom",
     status.lamp_output and "ON" or "OFF"
