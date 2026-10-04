@@ -334,7 +334,12 @@ class HarmoniBridge:
                         chunk = handle.read(min(64 * 1024, remaining))
                         if not chunk:
                             break
-                        self.wfile.write(chunk)
+                        try:
+                            self.wfile.write(chunk)
+                        except (BrokenPipeError, ConnectionResetError):
+                            # Normal when a player stops/seeks and closes the
+                            # HTTP stream before the source file is exhausted.
+                            return
                         remaining -= len(chunk)
 
             def route(self) -> None:
