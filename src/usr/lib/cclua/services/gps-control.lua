@@ -46,7 +46,10 @@ return function(ctx)
       if age<15 then
         out[#out+1]={
           id=id,label=h.label or ("gps-host-"..tostring(id)),
-          x=h.x,y=h.y,z=h.z,age=age,online=age<8
+          x=h.x,y=h.y,z=h.z,age=age,online=age<8,
+          requests_served=tonumber(h.requests_served) or 0,
+          healthy=h.healthy~=false,
+          update=h.update
         }
       end
     end
@@ -125,8 +128,9 @@ return function(ctx)
           if y>h-4 then break end
           local coord=(host.x and host.y and host.z) and
             (" %.0f %.0f %.0f"):format(host.x,host.y,host.z) or " no-coord"
-          line(y,("%s ID%d%s"):format(host.online and "[+]" or "[!]",host.id,coord),
-            host.online and colors.lime or colors.red,colors.black)
+          line(y,("%s ID%d%s req %d"):format(
+            host.online and "[+]" or "[!]",host.id,coord,host.requests_served or 0),
+            (host.online and host.healthy) and colors.lime or colors.red,colors.black)
           y=y+1
         end
       end
@@ -187,6 +191,9 @@ return function(ctx)
         hosts[a]={
           label=b.label or b.hostname,
           x=tonumber(b.x),y=tonumber(b.y),z=tonumber(b.z),
+          requests_served=tonumber(b.requests_served) or 0,
+          healthy=b.healthy~=false,
+          update=b.update,
           last_seen=now()
         }
         rednet.send(a,{protocol=protocol,op="host_status",ok=true},protocol)

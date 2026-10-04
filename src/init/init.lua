@@ -108,6 +108,13 @@ local function register_services()
       enabled=true,
       exec=load_service("/usr/lib/cclua/services/gps-monitor.lua")
     }
+  elseif machine.role=="gps-host" then
+    k.services:register{
+      name="cclua-gps-host.service",
+      description="CCLUA GPS positioning host",
+      enabled=true,
+      exec=load_service("/usr/lib/cclua/services/gps-host.lua")
+    }
   end
 
   if machine.dashboard_enabled~=false then
