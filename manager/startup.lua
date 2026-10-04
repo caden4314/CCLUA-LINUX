@@ -181,9 +181,14 @@ local installed=readText(INSTALLED)
 if commit and (installed~=commit or not fs.exists("System/init/init.lua")) then
   local ok,err=activate(slot,commit)
   if not ok then
+    writeJson(BOOTSTATE,{
+      schema=1,state="ACTIVATION_FAILED",slot=slot,commit=commit,error=tostring(err),
+      timestamp=os.epoch and os.epoch("utc") or 0
+    })
     term.setTextColor(colors.red)
     print("Image activation failed: "..tostring(err))
     term.setTextColor(colors.white)
+    error("CCLUA image activation failed.",0)
   end
 end
 
