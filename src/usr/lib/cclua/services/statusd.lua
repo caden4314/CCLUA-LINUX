@@ -46,39 +46,72 @@ return function(ctx)
     return u and u.state=="active"
   end
 
+  local function role_fault()
+    if machine.role=="lighting-controller" then
+      local lighting=config.read_json("/var/lib/cclua/lighting.json",{})
+      if lighting.healthy==false then
+        local reason=lighting.error
+        if not reason and #(lighting.missing_relays or {})>0 then
+          reason="missing relays: "..table.concat(lighting.missing_relays,",")
+        end
+        return true,reason or "lighting hardware fault"
+      end
+    end
+    return false,nil
+  end
+
   local function classify()
     local failed=failed_services()
     local update=update_state()
     local phase=tostring(update.state or update.phase or ""):upper()
 
-    if #failed>0 or phase=="DEGRADED" or phase=="ROLLBACK" or phase=="FAILED" then
-      return "DEGRADED",failed,update
+    if #failed>0 then
+      return "DEGRADED",1,"service failure",failed,update
+    end
+
+    if phase=="FAILED" or phase=="ROLLBACK" then
+      return "DEGRADED",2,"update/rollback failure",failed,update
+    end
+
+    if phase=="OFFLINE" or phase=="DEGRADED"
+      or tostring(update.manager_state or ""):upper()=="DEGRADED" then
+      return "DEGRADED",3,"manager/network fault",failed,update
+    end
+
+    local badRole,roleReason=role_fault()
+    if badRole then
+      return "DEGRADED",4,roleReason,failed,update
     end
 
     local updating={
       CHECKING=true,DOWNLOADING=true,VERIFYING=true,STAGING=true,
-      READY=true,ACTIVATING=true,HEALTH_CHECK=true
+      READY=true,ACTIVATING=true,HEALTH_CHECK=true,AVAILABLE=true
     }
-    if updating[phase] then return "UPDATING",failed,update end
+    if updating[phase] then return "UPDATING",0,nil,failed,update end
 
     if os.clock()<4
       or not active_service("systemd-networkd.service")
       or not active_service("peripherald.service") then
-      return "BOOTING",failed,update
+      return "BOOTING",0,nil,failed,update
     end
 
-    return "HEALTHY",failed,update
+    return "HEALTHY",0,nil,failed,update
   end
 
-  local function lamp(state,tick)
-    if not enabled then return false end
-    if state=="HEALTHY" then return true end
-    if state=="DEGRADED" then return tick%2==0 end
-    if state=="UPDATING" then return math.floor(tick/2)%2==0 end
-    return math.floor(tick/3)%2==0
+  local function lamp(code,tick)
+    if not enabled or not code or code<=0 then return false end
+    -- Each code is N short pulses followed by a clear pause.
+    -- 150 ms scheduler tick: 300 ms ON, 300 ms OFF, then ~1.5 s gap.
+    local pulseTicks=4
+    local gapTicks=10
+    local cycle=code*pulseTicks+gapTicks
+    local phase=tick%cycle
+    if phase>=code*pulseTicks then return false end
+    return (phase%pulseTicks)<2
   end
 
   local previous=nil
+  local previousCode=nil
   local tick=0
   local timer=os.startTimer(0.15)
 
@@ -87,13 +120,14 @@ return function(ctx)
     if ev=="timer" and a==timer then
       tick=tick+1
       if tick%20==1 then refresh_light_config() end
-      local state,failed,update=classify()
-      local output=lamp(state,tick)
+
+      local state,errorCode,errorReason,failed,update=classify()
+      local output=lamp(errorCode,tick)
       pcall(redstone.setOutput,side,output)
 
-      if state~=previous or tick%20==0 then
+      if state~=previous or errorCode~=previousCode or tick%20==0 then
         local payload={
-          schema=1,
+          schema=2,
           state=state,
           healthy=state=="HEALTHY",
           computer_id=os.getComputerID(),
@@ -101,6 +135,9 @@ return function(ctx)
           role=machine.role,
           lamp_side=side,
           lamp_output=output,
+          lamp_mode=errorCode>0 and "FAULT_CODE" or "OFF",
+          error_code=errorCode,
+          error_reason=errorReason,
           failed_services=failed_names(failed),
           failed_units=failed,
           update=update,
@@ -110,19 +147,24 @@ return function(ctx)
         config.write_json("/var/log/cclua/health.json",payload)
       end
 
-      if state~=previous then
+      if state~=previous or errorCode~=previousCode then
         ctx.kernel.log.write(
-          state=="DEGRADED" and "error" or "info",
+          errorCode>0 and "error" or "info",
           "statusd",
-          "system status "..state,
-          {lamp_side=side,failed_services=failed_names(failed),failed_units=failed},
+          errorCode>0
+            and ("system fault code "..tostring(errorCode)..": "..tostring(errorReason))
+            or ("system status "..state),
+          {
+            lamp_side=side,error_code=errorCode,error_reason=errorReason,
+            failed_services=failed_names(failed),failed_units=failed
+          },
           ctx.process.pid
         )
         previous=state
+        previousCode=errorCode
       end
 
-      local delay=state=="DEGRADED" and 0.15 or 0.25
-      timer=os.startTimer(delay)
+      timer=os.startTimer(0.15)
     elseif ev=="terminate" then
       pcall(redstone.setOutput,side,false)
       return 0

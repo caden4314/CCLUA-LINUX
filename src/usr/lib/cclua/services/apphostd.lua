@@ -6,9 +6,13 @@ return function(ctx)
   local managerProtocol="cclua-manager-v1"
   local managerId=tonumber(machine.manager_computer_id) or 0
   local root="/srv/cclua/apps"
+  local stagingRoot="/var/lib/cclua/app-staging"
+  local backupRoot="/var/lib/cclua/app-backup"
   local running={}
+  local deployments={}
 
   local function host(path) return tostring(path):gsub("^/","") end
+
   local function ensure(path)
     path=host(path)
     if path=="" or fs.exists(path) then return end
@@ -17,8 +21,59 @@ return function(ctx)
     fs.makeDir(path)
   end
 
-  local function app_path(name)
-    return root.."/"..tostring(name).."/app.lua"
+  local function safe_app(name)
+    if type(name)~="string" or name=="" then return nil end
+    if name=="." or name==".." then return nil end
+    if not name:match("^[%w][%w%._%-]*$") then return nil end
+    return name
+  end
+
+  local function safe_rel(path)
+    if type(path)~="string" or path=="" then return nil end
+    path=path:gsub("\\","/")
+    if path:sub(1,1)=="/" then return nil end
+    local parts={}
+    for seg in path:gmatch("[^/]+") do
+      if seg=="" or seg=="." or seg==".." then return nil end
+      parts[#parts+1]=seg
+    end
+    if #parts==0 then return nil end
+    return table.concat(parts,"/")
+  end
+
+  local function app_root(name) return root.."/"..name end
+  local function app_path(name) return app_root(name).."/app.lua" end
+  local function stage_root(name) return stagingRoot.."/"..name end
+  local function backup_root(name) return backupRoot.."/"..name end
+
+  local function read_json(path,default)
+    return config.read_json(path,default)
+  end
+
+  local function write_json(path,value)
+    return config.write_json(path,value)
+  end
+
+  local function dir_stats(path)
+    path=host(path)
+    local files,bytes=0,0
+    if not fs.exists(path) then return files,bytes end
+    local function walk(p)
+      for _,name in ipairs(fs.list(p)) do
+        local f=fs.combine(p,name)
+        if fs.isDir(f) then walk(f)
+        else
+          files=files+1
+          bytes=bytes+fs.getSize(f)
+        end
+      end
+    end
+    walk(path)
+    return files,bytes
+  end
+
+  local function deployment_meta(name)
+    return read_json(app_root(name).."/.deployment.json",{})
   end
 
   local function list_apps()
@@ -33,7 +88,12 @@ return function(ctx)
           running[name]=nil
           pid=nil
         end
-        out[#out+1]={name=name,pid=pid,state=pid and "running" or "stopped"}
+        local meta=deployment_meta(name)
+        out[#out+1]={
+          name=name,pid=pid,state=pid and "running" or "stopped",
+          version=meta.version,commit=meta.commit,deployed_at=meta.deployed_at,
+          files=meta.files,bytes=meta.bytes
+        }
       end
     end
     table.sort(out,function(a,b)return a.name<b.name end)
@@ -42,11 +102,22 @@ return function(ctx)
 
   local function state()
     local s={
-      schema=1,
+      schema=2,
       hostname=machine.hostname,
       computer_id=os.getComputerID(),
       role=machine.role,
       apps=list_apps(),
+      deployments=(function()
+        local out={}
+        for name,d in pairs(deployments) do
+          out[#out+1]={
+            app=name,files=d.receivedFiles,expected_files=d.expectedFiles,
+            bytes=d.receivedBytes,expected_bytes=d.expectedBytes,
+            current_file=d.currentFile
+          }
+        end
+        return out
+      end)(),
       timestamp=os.epoch and os.epoch("utc") or 0
     }
     config.write_json("/var/lib/cclua/apphost.json",s)
@@ -54,6 +125,9 @@ return function(ctx)
   end
 
   local function start_app(name)
+    name=safe_app(name)
+    if not name then return nil,"invalid app name" end
+
     if running[name] then
       local p=ctx.kernel.process.get(running[name])
       if p and p.state~="exited" and p.state~="killed" and p.state~="crashed" then
@@ -63,12 +137,12 @@ return function(ctx)
     end
 
     local path=app_path(name)
-    if not fs.exists(host(path)) then return nil,"app not installed: "..tostring(name) end
+    if not fs.exists(host(path)) then return nil,"app not installed: "..name end
 
     local proc,err=ctx.kernel.process.create{
       ppid=ctx.process.pid,
-      name="app:"..tostring(name),
-      uid=0,gid=0,cwd=root.."/"..tostring(name),
+      name="app:"..name,
+      uid=0,gid=0,cwd=app_root(name),
       capabilities=ctx.kernel.capabilities.root(),
       argv={path}
     }
@@ -104,6 +178,8 @@ return function(ctx)
   end
 
   local function stop_app(name)
+    name=safe_app(name)
+    if not name then return nil,"invalid app name" end
     local pid=running[name]
     if not pid then return true end
     local p=ctx.kernel.process.get(pid)
@@ -113,6 +189,175 @@ return function(ctx)
     end
     running[name]=nil
     ctx.kernel.log.write("info","apphostd","app stopped",{app=name,pid=pid},ctx.process.pid)
+    return true
+  end
+
+  local function deploy_begin(msg)
+    local name=safe_app(msg.app)
+    if not name then return nil,"invalid app name" end
+    local stage=host(stage_root(name))
+    if fs.exists(stage) then fs.delete(stage) end
+    ensure(stage)
+
+    deployments[name]={
+      expectedFiles=tonumber(msg.files) or 0,
+      expectedBytes=tonumber(msg.bytes) or 0,
+      receivedFiles=0,receivedBytes=0,
+      currentFile=nil,currentExpected=0,currentReceived=0,
+      version=msg.version,commit=msg.commit,
+      autostart=msg.autostart==true,
+      startedAt=os.epoch and os.epoch("utc") or 0
+    }
+    ctx.kernel.log.write("info","apphostd","deployment started",{
+      app=name,files=deployments[name].expectedFiles,bytes=deployments[name].expectedBytes,
+      version=msg.version
+    },ctx.process.pid)
+    return true
+  end
+
+  local function deploy_file_begin(msg)
+    local name=safe_app(msg.app)
+    local rel=safe_rel(msg.path)
+    local d=name and deployments[name] or nil
+    if not d then return nil,"no active deployment" end
+    if not rel then return nil,"invalid file path" end
+
+    local path=host(stage_root(name).."/"..rel)
+    ensure(fs.getDir(path))
+    if fs.exists(path) then fs.delete(path) end
+    local h,err=fs.open(path,"w")
+    if not h then return nil,err or "cannot create file" end
+    h.close()
+
+    d.currentFile=rel
+    d.currentExpected=tonumber(msg.size) or 0
+    d.currentReceived=0
+    return true
+  end
+
+  local function deploy_chunk(msg)
+    local name=safe_app(msg.app)
+    local rel=safe_rel(msg.path)
+    local d=name and deployments[name] or nil
+    if not d then return nil,"no active deployment" end
+    if not rel or rel~=d.currentFile then return nil,"unexpected file chunk" end
+    if type(msg.data)~="string" then return nil,"invalid chunk" end
+
+    local path=host(stage_root(name).."/"..rel)
+    local h,err=fs.open(path,"a")
+    if not h then return nil,err or "cannot append file" end
+    h.write(msg.data)
+    h.close()
+
+    d.currentReceived=d.currentReceived+#msg.data
+    d.receivedBytes=d.receivedBytes+#msg.data
+    return true,d.currentReceived
+  end
+
+  local function deploy_file_end(msg)
+    local name=safe_app(msg.app)
+    local rel=safe_rel(msg.path)
+    local d=name and deployments[name] or nil
+    if not d then return nil,"no active deployment" end
+    if not rel or rel~=d.currentFile then return nil,"unexpected file completion" end
+
+    local path=host(stage_root(name).."/"..rel)
+    local size=fs.exists(path) and fs.getSize(path) or -1
+    if size~=d.currentExpected then
+      return nil,("size mismatch for %s: got %d expected %d"):format(rel,size,d.currentExpected)
+    end
+
+    d.receivedFiles=d.receivedFiles+1
+    d.currentFile=nil
+    d.currentExpected=0
+    d.currentReceived=0
+    return true
+  end
+
+  local function deploy_abort(name,reason)
+    name=safe_app(name)
+    if not name then return nil,"invalid app name" end
+    local stage=host(stage_root(name))
+    if fs.exists(stage) then fs.delete(stage) end
+    deployments[name]=nil
+    ctx.kernel.log.write("warning","apphostd","deployment aborted",{app=name,reason=reason},ctx.process.pid)
+    return true
+  end
+
+  local function deploy_commit(msg)
+    local name=safe_app(msg.app)
+    local d=name and deployments[name] or nil
+    if not d then return nil,"no active deployment" end
+    if d.currentFile then return nil,"file transfer still active: "..d.currentFile end
+    if d.receivedFiles~=d.expectedFiles then
+      return nil,("file count mismatch: got %d expected %d"):format(d.receivedFiles,d.expectedFiles)
+    end
+    if d.receivedBytes~=d.expectedBytes then
+      return nil,("byte count mismatch: got %d expected %d"):format(d.receivedBytes,d.expectedBytes)
+    end
+
+    local stage=host(stage_root(name))
+    if not fs.exists(fs.combine(stage,"app.lua")) then return nil,"deployment missing app.lua" end
+
+    stop_app(name)
+    local target=host(app_root(name))
+    local backup=host(backup_root(name))
+    if fs.exists(backup) then fs.delete(backup) end
+    if fs.exists(target) then
+      ensure(fs.getDir(backup))
+      fs.move(target,backup)
+    end
+    fs.move(stage,target)
+
+    local meta={
+      schema=1,app=name,version=d.version,commit=d.commit,
+      files=d.receivedFiles,bytes=d.receivedBytes,
+      deployed_at=os.epoch and os.epoch("utc") or 0,
+      deployed_by=managerId
+    }
+    write_json(app_root(name).."/.deployment.json",meta)
+
+    deployments[name]=nil
+    local pid=nil
+    if d.autostart then
+      local ok,res=start_app(name)
+      if not ok then
+        ctx.kernel.log.write("error","apphostd","deployment committed but autostart failed",{app=name,error=res},ctx.process.pid)
+        return nil,"deployed but autostart failed: "..tostring(res)
+      end
+      pid=res
+    end
+
+    ctx.kernel.log.write("info","apphostd","deployment committed",{
+      app=name,version=d.version,files=d.receivedFiles,bytes=d.receivedBytes,pid=pid
+    },ctx.process.pid)
+    return true,pid
+  end
+
+  local function rollback_app(name)
+    name=safe_app(name)
+    if not name then return nil,"invalid app name" end
+    local backup=host(backup_root(name))
+    if not fs.exists(backup) then return nil,"no rollback version available" end
+    stop_app(name)
+    local target=host(app_root(name))
+    if fs.exists(target) then fs.delete(target) end
+    fs.move(backup,target)
+    ctx.kernel.log.write("warning","apphostd","app rolled back",{app=name},ctx.process.pid)
+    return true
+  end
+
+  local function remove_app(name)
+    name=safe_app(name)
+    if not name then return nil,"invalid app name" end
+    stop_app(name)
+    local target=host(app_root(name))
+    if not fs.exists(target) then return nil,"app not installed" end
+    local backup=host(backup_root(name))
+    if fs.exists(backup) then fs.delete(backup) end
+    ensure(fs.getDir(backup))
+    fs.move(target,backup)
+    ctx.kernel.log.write("warning","apphostd","app removed to rollback storage",{app=name},ctx.process.pid)
     return true
   end
 
@@ -174,10 +419,60 @@ return function(ctx)
       return
     end
 
+    if msg.op=="deploy_begin" then
+      local ok,err=deploy_begin(msg)
+      reply(sender,{protocol=protocol,op=msg.op,ok=ok==true,error=err})
+      return
+    end
+
+    if msg.op=="deploy_file_begin" then
+      local ok,err=deploy_file_begin(msg)
+      reply(sender,{protocol=protocol,op=msg.op,ok=ok==true,error=err})
+      return
+    end
+
+    if msg.op=="deploy_chunk" then
+      local ok,res=deploy_chunk(msg)
+      reply(sender,{protocol=protocol,op=msg.op,ok=ok==true,error=ok and nil or res,received=ok and res or nil})
+      return
+    end
+
+    if msg.op=="deploy_file_end" then
+      local ok,err=deploy_file_end(msg)
+      reply(sender,{protocol=protocol,op=msg.op,ok=ok==true,error=err})
+      return
+    end
+
+    if msg.op=="deploy_commit" then
+      local ok,res=deploy_commit(msg)
+      reply(sender,{protocol=protocol,op=msg.op,ok=ok==true,error=ok and nil or res,pid=ok and res or nil,state=state()})
+      return
+    end
+
+    if msg.op=="deploy_abort" then
+      local ok,err=deploy_abort(msg.app,msg.reason)
+      reply(sender,{protocol=protocol,op=msg.op,ok=ok==true,error=err})
+      return
+    end
+
+    if msg.op=="rollback" then
+      local ok,err=rollback_app(msg.app)
+      reply(sender,{protocol=protocol,op=msg.op,ok=ok==true,error=err,state=state()})
+      return
+    end
+
+    if msg.op=="remove" then
+      local ok,err=remove_app(msg.app)
+      reply(sender,{protocol=protocol,op=msg.op,ok=ok==true,error=err,state=state()})
+      return
+    end
+
     reply(sender,{protocol=protocol,op=msg.op,ok=false,error="unknown operation"})
   end
 
   ensure(root)
+  ensure(stagingRoot)
+  ensure(backupRoot)
   ensure("/var/lib/cclua")
   net.open_management_modems()
   ctx.unit.details={protocol=protocol,manager_id=managerId,root=root}

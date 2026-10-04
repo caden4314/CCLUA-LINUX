@@ -7,6 +7,7 @@ local function usage()
   print("  cclua-lightctl status")
   print("  cclua-lightctl discover")
   print("  cclua-lightctl on|off")
+  print("  cclua-lightctl animate")
   print("  cclua-lightctl set <relay> <on|off> [side]")
 end
 
@@ -23,6 +24,10 @@ local function print_state(state)
   print(("Healthy: %s   Desired: %s   Relays: %s"):format(
     tostring(state.healthy),state.desired_on and "ON" or "OFF",state.relay_count or 0
   ))
+  if state.lever_enabled then
+    print(("Lever: %s = %s"):format(state.lever_side or "-",state.lever_input and "ON" or "OFF"))
+  end
+  if state.animation_active then print("Animation: active") end
   if state.error then print("Error: "..tostring(state.error)) end
   for _,r in ipairs(state.relays or {}) do
     local active={}
@@ -46,6 +51,9 @@ return {main=function(ctx,args)
   elseif cmd=="on" or cmd=="off" then
     msg.op="all"
     msg.value=cmd=="on"
+  elseif cmd=="animate" then
+    msg.op="animate"
+    msg.name=args[2] or "quick"
   elseif cmd=="set" then
     if not args[2] or not args[3] then usage();return 1 end
     local v=bool(args[3])
@@ -58,7 +66,7 @@ return {main=function(ctx,args)
   net.open_management_modems()
   local ok=rednet.send(target,msg,protocol)
   if not ok then print("Unable to send to lighting controller ID "..target);return 1 end
-  local sender,res=rednet.receive(protocol,3)
+  local sender,res=rednet.receive(protocol,4)
   if not sender then print("Lighting controller did not respond.");return 1 end
   if sender~=target then print("Unexpected response from ID "..tostring(sender));return 1 end
   if type(res)~="table" then print("Invalid response.");return 1 end

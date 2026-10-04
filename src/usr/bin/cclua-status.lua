@@ -41,6 +41,14 @@ return {main=function(ctx,args)
     status.lamp_side or machine.status_light_side or "bottom",
     status.lamp_output and "ON" or "OFF"
   ))
+  if tonumber(status.error_code or 0)>0 then
+    print(("Fault code:  %s (%s)"):format(
+      tostring(status.error_code),
+      tostring(status.error_reason or "unspecified")
+    ))
+  else
+    print("Fault code:  none")
+  end
 
   if failed>0 then
     print("")

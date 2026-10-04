@@ -96,6 +96,7 @@ local function builtin(ctx,args)
     print("Builtins: cd pwd export clear exit help")
     print("Useful:   ls cat cp mv rm mkdir grep find ps kill")
     print("Admin:    cclua-status systemctl journalctl dmesg peripherals ip ping hostnamectl")
+    print("Fleet:    cclua-managerctl cclua-lightctl cclua-appctl")
     print("Packages: apt dpkg")
     return true,0
   end

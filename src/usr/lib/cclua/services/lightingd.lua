@@ -10,6 +10,21 @@ return function(ctx)
   local relays={}
   local desired=settings.default_on~=false
   local lastError=nil
+  local leverSide=settings.lever_side or "front"
+  local leverEnabled=settings.lever_enabled~=false
+  local lastLever=nil
+  local animationActive=false
+
+  local function pause(ms)
+    local wake=(os.epoch and os.epoch("utc") or 0)+(tonumber(ms) or 0)
+    coroutine.yield("sleep",wake)
+  end
+
+  local function reload_settings()
+    settings=config.read_json("/etc/cclua/lighting.json",settings or {})
+    leverSide=settings.lever_side or "front"
+    leverEnabled=settings.lever_enabled~=false
+  end
 
   local function relay_id(name)
     return tonumber(tostring(name):match("_(%d+)$")) or 99999
@@ -52,7 +67,7 @@ return function(ctx)
     return true
   end
 
-  local function set_all(value)
+  local function set_all(value,source)
     discover()
     local errors={}
     for _,name in ipairs(relays) do
@@ -61,7 +76,39 @@ return function(ctx)
     end
     desired=value==true
     lastError=#errors>0 and table.concat(errors,"; ") or nil
+    ctx.kernel.log.write(
+      #errors==0 and "info" or "error",
+      "lightingd",
+      "lighting state "..(desired and "ON" or "OFF"),
+      {source=source or "service",relay_count=#relays,error=lastError},
+      ctx.process.pid
+    )
     return #errors==0,lastError
+  end
+
+  local function read_lever()
+    if not leverEnabled then return nil end
+    local ok,v=pcall(redstone.getInput,leverSide)
+    if not ok then
+      lastError="lever read failed: "..tostring(v)
+      return nil
+    end
+    return v==true
+  end
+
+  local function sync_lever(force)
+    local v=read_lever()
+    if v==nil then return false end
+    if force or lastLever==nil or v~=lastLever then
+      local previous=lastLever
+      lastLever=v
+      if not animationActive then set_all(v,"lever:"..leverSide) end
+      ctx.kernel.log.write("info","lightingd","local lighting lever changed",{
+        side=leverSide,value=v,previous=previous
+      },ctx.process.pid)
+      return true
+    end
+    return false
   end
 
   local function relay_state(name)
@@ -76,10 +123,7 @@ return function(ctx)
     return {name=name,id=relay_id(name),outputs=outputs}
   end
 
-  local function snapshot()
-    discover()
-    local items={}
-    for _,name in ipairs(relays) do items[#items+1]=relay_state(name) end
+  local function expected_state()
     local expected=settings.expected_relays or {}
     local present={}
     for _,name in ipairs(relays) do present[name]=true end
@@ -87,8 +131,18 @@ return function(ctx)
     for _,name in ipairs(expected) do
       if not present[name] then missing[#missing+1]=name end
     end
+    return expected,missing
+  end
+
+  local function snapshot()
+    reload_settings()
+    discover()
+    local items={}
+    for _,name in ipairs(relays) do items[#items+1]=relay_state(name) end
+    local expected,missing=expected_state()
+    local lever=read_lever()
     local state={
-      schema=1,
+      schema=2,
       hostname=machine.hostname,
       computer_id=os.getComputerID(),
       role=machine.role,
@@ -97,6 +151,10 @@ return function(ctx)
       relays=items,
       expected_relays=expected,
       missing_relays=missing,
+      lever_enabled=leverEnabled,
+      lever_side=leverSide,
+      lever_input=lever,
+      animation_active=animationActive,
       healthy=(#relays>0 and #missing==0 and lastError==nil),
       error=lastError,
       timestamp=os.epoch and os.epoch("utc") or 0
@@ -131,6 +189,40 @@ return function(ctx)
     },managerProtocol)
   end
 
+  local function animate_quick()
+    if animationActive then return nil,"animation already running" end
+    discover()
+    if #relays==0 then return nil,"no relays discovered" end
+
+    animationActive=true
+    local restore=desired
+    local step=tonumber(settings.animation_step_ms) or 70
+
+    ctx.kernel.log.write("info","lightingd","quick lighting animation started",{
+      relays=#relays,step_ms=step,restore=restore
+    },ctx.process.pid)
+
+    for _,name in ipairs(relays) do set_relay(name,false) end
+    pause(80)
+
+    for _,name in ipairs(relays) do
+      set_relay(name,true)
+      pause(step)
+      set_relay(name,false)
+    end
+
+    for _,name in ipairs(relays) do set_relay(name,true) end
+    pause(120)
+    for _,name in ipairs(relays) do set_relay(name,restore) end
+
+    animationActive=false
+    sync_lever(false)
+    ctx.kernel.log.write("info","lightingd","quick lighting animation complete",{
+      restored=desired
+    },ctx.process.pid)
+    return true
+  end
+
   local function reply(id,msg)
     rednet.send(id,msg,protocol)
   end
@@ -148,23 +240,23 @@ return function(ctx)
     end
 
     if msg.op=="all" then
-      local ok,err=set_all(msg.value==true)
-      local state=snapshot()
-      ctx.kernel.log.write(ok and "info" or "error","lightingd","all lights "..(msg.value and "on" or "off"),{
-        sender=sender,relay_count=#relays,error=err
-      },ctx.process.pid)
-      reply(sender,{protocol=protocol,op="all",ok=ok,error=err,state=state})
+      local ok,err=set_all(msg.value==true,"network:"..tostring(sender))
+      reply(sender,{protocol=protocol,op="all",ok=ok,error=err,state=snapshot()})
       return
     end
 
     if msg.op=="set" then
       local ok,err=set_relay(msg.relay,msg.value==true,msg.side)
-      if ok then desired=msg.value==true end
-      local state=snapshot()
       ctx.kernel.log.write(ok and "info" or "error","lightingd","relay command",{
         sender=sender,relay=msg.relay,side=msg.side,value=msg.value,error=err
       },ctx.process.pid)
-      reply(sender,{protocol=protocol,op="set",ok=ok,error=err,state=state})
+      reply(sender,{protocol=protocol,op="set",ok=ok,error=err,state=snapshot()})
+      return
+    end
+
+    if msg.op=="animate" then
+      local ok,err=animate_quick()
+      reply(sender,{protocol=protocol,op="animate",ok=ok==true,error=err,state=snapshot()})
       return
     end
 
@@ -172,36 +264,42 @@ return function(ctx)
   end
 
   local opened=net.open_management_modems()
-  ctx.unit.details={protocol=protocol,manager_id=managerId,management_modems=opened}
+  ctx.unit.details={
+    protocol=protocol,manager_id=managerId,management_modems=opened,
+    lever_side=leverSide
+  }
   ctx.kernel.log.write("info","lightingd","lighting controller online",ctx.unit.details,ctx.process.pid)
 
   discover()
-  if #relays>0 then
-    local ok,err=set_all(desired)
-    ctx.kernel.log.write(ok and "info" or "error","lightingd","initial lighting state applied",{
-      desired_on=desired,relays=relays,error=err
-    },ctx.process.pid)
+  reload_settings()
+  local lever=read_lever()
+  if leverEnabled and lever~=nil then
+    lastLever=lever
+    set_all(lever,"lever-initial:"..leverSide)
+  elseif #relays>0 then
+    set_all(desired,"configured-default")
   else
     lastError="no redstone relays discovered"
     ctx.kernel.log.write("warning","lightingd",lastError,nil,ctx.process.pid)
   end
   heartbeat()
 
-  local timer=os.startTimer(5)
+  local timer=os.startTimer(1)
   while true do
     local ev,a,b,c=coroutine.yield("wait_event")
     if ev=="timer" and a==timer then
-      if #relays==0 then
-        discover()
-        if #relays>0 then set_all(desired) end
-      end
+      reload_settings()
+      sync_lever(false)
       heartbeat()
-      timer=os.startTimer(5)
+      timer=os.startTimer(2)
+    elseif ev=="redstone" then
+      sync_lever(false)
+      heartbeat()
     elseif ev=="rednet_message" and c==protocol then
       handle(a,b)
     elseif ev=="peripheral" or ev=="peripheral_detach" then
       discover()
-      if #relays>0 then set_all(desired) end
+      if #relays>0 and not animationActive then set_all(desired,"peripheral-change") end
       heartbeat()
     end
   end
