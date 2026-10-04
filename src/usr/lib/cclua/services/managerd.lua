@@ -9,6 +9,8 @@ return function(ctx)
     root="/var/lib/cclua/github",
     protocol="cclua-manager-v1",
     fleetProtocol="cclua-fleet-v1",
+    adminProtocol="cclua-admin-v1",
+    controlProtocol="cclua-control-v1",
     pollSeconds=math.max(10,tonumber(machine.github_poll_seconds) or 10),
     -- Change notifications are sent immediately. This is only the idle
     -- heartbeat/recovery broadcast, so keep it deliberately low-frequency.
@@ -727,6 +729,155 @@ return function(ctx)
     end
   end
 
+  local function adminAllowed(sender)
+    if tonumber(sender)==os.getComputerID() then return true end
+
+    if type(machine.admin_client_ids)=="table" then
+      for _,id in ipairs(machine.admin_client_ids) do
+        if tonumber(id)==tonumber(sender) then return true end
+      end
+    end
+
+    local node=runtime.nodes[tonumber(sender)]
+    local role=tostring(node and (node.role or (node.status and node.status.role)) or "")
+    return role=="desktop-client" or role=="admin-client"
+  end
+
+  local function roleTarget(role,fallback)
+    for id,node in pairs(runtime.nodes) do
+      local r=tostring(node.role or (node.status and node.status.role) or "")
+      if r==role then return tonumber(id) end
+    end
+    return tonumber(fallback)
+  end
+
+  local function proxyRpc(target,protocol,payload,timeout)
+    target=tonumber(target)
+    if not target then return nil,"invalid target" end
+    payload=payload or {}
+    payload.protocol=protocol
+
+    local sent=rednet.send(target,payload,protocol)
+    if not sent then return nil,"unable to send to target "..tostring(target) end
+
+    local timer=os.startTimer(tonumber(timeout) or 2)
+    while true do
+      local ev,a,b,c=coroutine.yield("wait_event",{"rednet_message","timer"})
+      if ev=="timer" and a==timer then
+        return nil,"target "..tostring(target).." timed out"
+      elseif ev=="rednet_message" then
+        if a==target and c==protocol and type(b)=="table" then
+          if os.cancelTimer then pcall(os.cancelTimer,timer) end
+          return b
+        elseif c==CFG.protocol then
+          serve(a,b)
+        elseif c==CFG.fleetProtocol then
+          serveFleet(a,b)
+        end
+      end
+    end
+  end
+
+  local function adminReply(sender,op,ok,data,err)
+    rednet.send(sender,{
+      protocol=CFG.adminProtocol,
+      op=op,
+      ok=ok==true,
+      data=data,
+      error=err
+    },CFG.adminProtocol)
+  end
+
+  local function serveAdmin(sender,msg)
+    if type(msg)~="table" or msg.protocol~=CFG.adminProtocol then return end
+
+    if not adminAllowed(sender) then
+      ctx.kernel.log.write("warning","managerd","rejected admin request",{
+        sender=sender,op=msg.op
+      },ctx.process.pid)
+      adminReply(sender,msg.op,false,nil,"admin client is not authorized")
+      return
+    end
+
+    local op=tostring(msg.op or "")
+    ctx.kernel.log.write("info","managerd","admin request",{
+      sender=sender,op=op,target=msg.target
+    },ctx.process.pid)
+
+    if op=="snapshot" then
+      adminReply(sender,op,true,{
+        manager=managerStatus(),
+        fleet=fleetSnapshot(),
+        capabilities={
+          lighting=true,gps=true,node_control=true,
+          service_control=true,peripherals=true
+        }
+      })
+      return
+    end
+
+    if op=="lighting" then
+      local cmd=type(msg.command)=="table" and msg.command or {}
+      local allowed={
+        status=true,discover=true,rooms=true,room_status=true,
+        all=true,set=true,room_set=true,animate=true,room_animate=true
+      }
+      if not allowed[tostring(cmd.op)] then
+        adminReply(sender,op,false,nil,"lighting operation not allowed")
+        return
+      end
+      local target=roleTarget("lighting-controller",machine.lighting_controller_id or 3)
+      local res,err=proxyRpc(target,"cclua-lighting-v1",cmd,3)
+      adminReply(sender,op,res~=nil,res,err)
+      return
+    end
+
+    if op=="gps" then
+      local cmd=type(msg.command)=="table" and msg.command or {op="status"}
+      if tostring(cmd.op)~="status" then
+        adminReply(sender,op,false,nil,"GPS operation not allowed")
+        return
+      end
+      local target=roleTarget("gps-control",machine.gps_control_id or 14)
+      local res,err=proxyRpc(target,"cclua-gps-v1",cmd,3)
+      adminReply(sender,op,res~=nil,res,err)
+      return
+    end
+
+    if op=="node" then
+      local target=tonumber(msg.target)
+      if not target then
+        adminReply(sender,op,false,nil,"node target required")
+        return
+      end
+      if target==os.getComputerID() then
+        adminReply(sender,op,false,nil,"manager self-control is disabled from remote admin")
+        return
+      end
+
+      local action=tostring(msg.action or "status")
+      local cmd={op=action}
+      if action=="service" then
+        local serviceAction=tostring(msg.service_action or "")
+        if serviceAction~="start" and serviceAction~="stop" and serviceAction~="restart" then
+          adminReply(sender,op,false,nil,"invalid service action")
+          return
+        end
+        cmd.action=serviceAction
+        cmd.service=tostring(msg.service or "")
+      elseif action~="status" and action~="reboot" and action~="shutdown" then
+        adminReply(sender,op,false,nil,"node operation not allowed")
+        return
+      end
+
+      local res,err=proxyRpc(target,CFG.controlProtocol,cmd,3)
+      adminReply(sender,op,res~=nil,res,err)
+      return
+    end
+
+    adminReply(sender,op,false,nil,"unknown admin operation")
+  end
+
   local function maybeActivate(state,changed)
     if not changed then return end
     local image=state.imageCommit or state.commit
@@ -850,6 +1001,8 @@ return function(ctx)
       serve(a,b)
     elseif ev=="rednet_message" and c==CFG.fleetProtocol then
       serveFleet(a,b)
+    elseif ev=="rednet_message" and c==CFG.adminProtocol then
+      serveAdmin(a,b)
     elseif ev=="cclua_manager_sync" then
       local nextState,didChange=sync(a==true)
       if nextState then maybeActivate(nextState,didChange==true) end

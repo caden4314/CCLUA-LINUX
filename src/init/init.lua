@@ -53,6 +53,12 @@ local function register_services()
     enabled=true,
     exec=load_service("/usr/lib/cclua/services/statusd.lua")
   }
+  k.services:register{
+    name="cclua-controld.service",
+    description="CCLUA authenticated fleet node control service",
+    enabled=true,
+    exec=load_service("/usr/lib/cclua/services/controld.lua")
+  }
   local config=dofile("/usr/lib/cclua/config.lua")
   local machine=config.machine()
   local managerRole=machine.role=="manager" or machine.role=="network-manager"

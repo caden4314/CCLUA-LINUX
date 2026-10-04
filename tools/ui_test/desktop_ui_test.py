@@ -141,7 +141,8 @@ function colors.toBlit(c)
 end
 
 keys={escape=256,backspace=259,tab=258,enter=257,left=263,right=262,down=264,up=265,
-      q=81,t=84,leftCtrl=341,rightCtrl=345,leftAlt=342,rightAlt=346}
+      space=32,a=65,b=66,c=67,f=70,n=78,o=79,p=80,q=81,r=82,s=83,t=84,x=88,
+      leftCtrl=341,rightCtrl=345,leftAlt=342,rightAlt=346}
 ''')
 
         def next_timer(_seconds=0):
@@ -225,7 +226,10 @@ end
         process = self.lua.table()
         process["all"] = self.lua.eval("function() return {{pid=1},{pid=2},{pid=100}} end")
         kernel["process"] = process
-        kernel["device"] = self.lua.table_from({"devices": self.lua.table()})
+        device = self.lua.table()
+        device["devices"] = self.lua.table()
+        device["list"] = self.lua.eval("function(_) return {} end")
+        kernel["device"] = device
         kernel["exec"] = self.lua.table_from({
             "resolve": self.lua.eval("function(_) return nil end"),
             "load": self.lua.eval("function(_) return nil,'not available in preview' end"),
@@ -304,12 +308,14 @@ def main():
         ("02_files","Files",[("mouse_click",1,2,5)]),
         ("03_editor","Text Editor",[("mouse_click",1,2,7)]),
         ("04_monitor","System Monitor",[("mouse_click",1,2,9)]),
-        ("05_settings","Settings",[("mouse_click",1,2,11)]),
-        ("06_software_search","Software search",[
-            ("mouse_click",1,2,13),
+        ("05_devices","Devices",[("mouse_click",1,2,11)]),
+        ("06_control","Control Center",[("mouse_click",1,2,13)]),
+        ("07_settings","Settings",[("mouse_click",1,2,15)]),
+        ("08_software_search","Software search",[
+            ("mouse_click",1,2,17),
             *[("char",c) for c in "gnome"],
         ]),
-        ("07_terminal_maximized","Maximized Terminal",[
+        ("09_terminal_maximized","Maximized Terminal",[
             ("mouse_click",1,2,3),
             ("mouse_click",1,43,3),
         ]),

@@ -4,6 +4,8 @@ local Terminal=dofile("/usr/lib/cclua/desktop/apps/terminal.lua")
 local Files=dofile("/usr/lib/cclua/desktop/apps/files.lua")
 local Editor=dofile("/usr/lib/cclua/desktop/apps/editor.lua")
 local Monitor=dofile("/usr/lib/cclua/desktop/apps/monitor.lua")
+local Devices=dofile("/usr/lib/cclua/desktop/apps/devices.lua")
+local Control=dofile("/usr/lib/cclua/desktop/apps/control.lua")
 local System=dofile("/usr/lib/cclua/desktop/apps/system.lua")
 local Packages=dofile("/usr/lib/cclua/desktop/apps/packages.lua")
 
@@ -14,10 +16,12 @@ local APP={
   files={title="Files",icon="[]",color=colors.cyan,mod=Files},
   editor={title="Text Editor",icon="Ed",color=colors.lime,mod=Editor},
   monitor={title="System Monitor",icon="Mo",color=colors.yellow,mod=Monitor},
+  devices={title="Devices",icon="Dv",color=colors.cyan,mod=Devices},
+  control={title="Control Center",icon="CC",color=colors.orange,mod=Control},
   system={title="Settings",icon="St",color=colors.lightGray,mod=System},
   packages={title="Software",icon="SW",color=colors.magenta,mod=Packages},
 }
-local ORDER={"terminal","files","editor","monitor","system","packages"}
+local ORDER={"terminal","files","editor","monitor","devices","control","system","packages"}
 local SESSION_PATH="home/caden/.config/cclua-desktop/session.json"
 
 local function tune_palette()
@@ -288,7 +292,7 @@ function M.run(ctx)
 
     local cards={}
     local cardW=math.max(14,math.floor((W-7)/2))
-    local cardH=3
+    local cardH=2
     for i,name in ipairs(filtered) do
       local spec=APP[name]
       local col=(i-1)%2
@@ -299,11 +303,10 @@ function M.run(ctx)
         local x2=math.min(W-1,x+cardW-1)
         ui.fill(x,y,x2,y+cardH-1,colors.gray,colors.white)
         ui.text(x+1,y,spec.icon,spec.color,colors.gray)
-        ui.center(y+1,spec.title,colors.white,colors.gray,x,x2)
+        ui.text(x+4,y,spec.title:sub(1,math.max(1,x2-x-4)),colors.white,colors.gray)
         local running=app_running(name)
-        if running then
-          ui.center(y+2,running.minimized and "minimized" or "running",colors.lime,colors.gray,x,x2)
-        end
+        ui.center(y+1,running and (running.minimized and "minimized" or "running") or "launch",
+          running and colors.lime or colors.lightGray,colors.gray,x,x2)
         cards[#cards+1]={name=name,x1=x,x2=x2,y1=y,y2=y+cardH-1}
       end
     end
