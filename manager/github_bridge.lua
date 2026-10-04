@@ -1,4 +1,5 @@
 -- CCLUA-LINUX network manager / GitHub bridge
+-- migration-trigger-native-manager: Ubuntu managerd cutover
 -- LINUX_NETWORK: GitHub authority, A/B source cache, fleet dashboard and status lamp.
 
 local M = {}
