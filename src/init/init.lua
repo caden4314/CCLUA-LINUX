@@ -54,6 +54,12 @@ local function register_services()
     exec=load_service("/usr/lib/cclua/services/statusd.lua")
   }
   k.services:register{
+    name="cclua-update-agent.service",
+    description="CCLUA manager discovery and update status agent",
+    enabled=true,
+    exec=load_service("/usr/lib/cclua/services/update-agent.lua")
+  }
+  k.services:register{
     name="dashboard.service",
     description="CCLUA monitor statistics dashboard",
     enabled=true,
