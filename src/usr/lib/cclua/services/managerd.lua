@@ -8,7 +8,7 @@ return function(ctx)
     ref=machine.github_ref or machine.channel_ref or "main",
     root="/var/lib/cclua/github",
     protocol="cclua-manager-v1",
-    pollSeconds=tonumber(machine.github_poll_seconds) or 10,
+    pollSeconds=tonumber(machine.github_poll_seconds) or 5,
     announceSeconds=tonumber(machine.update_announce_seconds) or 2,
   }
 
@@ -20,6 +20,9 @@ return function(ctx)
     delta={added=0,changed=0,removed=0,unchanged=0},
     downloadedBytes=0,
     nodes={},
+    pendingRebootCommit=nil,
+    rebootEarliest=nil,
+    rebootDeadline=nil,
   }
 
   local function join(a,b)
@@ -568,22 +571,74 @@ return function(ctx)
     end
     if machine.auto_apply_updates==false then return end
 
+    local now=os.epoch and os.epoch("utc") or 0
     config.write_json("/var/lib/cclua/boot.json",{
       schema=1,
       pending=true,
       pending_slot=state.activeSlot,
-      pending_commit=state.imageCommit or state.commit,
-      requested_at=os.epoch and os.epoch("utc") or 0,
+      pending_commit=image,
+      requested_at=now,
     })
-    runtime.currentAction="REBOOT"
-    runtime.currentFile="activating staged Ubuntu Server image"
+
+    runtime.pendingRebootCommit=image
+    runtime.rebootEarliest=now+(tonumber(machine.manager_reboot_min_ms) or 1500)
+    runtime.rebootDeadline=now+(tonumber(machine.manager_reboot_max_ms) or 12000)
+    runtime.currentAction="SERVE"
+    runtime.currentFile="waiting for node staging"
     setRuntime("ACTIVATING")
-    ctx.kernel.log.write("info","managerd","staged image ready; rebooting for activation",{
-      commit=state.imageCommit or state.commit,slot=state.activeSlot
+    ctx.kernel.log.write("info","managerd","staged manager image; serving nodes before reboot",{
+      commit=image,slot=state.activeSlot,
+      earliest=runtime.rebootEarliest,deadline=runtime.rebootDeadline
     },ctx.process.pid)
-    local wake=(os.epoch and os.epoch("utc") or 0)+2000
-    coroutine.yield("sleep",wake)
-    os.reboot()
+    announceImage("manager-activation-pending")
+  end
+
+  local function nodesReadyFor(commit)
+    local now=os.epoch and os.epoch("utc") or 0
+    local online,ready=0,0
+    for _,node in pairs(runtime.nodes) do
+      local age=now-(node.last_seen or 0)
+      if age<10000 and node.id~=os.getComputerID() then
+        online=online+1
+        local st=node.status or {}
+        local upd=st.update or {}
+        local current=tostring(st.current_commit or upd.current_commit or "")
+        local target=tostring(upd.target_commit or upd.available_commit or "")
+        local phase=tostring(upd.state or "")
+        local ok=current==commit
+          or (target==commit and (phase=="READY" or phase=="ACTIVATING" or phase=="CURRENT"))
+        if ok then ready=ready+1 end
+      end
+    end
+    return online==0 or ready>=online,online,ready
+  end
+
+  local function checkManagerActivation()
+    if not runtime.pendingRebootCommit then return false end
+    local now=os.epoch and os.epoch("utc") or 0
+    local ready,online,readyCount=nodesReadyFor(runtime.pendingRebootCommit)
+    local deadline=runtime.rebootDeadline and now>=runtime.rebootDeadline
+    local earliest=runtime.rebootEarliest and now>=runtime.rebootEarliest
+
+    runtime.currentAction="SERVE"
+    runtime.currentFile=("nodes staged %d/%d"):format(readyCount,online)
+    writeRuntime()
+    writeUpdateState("ACTIVATING",{
+      node_ready=readyCount,node_online=online,
+      pending_commit=runtime.pendingRebootCommit
+    })
+
+    if (earliest and ready) or deadline then
+      ctx.kernel.log.write("info","managerd","node staging complete; rebooting manager",{
+        commit=runtime.pendingRebootCommit,online=online,ready=readyCount,deadline=deadline
+      },ctx.process.pid)
+      runtime.currentAction="REBOOT"
+      runtime.currentFile=deadline and "activation deadline reached" or "all online nodes staged"
+      writeRuntime()
+      os.reboot()
+      return true
+    end
+    return false
   end
 
   local opened=openModems()
@@ -598,18 +653,26 @@ return function(ctx)
 
   local poll=os.startTimer(CFG.pollSeconds)
   local announce=os.startTimer(CFG.announceSeconds)
+  local activation=os.startTimer(0.5)
   while true do
     local ev,a,b,c=coroutine.yield("wait_event")
     if ev=="timer" and a==poll then
-      local nextState,didChange=sync(false)
-      if nextState then
-        announceImage(didChange and "github-update" or "poll")
-        maybeActivate(nextState,didChange==true)
+      if runtime.pendingRebootCommit then
+        announceImage("activation-pending")
+      else
+        local nextState,didChange=sync(false)
+        if nextState then
+          announceImage(didChange and "github-update" or "poll")
+          maybeActivate(nextState,didChange==true)
+        end
       end
       poll=os.startTimer(CFG.pollSeconds)
     elseif ev=="timer" and a==announce then
-      announceImage("heartbeat")
+      announceImage(runtime.pendingRebootCommit and "activation-pending" or "heartbeat")
       announce=os.startTimer(CFG.announceSeconds)
+    elseif ev=="timer" and a==activation then
+      checkManagerActivation()
+      activation=os.startTimer(0.5)
     elseif ev=="rednet_message" and c==CFG.protocol then
       serve(a,b)
     elseif ev=="cclua_manager_sync" then
