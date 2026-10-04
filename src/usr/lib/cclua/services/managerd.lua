@@ -555,7 +555,7 @@ return function(ctx)
         return
       end
       local offset=math.max(0,tonumber(msg.offset) or 0)
-      local size=math.max(1,math.min(6000,tonumber(msg.size) or 6000))
+      local size=math.max(1,math.min(12000,tonumber(msg.size) or 12000))
       local chunk=data:sub(offset+1,offset+size)
       local nextOffset=offset+#chunk
       rednet.send(sender,{

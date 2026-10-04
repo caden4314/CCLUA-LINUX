@@ -7,18 +7,25 @@ return function(ctx)
   local pollSeconds=tonumber(machine.update_poll_seconds) or 3
   local pollJitter=(os.getComputerID()%7)*0.11
   local autoApply=machine.auto_apply_updates~=false
+  local stageSpreadSeconds=tonumber(machine.update_stage_spread_seconds) or 18
+  local statusTimeout=tonumber(machine.update_status_timeout_seconds) or 5
+  local manifestTimeout=tonumber(machine.update_manifest_timeout_seconds) or 10
+  local transferTimeout=tonumber(machine.update_transfer_timeout_seconds) or 12
+  local retryBaseSeconds=tonumber(machine.update_retry_base_seconds) or 4
   local ROOT="/var/lib/cclua/node-update"
   local STATE=ROOT.."/state.json"
   local INSTALLED_MANIFEST=ROOT.."/installed-manifest.json"
   local runtime={
     state="BOOTING",progress=0,total=0,currentAction=nil,currentFile=nil,
     targetCommit=nil,lastError=nil,lastResult=nil,delta={added=0,changed=0,removed=0,unchanged=0},
-    downloadedBytes=0,startedAt=nil
+    downloadedBytes=0,startedAt=nil,
+    stageTarget=nil,stageAt=nil,stageFailures=0,retryAt=nil
   }
   local lastManager=nil
   local consecutiveManagerFailures=0
   local managerFailureThreshold=tonumber(machine.manager_failure_threshold) or 3
 
+  local function now_ms() return os.epoch and os.epoch("utc") or 0 end
   local function host(path) return tostring(path):gsub("^/","") end
 
   local function ensure(path)
@@ -193,7 +200,7 @@ return function(ctx)
   local function request_status()
     local res,err=rpc({
       op="status",hostname=machine.hostname,role=machine.role,status=node_status()
-    },3)
+    },statusTimeout)
     if not res then return nil,err end
     if type(res.status)=="table" then
       lastManager=res.status
@@ -203,7 +210,7 @@ return function(ctx)
   end
 
   local function fetch_manifest()
-    local res,err=rpc({op="manifest"},4)
+    local res,err=rpc({op="manifest"},manifestTimeout)
     if not res then return nil,err end
     if type(res.manifest)~="table" or type(res.manifest.files)~="table" then
       return nil,"manager returned invalid manifest"
@@ -233,7 +240,7 @@ return function(ctx)
     local offset=0
     local total=tonumber(expected) or 0
     while true do
-      local res,err=rpc({op="read_chunk",path=rel,offset=offset,size=6000},5)
+      local res,err=rpc({op="read_chunk",path=rel,offset=offset,size=12000},transferTimeout)
       if not res then return nil,err end
       if type(res.data)~="string" then return nil,"invalid file chunk" end
       local h,e=fs.open(dest,offset==0 and "w" or "a")
@@ -415,12 +422,17 @@ return function(ctx)
     lastManager=status
     runtime.targetCommit=tostring(status.commit or "unknown")
     local current=local_commit()
+    local now=now_ms()
 
     if current==runtime.targetCommit then
       if not installed_manifest() then
         local m=fetch_manifest()
         if m then write_json(INSTALLED_MANIFEST,m) end
       end
+      runtime.stageTarget=nil
+      runtime.stageAt=nil
+      runtime.retryAt=nil
+      runtime.stageFailures=0
       runtime.lastResult=reason=="announce" and "confirmed by manager" or runtime.lastResult
       write_state("CURRENT",{available_commit=runtime.targetCommit})
       return
@@ -430,13 +442,78 @@ return function(ctx)
       return
     end
 
+    -- Deterministically spread a fleet update across a short window. This
+    -- prevents every computer from asking the manager for the same manifest
+    -- and file chunks at once after an image announcement or world restart.
+    if runtime.stageTarget~=runtime.targetCommit then
+      runtime.stageTarget=runtime.targetCommit
+      runtime.stageFailures=0
+      runtime.retryAt=nil
+      local fraction=((os.getComputerID()*37)%101)/100
+      local delay=stageSpreadSeconds*fraction
+      runtime.stageAt=now+math.floor(delay*1000)
+      runtime.lastResult="scheduled"
+      write_state("AVAILABLE",{
+        stage_not_before=runtime.stageAt,
+        stage_delay_seconds=delay,
+        available_commit=runtime.targetCommit
+      })
+      return
+    end
+
+    if runtime.retryAt and now<runtime.retryAt then
+      write_state("AVAILABLE",{
+        retry_at=runtime.retryAt,
+        retry_in_seconds=math.max(0,(runtime.retryAt-now)/1000),
+        retry_count=runtime.stageFailures,
+        available_commit=runtime.targetCommit
+      })
+      return
+    end
+
+    if runtime.stageAt and now<runtime.stageAt then
+      write_state("AVAILABLE",{
+        stage_not_before=runtime.stageAt,
+        stage_delay_seconds=math.max(0,(runtime.stageAt-now)/1000),
+        available_commit=runtime.targetCommit
+      })
+      return
+    end
+
     local ok,err=stage(status)
-    if not ok then
-      runtime.lastError=tostring(err)
+    if ok then
+      runtime.stageFailures=0
+      runtime.retryAt=nil
+      return
+    end
+
+    runtime.stageFailures=runtime.stageFailures+1
+    runtime.lastError=tostring(err)
+    local backoff=math.min(30,retryBaseSeconds*(2^(math.min(runtime.stageFailures-1,3))))
+    runtime.retryAt=now_ms()+math.floor(backoff*1000)
+
+    if runtime.stageFailures>=5 then
       runtime.lastResult="failed"
-      write_state("FAILED",{error=runtime.lastError})
-      ctx.kernel.log.write("error","update-agent","automatic update failed",{
-        error=runtime.lastError,target=runtime.targetCommit
+      write_state("FAILED",{
+        error=runtime.lastError,
+        retry_count=runtime.stageFailures,
+        retry_at=runtime.retryAt
+      })
+      ctx.kernel.log.write("error","update-agent","automatic update repeatedly failed",{
+        error=runtime.lastError,target=runtime.targetCommit,retries=runtime.stageFailures
+      },ctx.process.pid)
+    else
+      runtime.lastResult="retry_wait"
+      write_state("AVAILABLE",{
+        warning=runtime.lastError,
+        retry_count=runtime.stageFailures,
+        retry_at=runtime.retryAt,
+        retry_in_seconds=backoff,
+        available_commit=runtime.targetCommit
+      })
+      ctx.kernel.log.write("warning","update-agent","automatic update transfer retry scheduled",{
+        error=runtime.lastError,target=runtime.targetCommit,retry=runtime.stageFailures,
+        backoff_seconds=backoff
       },ctx.process.pid)
     end
   end
@@ -473,7 +550,8 @@ return function(ctx)
   local opened=open_modems()
   ctx.unit.details={
     protocol=protocol,manager_id=managerId,modems=opened,poll_seconds=pollSeconds,
-    auto_apply=autoApply,manager_failure_threshold=managerFailureThreshold
+    auto_apply=autoApply,manager_failure_threshold=managerFailureThreshold,
+    stage_spread_seconds=stageSpreadSeconds,transfer_timeout_seconds=transferTimeout
   }
   ctx.kernel.log.write("info","update-agent","automatic manager update agent online",ctx.unit.details,ctx.process.pid)
 
