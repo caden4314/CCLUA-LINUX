@@ -62,12 +62,16 @@ local function readText(path)
   return v and v:gsub("%s+$","") or nil
 end
 
-local function replaceTree(src,dst)
+local function replaceTree(src,dst,moveMode)
   src=host(src)
   dst=host(dst)
-  if not fs.exists(src) then return true end
+  if not fs.exists(src) then
+    if moveMode and fs.exists(dst) then return true end
+    return true
+  end
   if fs.exists(dst) then fs.delete(dst) end
-  local ok,err=pcall(fs.copy,src,dst)
+  local op=moveMode and fs.move or fs.copy
+  local ok,err=pcall(op,src,dst)
   if not ok then return nil,tostring(err) end
   return true
 end
@@ -103,12 +107,15 @@ end
 
 local function activate(slot,commit)
   local source=ROOT.."/"..slot
+  local moveInstall=readText(INSTALLED)==nil
   if not fs.exists(host(source)) then return nil,"cache slot "..tostring(slot).." is missing" end
-  if not fs.exists(host(source.."/kernel/init.lua")) then return nil,"slot has no kernel" end
-  if not fs.exists(host(source.."/init/init.lua")) then return nil,"slot has no init" end
-  if not fs.exists(host(source.."/usr")) then return nil,"slot has no /usr tree" end
+  if not fs.exists(host(source.."/kernel/init.lua")) and not (moveInstall and fs.exists("System/kernel/init.lua")) then return nil,"slot has no kernel" end
+  if not fs.exists(host(source.."/init/init.lua")) and not (moveInstall and fs.exists("System/init/init.lua")) then return nil,"slot has no init" end
+  if not fs.exists(host(source.."/usr")) and not (moveInstall and fs.exists("usr")) then return nil,"slot has no /usr tree" end
 
-  print(("Activating CCLUA image %s [%s]"):format(tostring(commit):sub(1,8),slot))
+  print(("Activating CCLUA image %s [%s]%s"):format(
+    tostring(commit):sub(1,8),slot,moveInstall and " [first-install move]" or ""
+  ))
   writeJson(BOOTSTATE,{
     schema=1,state="ACTIVATING",slot=slot,commit=commit,
     timestamp=os.epoch and os.epoch("utc") or 0
@@ -121,7 +128,7 @@ local function activate(slot,commit)
     {source.."/lib","/lib"},
   }
   for _,pair in ipairs(trees) do
-    local ok,err=replaceTree(pair[1],pair[2])
+    local ok,err=replaceTree(pair[1],pair[2],moveInstall)
     if not ok then return nil,err end
   end
 
