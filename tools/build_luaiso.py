@@ -50,6 +50,25 @@ def main():
     add_tree(records,ROOT/"src"/"lib","system/lib")
     add_tree(records,ROOT/"src"/"etc","system/etc")
 
+    if args.role=="server":
+        desktop_prefixes=(
+            "system/usr/lib/cclua/desktop/",
+            "system/usr/share/cclua/desktop/",
+        )
+        desktop_exact={
+            "system/usr/share/cclua/ubuntu-desktop-packages.json",
+            "system/usr/bin/cclua-desktop.lua",
+            "system/usr/bin/cclua-files.lua",
+            "system/usr/bin/gnome-shell.lua",
+            "system/usr/bin/gnome-terminal.lua",
+            "system/usr/bin/nautilus.lua",
+        }
+        records=[
+            rec for rec in records
+            if rec["path"] not in desktop_exact
+            and not any(rec["path"].startswith(prefix) for prefix in desktop_prefixes)
+        ]
+
     commit=subprocess.check_output(
         ["git","-C",str(ROOT),"rev-parse","HEAD"],text=True
     ).strip()
