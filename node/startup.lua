@@ -1,4 +1,4 @@
--- Generic CCLUA Ubuntu Server node bootloader with A/B update activation.
+-- Generic CCLUA Ubuntu node bootloader with A/B update activation.
 local ROOT="/var/lib/cclua/node-update"
 local STATE=ROOT.."/state.json"
 local INSTALLED="/var/lib/cclua/installed-commit"
@@ -117,7 +117,9 @@ term.setBackgroundColor(colors.black)
 term.setTextColor(colors.white)
 term.clear()
 term.setCursorPos(1,1)
-print("CCLUA-LINUX Ubuntu Server")
+local imageName=tostring(machine.image or "ubuntu-22.04-server")
+local desktop=imageName:find("desktop",1,true)~=nil or machine.role=="desktop-client"
+print(desktop and "CCLUA-LINUX Ubuntu Desktop" or "CCLUA-LINUX Ubuntu Server")
 print(("%s | ID %d"):format(machine.hostname or os.getComputerLabel() or "node",os.getComputerID()))
 bootlog("node bootloader start id="..tostring(os.getComputerID()).." role="..tostring(machine.role))
 
@@ -192,7 +194,7 @@ end
 
 if not fs.exists("System/init/init.lua") then
   bootlog("missing /System/init/init.lua")
-  error("No CCLUA Ubuntu Server image installed.",0)
+  error("No CCLUA Ubuntu image installed.",0)
 end
 
 local activeState=read_json(STATE,{schema=1,activeSlot="A"})

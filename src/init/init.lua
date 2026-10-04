@@ -142,23 +142,69 @@ local function spawn_console()
   return p
 end
 
+local function spawn_desktop()
+  local user=k.users.by_name("caden")
+  if not user then return nil,"desktop user caden is missing" end
+  local groups={}
+  for _,g in ipairs(k.users.groups_for(user)) do groups[#groups+1]=g.gid end
+
+  local p,perr=k.process.create{
+    ppid=1,name="gnome-shell",uid=user.uid,gid=user.gid,groups=groups,
+    cwd=user.home or "/home/caden",
+    capabilities={},
+    environment={
+      HOME=user.home or "/home/caden",
+      USER=user.name,
+      LOGNAME=user.name,
+      SHELL=user.shell or "/usr/bin/bash.lua",
+      PATH="/usr/bin:/usr/sbin:/bin:/sbin",
+      DESKTOP_SESSION="ubuntu",
+      XDG_SESSION_TYPE="cclua",
+      XDG_CURRENT_DESKTOP="ubuntu:GNOME",
+      XDG_SESSION_DESKTOP="ubuntu",
+    },
+    argv={"/usr/bin/cclua-desktop.lua","--session"},
+    session_id=1,process_group=1
+  }
+  if not p then return nil,perr end
+  k.scheduler:add(p,function()
+    local mod=dofile("/usr/bin/cclua-desktop.lua")
+    return mod.main({kernel=k,process=p},{"--session"})
+  end)
+  return p
+end
+
 k.scheduler:add(init,function()
-  k.log.write("info","init","CCLUA Ubuntu Server boot",nil,1)
-  print("CCLUA Ubuntu 22.04.5 LTS Server")
+  local config=dofile("/usr/lib/cclua/config.lua")
+  local machine=config.machine()
+  local desktop=machine.role=="desktop-client"
+    or tostring(machine.image or ""):find("desktop",1,true)~=nil
+
+  k.log.write("info","init",desktop and "CCLUA Ubuntu Desktop boot" or "CCLUA Ubuntu Server boot",{
+    role=machine.role,image=machine.image
+  },1)
+  print(desktop and "CCLUA Ubuntu 22.04.5 LTS Desktop" or "CCLUA Ubuntu 22.04.5 LTS Server")
   print("Kernel "..k.version.version.." ABI "..k.version.kernel_abi)
   print("Starting services...")
 
   register_services()
   k.services:start_enabled()
 
-  local console,cerr=spawn_console()
-  if not console then k.log.write("error","init","console spawn failed",{error=cerr},1) end
+  local session,serr
+  if desktop then session,serr=spawn_desktop()
+  else session,serr=spawn_console() end
+
+  if not session then
+    k.log.write("error","init",desktop and "desktop session spawn failed" or "console spawn failed",{error=serr},1)
+    session=select(1,spawn_console())
+  end
 
   while true do
     local ev,pid=coroutine.yield("wait_event","cclua_process_exit")
-    if ev=="cclua_process_exit" and console and pid==console.pid then
-      k.log.write("warning","init","console shell exited; restarting",nil,1)
-      console=select(1,spawn_console())
+    if ev=="cclua_process_exit" and session and pid==session.pid then
+      k.log.write("warning","init",desktop and "desktop session exited; restarting" or "console shell exited; restarting",nil,1)
+      if desktop then session=select(1,spawn_desktop())
+      else session=select(1,spawn_console()) end
     end
   end
 end)
