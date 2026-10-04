@@ -5,6 +5,7 @@ return function(ctx)
   local protocol="cclua-gps-v1"
   local managerProtocol="cclua-manager-v1"
   local managerId=tonumber(machine.manager_computer_id) or 0
+  local expectedHosts=type(machine.gps_expected_hosts)=="table" and machine.gps_expected_hosts or {}
   local hosts={}
   local monitor=nil
   local monitorName=nil
@@ -40,12 +41,16 @@ return function(ctx)
 
   local function host_rows()
     local out={}
+    local seen={}
     local t=now()
+
     for id,h in pairs(hosts) do
       local age=math.max(0,(t-(h.last_seen or 0))/1000)
       if age<15 then
+        local nid=tonumber(id) or id
+        seen[tostring(nid)]=true
         out[#out+1]={
-          id=id,label=h.label or ("gps-host-"..tostring(id)),
+          id=nid,label=h.label or ("gps-host-"..tostring(nid)),
           x=h.x,y=h.y,z=h.z,age=age,online=age<8,
           requests_served=tonumber(h.requests_served) or 0,
           healthy=h.healthy~=false,
@@ -53,7 +58,24 @@ return function(ctx)
         }
       end
     end
-    table.sort(out,function(a,b)return tostring(a.label)<tostring(b.label) end)
+
+    for _,e in ipairs(expectedHosts) do
+      local id=tonumber(e.id)
+      if id and not seen[tostring(id)] then
+        out[#out+1]={
+          id=id,label=e.label or ("gps-host-"..tostring(id)),
+          x=tonumber(e.x),y=tonumber(e.y),z=tonumber(e.z),
+          age=math.huge,online=false,requests_served=0,
+          healthy=false,expected=true
+        }
+      end
+    end
+
+    table.sort(out,function(a,b)
+      local ai,bi=tonumber(a.id) or 9999,tonumber(b.id) or 9999
+      if ai~=bi then return ai<bi end
+      return tostring(a.label)<tostring(b.label)
+    end)
     return out
   end
 
@@ -70,6 +92,7 @@ return function(ctx)
       status="ONLINE",
       gps_ready=online>=4,
       host_count=#hs,
+      expected_host_count=#expectedHosts,
       hosts_online=online,
       hosts=hs,
       minimum_hosts=4,
