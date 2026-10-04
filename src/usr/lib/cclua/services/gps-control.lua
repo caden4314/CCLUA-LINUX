@@ -12,6 +12,7 @@ return function(ctx)
   local monitorName=nil
   local cache={}
   local started=os.epoch and os.epoch("utc") or 0
+  local lastPersist=0
 
   local function now() return os.epoch and os.epoch("utc") or 0 end
 
@@ -95,7 +96,10 @@ return function(ctx)
           age=age,
           online=age<8,
           fixes=tonumber(client.fixes) or 0,
-          misses=tonumber(client.misses) or 0
+          misses=tonumber(client.misses) or 0,
+          session=client.session,
+          seq=tonumber(client.seq) or 0,
+          rate_hz=tonumber(client.rate_hz) or 0
         }
       end
     end
@@ -149,8 +153,12 @@ return function(ctx)
       uptime_ms=now()-started,
       timestamp=now()
     }
-    config.write_json("/var/lib/cclua/gps-control.json",s)
-    config.write_json("/var/log/cclua/gps-health.json",s)
+    local t=now()
+    if t-lastPersist>=1000 then
+      config.write_json("/var/lib/cclua/gps-control.json",s)
+      config.write_json("/var/log/cclua/gps-health.json",s)
+      lastPersist=t
+    end
     return s
   end
 
@@ -292,17 +300,35 @@ return function(ctx)
         rednet.send(a,{protocol=protocol,op="host_status",ok=true},protocol)
         render()
       elseif b.op=="client_status" then
-        clients[a]={
-          label=b.label or b.hostname,
-          kind=b.kind or "client",
-          x=tonumber(b.x),y=tonumber(b.y),z=tonumber(b.z),
-          fix=b.fix==true,
-          fixes=tonumber(b.fixes) or 0,
-          misses=tonumber(b.misses) or 0,
-          last_seen=now()
-        }
-        rednet.send(a,{protocol=protocol,op="client_status",ok=true},protocol)
-        render()
+        local incomingSession=tostring(b.session or "")
+        local incomingSeq=tonumber(b.seq) or 0
+        local current=clients[a]
+        local accept=true
+
+        if current and incomingSession~="" and current.session==incomingSession then
+          accept=incomingSeq>(tonumber(current.seq) or -1)
+        end
+
+        if accept then
+          clients[a]={
+            label=b.label or b.hostname,
+            kind=b.kind or "client",
+            x=tonumber(b.x),y=tonumber(b.y),z=tonumber(b.z),
+            fix=b.fix==true,
+            fixes=tonumber(b.fixes) or 0,
+            misses=tonumber(b.misses) or 0,
+            session=incomingSession,
+            seq=incomingSeq,
+            rate_hz=tonumber(b.rate_hz) or 0,
+            last_seen=now()
+          }
+          render()
+        end
+
+        rednet.send(a,{
+          protocol=protocol,op="client_status",ok=true,
+          accepted=accept,seq=incomingSeq
+        },protocol)
       elseif b.op=="status" then
         rednet.send(a,{protocol=protocol,op="status",ok=true,state=state()},protocol)
       end
