@@ -8,7 +8,8 @@ return function(ctx)
     ref=machine.github_ref or machine.channel_ref or "main",
     root="/var/lib/cclua/github",
     protocol="cclua-manager-v1",
-    pollSeconds=tonumber(machine.github_poll_seconds) or 120,
+    pollSeconds=tonumber(machine.github_poll_seconds) or 10,
+    announceSeconds=tonumber(machine.update_announce_seconds) or 2,
   }
 
   local runtime={
@@ -181,6 +182,16 @@ return function(ctx)
   end
 
   local function currentCommit()
+    -- Use GitHub's lightweight Atom feed for frequent development checks so
+    -- we do not consume the REST API rate limit every few seconds.
+    local feedUrl="https://github.com/"..CFG.owner.."/"..CFG.repo.."/commits/"..textutils.urlEncode(CFG.ref)..".atom"
+    local feed=request(feedUrl)
+    if feed then
+      local sha=feed:match("Grit::Commit/([0-9a-fA-F]+)</id>")
+        or feed:match("/commit/([0-9a-fA-F]+)")
+      if sha and #sha>=40 then return sha:lower() end
+    end
+
     local obj,err=requestJson(repoApi("commits/"..textutils.urlEncode(CFG.ref)))
     if not obj then return nil,err end
     return obj.sha
@@ -464,20 +475,74 @@ return function(ctx)
     }
   end
 
+  local function announceImage(reason)
+    local status=managerStatus()
+    rednet.broadcast({
+      protocol=CFG.protocol,
+      op="image_available",
+      ok=true,
+      reason=reason or "heartbeat",
+      status=status
+    },CFG.protocol)
+  end
+
+  local function safeRel(path)
+    if type(path)~="string" or path=="" then return nil end
+    path=path:gsub("\\","/")
+    if path:sub(1,1)=="/" then return nil end
+    local out={}
+    for seg in path:gmatch("[^/]+") do
+      if seg=="" or seg=="." or seg==".." then return nil end
+      out[#out+1]=seg
+    end
+    return #out>0 and table.concat(out,"/") or nil
+  end
+
   local function serve(sender,msg)
     if type(msg)~="table" or msg.protocol~=CFG.protocol then return end
     rememberNode(sender,msg)
 
     if msg.op=="status" then
       rednet.send(sender,{protocol=CFG.protocol,op="status",ok=true,status=managerStatus()},CFG.protocol)
+
+    elseif msg.op=="manifest" then
+      local raw=readAll(join(activeRoot(),".manifest.json"))
+      local ok,manifest=pcall(textutils.unserializeJSON,raw or "")
+      if ok and type(manifest)=="table" and type(manifest.files)=="table" then
+        rednet.send(sender,{protocol=CFG.protocol,op="manifest",ok=true,manifest=manifest,status=managerStatus()},CFG.protocol)
+      else
+        rednet.send(sender,{protocol=CFG.protocol,op="manifest",ok=false,error="active image manifest unavailable"},CFG.protocol)
+      end
+
+    elseif msg.op=="read_chunk" and type(msg.path)=="string" then
+      local rel=safeRel(msg.path)
+      if not rel then
+        rednet.send(sender,{protocol=CFG.protocol,op="read_chunk",ok=false,error="invalid path"},CFG.protocol)
+        return
+      end
+      local data=readAll(join(activeRoot(),rel))
+      if data==nil then
+        rednet.send(sender,{protocol=CFG.protocol,op="read_chunk",ok=false,error="file not found",path=rel},CFG.protocol)
+        return
+      end
+      local offset=math.max(0,tonumber(msg.offset) or 0)
+      local size=math.max(1,math.min(6000,tonumber(msg.size) or 6000))
+      local chunk=data:sub(offset+1,offset+size)
+      local nextOffset=offset+#chunk
+      rednet.send(sender,{
+        protocol=CFG.protocol,op="read_chunk",ok=true,path=rel,
+        offset=offset,next_offset=nextOffset,size=#data,data=chunk,eof=nextOffset>=#data
+      },CFG.protocol)
+
     elseif msg.op=="read" and type(msg.path)=="string" then
-      local rel=fs.combine("",msg.path)
-      if rel:sub(1,2)==".." then
+      local rel=safeRel(msg.path)
+      if not rel then
         rednet.send(sender,{protocol=CFG.protocol,op="read",ok=false,error="invalid path"},CFG.protocol)
         return
       end
       local data=readAll(join(activeRoot(),rel))
       rednet.send(sender,{protocol=CFG.protocol,op="read",ok=data~=nil,path=rel,data=data},CFG.protocol)
+
     elseif msg.op=="sync" then
       local state,changedOrErr=sync(msg.force==true)
       rednet.send(sender,{
@@ -521,15 +586,25 @@ return function(ctx)
   ctx.kernel.log.write("info","managerd","CCLUA network manager online",ctx.unit.details,ctx.process.pid)
 
   local state,changed=sync(false)
-  if state then maybeActivate(state,changed==true) end
+  if state then
+    announceImage(changed and "github-update" or "startup")
+    maybeActivate(state,changed==true)
+  end
 
   local poll=os.startTimer(CFG.pollSeconds)
+  local announce=os.startTimer(CFG.announceSeconds)
   while true do
     local ev,a,b,c=coroutine.yield("wait_event")
     if ev=="timer" and a==poll then
       local nextState,didChange=sync(false)
-      if nextState then maybeActivate(nextState,didChange==true) end
+      if nextState then
+        announceImage(didChange and "github-update" or "poll")
+        maybeActivate(nextState,didChange==true)
+      end
       poll=os.startTimer(CFG.pollSeconds)
+    elseif ev=="timer" and a==announce then
+      announceImage("heartbeat")
+      announce=os.startTimer(CFG.announceSeconds)
     elseif ev=="rednet_message" and c==CFG.protocol then
       serve(a,b)
     elseif ev=="cclua_manager_sync" then

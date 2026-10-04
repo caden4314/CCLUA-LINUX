@@ -134,12 +134,20 @@ return function(ctx)
     if h>=18 then
       text(2,17,"UPDATE",colors.cyan)
       local phase=update.state or update.phase or "IDLE"
-      local build=update.commit or update.build or update.version or "-"
-      text(2,18,("State        %s"):format(phase),status_color(phase))
-      if h>=19 then text(2,19,("Build        %s"):format(clipped(build,w-15)),colors.lightGray) end
+      local current=tostring(update.current_commit or "-"):sub(1,8)
+      local target=tostring(update.target_commit or update.available_commit or "-"):sub(1,8)
+      local pct=tonumber(update.percent or 0) or 0
+      text(2,18,("State        %-12s %3d%%"):format(phase,pct),status_color(phase))
+      if h>=19 then text(2,19,("Image        %s -> %s"):format(current,target),colors.lightGray) end
+      if h>=20 and update.current_action then
+        text(2,20,("%-12s %s"):format(tostring(update.current_action),clipped(update.current_file or "",w-15)),colors.yellow)
+      end
+      if h>=21 and update.last_result then
+        text(2,21,("Last         %s"):format(clipped(update.last_result,w-15)),colors.gray)
+      end
     end
 
-    local listStart=h>=25 and 21 or 17
+    local listStart=h>=27 and 23 or 17
     if h>=listStart+2 then
       text(math.floor(w/2)+1,4,"SERVICES",colors.cyan)
       local y=5
@@ -235,14 +243,16 @@ return function(ctx)
           local age=math.max(0,(now-last)/1000)
           local online=age<10
           local st=peer.status or {}
+          local upd=st.update or {}
+          local updState=tostring(upd.state or "UNKNOWN")
+          local updPct=tonumber(upd.percent or (updState=="CURRENT" and 100 or 0)) or 0
           text(2,y,(online and "[+] " or "[!] ")..
-            clipped(peer.hostname or ("node-"..tostring(peer.id)),math.max(10,math.floor(w*0.34))),
+            clipped(peer.hostname or ("node-"..tostring(peer.id)),math.max(10,math.floor(w*0.30))),
             online and colors.lime or colors.red)
-          text(math.floor(w*0.38),y,
-            ("ID %-3s %-10s svc %-2s age %.0fs"):format(
-              tostring(peer.id or "-"),tostring(peer.role or st.role or "server"),
-              tostring(st.services or "-"),age
-            ),colors.lightGray)
+          text(math.floor(w*0.33),y,
+            ("ID %-3s %-11s %3d%% age %.0fs"):format(
+              tostring(peer.id or "-"),clipped(updState,11),updPct,age
+            ),status_color(updState))
           y=y+1
         end
       end
