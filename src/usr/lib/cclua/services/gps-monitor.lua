@@ -9,8 +9,9 @@ return function(ctx)
   local mapCenterX=tonumber(machine.gps_map_center_x) or 20
   local mapCenterZ=tonumber(machine.gps_map_center_z) or 15
   local mapRadius=tonumber(machine.gps_map_radius) or 48
-  local invertX=machine.gps_map_invert_x~=false
-  local invertY=machine.gps_map_invert_y~=false
+  local invertX=machine.gps_map_invert_x==true
+  local invertY=machine.gps_map_invert_y==true
+  local rotation=tonumber(machine.gps_map_rotation) or 90
   local terrainPath=machine.gps_terrain_path or "/var/lib/cclua/gps-terrain.lua"
 
   local monitor,monitorName,mapWindow,box=nil,nil,nil,nil
@@ -89,35 +90,94 @@ return function(ctx)
     mapWindow.setVisible(true)
   end
 
+  local function normalize_rotation(value)
+    value=math.floor((tonumber(value) or 0)/90+0.5)*90
+    value=((value%360)+360)%360
+    return value
+  end
+
+  rotation=normalize_rotation(rotation)
+
+  local function oriented_to_world(sx,sy)
+    if invertX then sx=-sx end
+    if invertY then sy=-sy end
+    local dx,dz
+    if rotation==90 then
+      dx=-sy
+      dz=sx
+    elseif rotation==180 then
+      dx=-sx
+      dz=-sy
+    elseif rotation==270 then
+      dx=sy
+      dz=-sx
+    else
+      dx=sx
+      dz=sy
+    end
+    return mapCenterX+dx*mapRadius,mapCenterZ+dz*mapRadius
+  end
+
+  local function world_to_oriented(wx,wz)
+    local dx=(wx-mapCenterX)/mapRadius
+    local dz=(wz-mapCenterZ)/mapRadius
+    local sx,sy
+    if rotation==90 then
+      sx=dz
+      sy=-dx
+    elseif rotation==180 then
+      sx=-dx
+      sy=-dz
+    elseif rotation==270 then
+      sx=-dz
+      sy=dx
+    else
+      sx=dx
+      sy=dz
+    end
+    if invertX then sx=-sx end
+    if invertY then sy=-sy end
+    return sx,sy
+  end
+
   local function screen_to_world(px,py)
-    local fx=(px-1)/math.max(1,box.width-1)
-    local fy=(py-1)/math.max(1,box.height-1)
-    if invertX then fx=1-fx end
-    if invertY then fy=1-fy end
-    local wx=(mapCenterX-mapRadius)+fx*(mapRadius*2)
-    local wz=(mapCenterZ-mapRadius)+fy*(mapRadius*2)
-    return wx,wz
+    local sx=((px-1)/math.max(1,box.width-1))*2-1
+    local sy=((py-1)/math.max(1,box.height-1))*2-1
+    return oriented_to_world(sx,sy)
   end
 
   local function world_to_screen(wx,wz)
-    local fx=(wx-(mapCenterX-mapRadius))/(mapRadius*2)
-    local fy=(wz-(mapCenterZ-mapRadius))/(mapRadius*2)
-    if invertX then fx=1-fx end
-    if invertY then fy=1-fy end
-    local px=1+math.floor(fx*math.max(1,box.width-1)+0.5)
-    local py=1+math.floor(fy*math.max(1,box.height-1)+0.5)
+    local sx,sy=world_to_oriented(wx,wz)
+    local px=1+math.floor(((sx+1)*0.5)*math.max(1,box.width-1)+0.5)
+    local py=1+math.floor(((sy+1)*0.5)*math.max(1,box.height-1)+0.5)
     return px,py
   end
 
-  local function terrain_color(wx,wz)
-    if not terrain then return colors.black end
+  local function terrain_code(wx,wz)
+    if not terrain then return nil end
     local minX=tonumber(terrain.min_x) or (mapCenterX-mapRadius)
     local minZ=tonumber(terrain.min_z) or (mapCenterZ-mapRadius)
     local tx=math.floor(wx-minX+1.5)
     local tz=math.floor(wz-minZ+1.5)
     local row=terrain.rows[tz]
-    if not row or tx<1 or tx>#row then return colors.black end
-    return blit_to_color(row:sub(tx,tx))
+    if not row or tx<1 or tx>#row then return nil end
+    return row:sub(tx,tx)
+  end
+
+  local function structure_code(code)
+    return code and code~="4" and code~="f"
+  end
+
+  local function schematic_color(wx,wz)
+    local code=terrain_code(wx,wz)
+    if not structure_code(code) then return colors.black end
+    if code=="e" then return colors.red end
+    local edge=false
+    if not structure_code(terrain_code(wx+1,wz)) then edge=true end
+    if not structure_code(terrain_code(wx-1,wz)) then edge=true end
+    if not structure_code(terrain_code(wx,wz+1)) then edge=true end
+    if not structure_code(terrain_code(wx,wz-1)) then edge=true end
+    return edge and colors.lightGray or colors.gray
   end
 
   local function set_pixel(x,y,c)
@@ -155,7 +215,7 @@ return function(ctx)
       local row=box.canvas[py]
       for px=1,box.width do
         local wx,wz=screen_to_world(px,py)
-        row[px]=terrain_color(wx,wz)
+        row[px]=schematic_color(wx,wz)
       end
     end
 
@@ -196,13 +256,12 @@ return function(ctx)
     local hostsOnline=state and (state.hosts_online or 0) or 0
     local hostCount=state and (state.host_count or 0) or 0
     local clientsOnline=state and (state.clients_online or 0) or 0
-    text_line(1," CCLUA GPS // HIGH-RES TERRAIN MAP",colors.white,colors.blue)
+    text_line(1," CCLUA GPS // FACILITY OPERATIONS MAP",colors.white,colors.blue)
     text_line(2,(" GPS %s   HOSTS %d/%d   CLIENTS %d   CTRL %s"):format(
       ready and "READY" or "DEGRADED",hostsOnline,hostCount,clientsOnline,
       stale and "STALE" or "LINK"),ready and colors.lime or colors.orange,colors.black)
-    text_line(3,(" CENTER X%d Z%d  R%d   X:%s Y:%s   %.1fHz"):format(
-      mapCenterX,mapCenterZ,mapRadius,invertX and "INV" or "NORM",
-      invertY and "INV" or "NORM",1/pollSeconds),colors.lightBlue,colors.black)
+    text_line(3,(" CENTER X%d Z%d  R%d   ROT %03d   %.1fHz"):format(
+      mapCenterX,mapCenterZ,mapRadius,rotation,1/pollSeconds),colors.lightBlue,colors.black)
 
     local sidebarW=math.max(27,math.min(34,math.floor(w*0.30)))
     local sideX=w-sidebarW+1
@@ -243,7 +302,7 @@ return function(ctx)
       sy=sy+1
     end
 
-    text_line(h-1," TERRAIN=CACHED  CYAN=HOST  GREEN=CLIENT  GRAY=TRAIL",colors.gray,colors.black)
+    text_line(h-1," FACILITY=GRAY  EDGE=LIGHT  CYAN=HOST  GREEN=CLIENT  TRAIL=GRAY",colors.gray,colors.black)
     text_line(h,(" CONTROL %d | %s | %dx%d chars -> %dx%d map pixels"):format(
       controlId,tostring(monitorName or "monitor"),w,h,
       box and box.width or 0,box and box.height or 0),colors.gray,colors.black)
@@ -258,7 +317,7 @@ return function(ctx)
       render_text()
     end)
     if not ok then
-      ctx.kernel.log.write("warning","gps-monitor","high-res render failed",
+      ctx.kernel.log.write("warning","gps-monitor","facility map render failed",
         {error=tostring(err)},ctx.process.pid)
       monitor=nil
       box=nil
@@ -276,9 +335,9 @@ return function(ctx)
     protocol=protocol,control_id=controlId,monitor=monitorName,
     poll_seconds=pollSeconds,map_center={x=mapCenterX,z=mapCenterZ},
     map_radius=mapRadius,invert_x=invertX,invert_y=invertY,
-    terrain=terrain and terrainPath or "missing",renderer="pixelbox-2x3"
+    terrain=terrain and terrainPath or "missing",renderer="pixelbox-schematic-2x3",rotation=rotation
   }
-  ctx.kernel.log.write("info","gps-monitor","GPS high-resolution terrain map online",
+  ctx.kernel.log.write("info","gps-monitor","GPS facility operations map online",
     ctx.unit.details,ctx.process.pid)
 
   request()
