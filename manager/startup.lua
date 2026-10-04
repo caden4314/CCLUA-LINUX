@@ -12,6 +12,7 @@ local ROOT="/var/lib/cclua/github"
 local STATE=ROOT.."/state.json"
 local INSTALLED="/var/lib/cclua/installed-commit"
 local BOOTSTATE="/var/lib/cclua/boot.json"
+local BOOTLOG="/var/log/cclua/boot.log"
 
 local function host(path)
   return tostring(path):gsub("^/","")
@@ -43,6 +44,19 @@ local function writeAll(path,data)
   h.write(data)
   h.close()
   return true
+end
+
+local function bootlog(message)
+  pcall(function()
+    ensureDir("/var/log/cclua")
+    local h=fs.open(host(BOOTLOG),"a")
+    if not h then return end
+    h.writeLine(("%d\t%s"):format(
+      os.epoch and os.epoch("utc") or 0,
+      tostring(message or ""):gsub("[\r\n]"," ")
+    ))
+    h.close()
+  end)
 end
 
 local function readJson(path,default)
@@ -116,6 +130,9 @@ local function activate(slot,commit)
   print(("Activating CCLUA image %s [%s]%s"):format(
     tostring(commit):sub(1,8),slot,moveInstall and " [first-install move]" or ""
   ))
+  bootlog(("activate slot=%s commit=%s mode=%s"):format(
+    tostring(slot),tostring(commit),moveInstall and "move" or "copy"
+  ))
   writeJson(BOOTSTATE,{
     schema=1,state="ACTIVATING",slot=slot,commit=commit,
     timestamp=os.epoch and os.epoch("utc") or 0
@@ -156,6 +173,7 @@ local function activate(slot,commit)
 end
 
 local function bootSystem(slot,commit)
+  bootlog(("boot slot=%s commit=%s"):format(tostring(slot),tostring(commit)))
   writeJson(BOOTSTATE,{
     schema=1,state="BOOTING",slot=slot,commit=commit,
     timestamp=os.epoch and os.epoch("utc") or 0
@@ -167,6 +185,7 @@ end
 
 print("CCLUA-LINUX Ubuntu Server bootloader")
 print("Computer ID "..tostring(os.getComputerID()))
+bootlog("bootloader start computer_id="..tostring(os.getComputerID()))
 
 -- One-time cleanup from the pre-Ubuntu standalone manager runtime.
 for _,legacy in ipairs({"github_bridge.lua","github_bridge.lua.old","github_bridge.lua.new"}) do
@@ -185,6 +204,7 @@ if commit and (installed~=commit or not fs.exists("System/init/init.lua")) then
       schema=1,state="ACTIVATION_FAILED",slot=slot,commit=commit,error=tostring(err),
       timestamp=os.epoch and os.epoch("utc") or 0
     })
+    bootlog("activation failed: "..tostring(err))
     term.setTextColor(colors.red)
     print("Image activation failed: "..tostring(err))
     term.setTextColor(colors.white)
@@ -200,6 +220,7 @@ print("Starting Ubuntu Server...")
 local ok,err=bootSystem(slot,commit or installed or "unknown")
 if ok then return end
 
+bootlog("primary image failed: "..tostring(err))
 term.setTextColor(colors.red)
 print("Primary image failed: "..tostring(err))
 term.setTextColor(colors.white)
@@ -209,6 +230,7 @@ local fallback=slot=="A" and "B" or "A"
 local fallbackCommit=slotCommit(fallback)
 if fallbackCommit and fs.exists(host(ROOT.."/"..fallback.."/kernel/init.lua")) then
   print(("Rolling back to slot %s (%s)"):format(fallback,fallbackCommit:sub(1,8)))
+  bootlog(("rollback slot=%s commit=%s"):format(tostring(fallback),tostring(fallbackCommit)))
   local activated,aerr=activate(fallback,fallbackCommit)
   if activated then
     state.activeSlot=fallback
@@ -229,4 +251,5 @@ writeJson(BOOTSTATE,{
   schema=1,state="FAILED",slot=slot,commit=commit,error=tostring(err),
   timestamp=os.epoch and os.epoch("utc") or 0
 })
+bootlog("boot failed: "..tostring(err))
 error("CCLUA boot failed: "..tostring(err),0)
