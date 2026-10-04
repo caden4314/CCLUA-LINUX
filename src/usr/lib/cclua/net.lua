@@ -10,15 +10,32 @@ local function now() return (os.epoch and os.epoch("utc")) or 0 end
 
 function M.machine() return config.machine() end
 
-function M.open_all_modems()
-  local opened={}
+function M.open_management_modems()
+  local wireless={}
+  local fallback={}
   for _,name in ipairs(peripheral.getNames()) do
     if peripheral.hasType(name,"modem") then
-      local ok=pcall(rednet.open,name)
-      if ok then opened[#opened+1]=name end
+      local modem=peripheral.wrap(name)
+      local ok,isWireless=pcall(function() return modem.isWireless and modem.isWireless() end)
+      if ok and isWireless then
+        wireless[#wireless+1]=name
+      else
+        fallback[#fallback+1]=name
+      end
     end
   end
+
+  local chosen=#wireless>0 and wireless or fallback
+  local opened={}
+  for _,name in ipairs(chosen) do
+    local ok=pcall(rednet.open,name)
+    if ok then opened[#opened+1]=name end
+  end
   return opened
+end
+
+function M.open_all_modems()
+  return M.open_management_modems()
 end
 
 function M.packet(kind,payload,dst)

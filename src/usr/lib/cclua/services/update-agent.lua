@@ -1,19 +1,14 @@
 return function(ctx)
   local config=dofile("/usr/lib/cclua/config.lua")
+  local net=dofile("/usr/lib/cclua/net.lua")
   local machine=config.machine()
   local protocol="cclua-manager-v1"
   local managerId=nil
   local lastManager=nil
 
   local function open_modems()
-    local opened=0
-    for _,name in ipairs(peripheral.getNames()) do
-      if peripheral.hasType(name,"modem") then
-        local ok=pcall(rednet.open,name)
-        if ok then opened=opened+1 end
-      end
-    end
-    return opened
+    local names=net.open_management_modems()
+    return names
   end
 
   local function read_text(path)

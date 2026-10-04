@@ -72,6 +72,23 @@ local function register_services()
       exec=load_service("/usr/lib/cclua/services/update-agent.lua")
     }
   end
+
+  if machine.role=="lighting-controller" then
+    k.services:register{
+      name="cclua-lightingd.service",
+      description="CCLUA wired redstone lighting controller",
+      enabled=true,
+      exec=load_service("/usr/lib/cclua/services/lightingd.lua")
+    }
+  elseif machine.role=="app-server" then
+    k.services:register{
+      name="cclua-apphostd.service",
+      description="CCLUA managed application host",
+      enabled=true,
+      exec=load_service("/usr/lib/cclua/services/apphostd.lua")
+    }
+  end
+
   k.services:register{
     name="dashboard.service",
     description="CCLUA monitor statistics dashboard",
