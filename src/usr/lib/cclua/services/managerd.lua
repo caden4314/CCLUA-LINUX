@@ -511,7 +511,8 @@ return function(ctx)
     ctx.kernel.log.write("info","managerd","staged image ready; rebooting for activation",{
       commit=state.imageCommit or state.commit,slot=state.activeSlot
     },ctx.process.pid)
-    ctx.kernel.scheduler.sleep(2)
+    local wake=(os.epoch and os.epoch("utc") or 0)+2000
+    coroutine.yield("sleep",wake)
     os.reboot()
   end
 
