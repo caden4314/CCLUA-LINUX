@@ -5,10 +5,23 @@ return function(ctx)
   local enabled=machine.status_light_enabled~=false
   local valid={top=true,bottom=true,left=true,right=true,front=true,back=true}
 
-  if not valid[side] then
-    ctx.kernel.log.write("warning","statusd","invalid status light side; using bottom",{configured=side},ctx.process.pid)
-    side="bottom"
+  local function refresh_light_config()
+    local fresh=config.machine()
+    local nextSide=fresh.status_light_side or "bottom"
+    if not valid[nextSide] then
+      ctx.kernel.log.write("warning","statusd","invalid status light side; using bottom",{configured=nextSide},ctx.process.pid)
+      nextSide="bottom"
+    end
+    if nextSide~=side then
+      pcall(redstone.setOutput,side,false)
+      ctx.kernel.log.write("info","statusd","status light moved",{old_side=side,new_side=nextSide},ctx.process.pid)
+      side=nextSide
+    end
+    enabled=fresh.status_light_enabled~=false
+    machine=fresh
   end
+
+  refresh_light_config()
 
   local function update_state()
     return config.read_json("/var/lib/cclua/update-state.json",{})
@@ -73,6 +86,7 @@ return function(ctx)
     local ev,a=coroutine.yield("wait_event")
     if ev=="timer" and a==timer then
       tick=tick+1
+      if tick%20==1 then refresh_light_config() end
       local state,failed,update=classify()
       local output=lamp(state,tick)
       pcall(redstone.setOutput,side,output)
