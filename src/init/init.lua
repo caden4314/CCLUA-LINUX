@@ -48,6 +48,12 @@ local function register_services()
     exec=load_service("/usr/lib/cclua/services/peripherald.lua")
   }
   k.services:register{
+    name="cclua-statusd.service",
+    description="CCLUA system health and chassis status lamp",
+    enabled=true,
+    exec=load_service("/usr/lib/cclua/services/statusd.lua")
+  }
+  k.services:register{
     name="dashboard.service",
     description="CCLUA monitor statistics dashboard",
     enabled=true,
