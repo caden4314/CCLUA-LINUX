@@ -76,7 +76,8 @@ return function(ctx)
   end
 
   local function online(node)
-    return age_seconds(node)<8
+    local timeout=tonumber(machine.fleet_online_timeout_seconds) or 30
+    return age_seconds(node)<timeout
   end
 
   local function status_color(state,isOnline)
@@ -140,7 +141,7 @@ return function(ctx)
       local state=isOn and tostring(st.system_state or "BOOTING") or "OFFLINE"
       local ustate=isOn and tostring(upd.state or "CHECKING") or "-"
       local pct=tonumber(upd.percent or (ustate=="CURRENT" and 100 or 0)) or 0
-      local age=isOn and string.format("%.1fs",age_seconds(n)) or "--"
+      local age=n and string.format("%.1fs",age_seconds(n)) or "--"
       local row=("%-11s %-11s %-10s %3d%%  %4s %3s %5s"):format(
         display_name(def,n),state,ustate,pct,
         tostring(st.processes or "-"),tostring(st.services or "-"),age
@@ -184,7 +185,7 @@ return function(ctx)
       ),colors.lightGray,colors.black)
       segment(y+3,x,colW,("Image %-8s  age %s"):format(
         tostring(upd.current_commit or st.current_commit or "-"):sub(1,8),
-        isOn and string.format("%.1fs",age_seconds(n)) or "--"
+        n and string.format("%.1fs",age_seconds(n)) or "--"
       ),colors.gray,colors.black)
       local workload=(tonumber(st.processes or 0) or 0)>0 and "WORKLOAD ACTIVE" or "IDLE"
       segment(y+4,x,colW,workload,colors.lightGray,colors.black)
