@@ -199,10 +199,22 @@ k.scheduler:add(init,function()
     session=select(1,spawn_console())
   end
 
+  local crashStreak=0
   while true do
     local ev,pid=coroutine.yield("wait_event","cclua_process_exit")
     if ev=="cclua_process_exit" and session and pid==session.pid then
-      k.log.write("warning","init",desktop and "desktop session exited; restarting" or "console shell exited; restarting",nil,1)
+      local crashed=session.state=="crashed"
+      if crashed then crashStreak=math.min(crashStreak+1,5)
+      else crashStreak=0 end
+
+      k.log.write("warning","init",
+        desktop and "desktop session exited; restarting" or "console shell exited; restarting",
+        {crashed=crashed,crash_streak=crashStreak},1)
+
+      if crashed and k.scheduler and k.scheduler.sleep then
+        k.scheduler.sleep(math.min(4,0.5*(2^(crashStreak-1))))
+      end
+
       if desktop then session=select(1,spawn_desktop())
       else session=select(1,spawn_console()) end
     end

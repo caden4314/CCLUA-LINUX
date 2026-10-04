@@ -1,6 +1,9 @@
 local M={}
 
-local function host(path) return tostring(path):gsub("^/","") end
+local function host(path)
+  local p=tostring(path):gsub("^/","")
+  return p=="" and "/" or p
+end
 local function norm(path)
   if path=="" then return "/" end
   if path:sub(1,1)~="/" then path="/"..path end

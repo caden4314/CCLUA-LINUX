@@ -148,7 +148,7 @@ function M.run(ctx)
   local function hit_window(x,y)
     for i=#windows,1,-1 do
       local w=windows[i]
-      if x>=w.x and x<w.x+w and y>=w.y and y<w.y+w.h then return w end
+      if x>=w.x and x<w.x+w.w and y>=w.y and y<w.y+w.h then return w end
     end
   end
 
