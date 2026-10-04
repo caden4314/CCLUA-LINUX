@@ -53,12 +53,25 @@ local function register_services()
     enabled=true,
     exec=load_service("/usr/lib/cclua/services/statusd.lua")
   }
-  k.services:register{
-    name="cclua-update-agent.service",
-    description="CCLUA manager discovery and update status agent",
-    enabled=true,
-    exec=load_service("/usr/lib/cclua/services/update-agent.lua")
-  }
+  local config=dofile("/usr/lib/cclua/config.lua")
+  local machine=config.machine()
+  local managerRole=machine.role=="manager" or machine.role=="network-manager"
+
+  if managerRole then
+    k.services:register{
+      name="cclua-managerd.service",
+      description="CCLUA GitHub image and fleet network manager",
+      enabled=true,
+      exec=load_service("/usr/lib/cclua/services/managerd.lua")
+    }
+  else
+    k.services:register{
+      name="cclua-update-agent.service",
+      description="CCLUA manager discovery and update status agent",
+      enabled=true,
+      exec=load_service("/usr/lib/cclua/services/update-agent.lua")
+    }
+  end
   k.services:register{
     name="dashboard.service",
     description="CCLUA monitor statistics dashboard",
