@@ -14,6 +14,10 @@ return function(ctx)
   local leverEnabled=settings.lever_enabled~=false
   local lastLever=nil
   local animationActive=false
+  local lightMonitor=nil
+  local lightMonitorName=nil
+  local lightMonitorWidth=0
+  local lightMonitorHeight=0
 
   local function pause(ms)
     local wake=(os.epoch and os.epoch("utc") or 0)+(tonumber(ms) or 0)
@@ -24,6 +28,52 @@ return function(ctx)
     settings=config.read_json("/etc/cclua/lighting.json",settings or {})
     leverSide=settings.lever_side or "front"
     leverEnabled=settings.lever_enabled~=false
+  end
+
+  local function choose_light_monitor()
+    reload_settings()
+    if settings.monitor_enabled==false then
+      lightMonitor=nil
+      lightMonitorName=nil
+      lightMonitorWidth=0
+      lightMonitorHeight=0
+      return nil
+    end
+
+    local preferred=settings.monitor_name
+    local name=nil
+    local mon=nil
+
+    if preferred and peripheral.getType(preferred)=="monitor" then
+      name=preferred
+      mon=peripheral.wrap(preferred)
+    else
+      mon=peripheral.find("monitor",function(foundName,obj)
+        if not name then
+          name=foundName
+          return true
+        end
+        return false
+      end)
+    end
+
+    if mon then
+      pcall(mon.setTextScale,tonumber(settings.monitor_scale) or 0.5)
+      pcall(mon.setBackgroundColor,colors.black)
+      pcall(mon.setTextColor,colors.white)
+      local ok,w,h=pcall(mon.getSize)
+      if ok then
+        lightMonitorWidth=w or 0
+        lightMonitorHeight=h or 0
+      else
+        lightMonitorWidth=0
+        lightMonitorHeight=0
+      end
+    end
+
+    lightMonitor=mon
+    lightMonitorName=name
+    return mon
   end
 
   local function relay_id(name)
@@ -123,6 +173,114 @@ return function(ctx)
     return {name=name,id=relay_id(name),outputs=outputs}
   end
 
+  local function relay_is_on(name)
+    local relay=peripheral.wrap(name)
+    if not relay or type(relay.getOutput)~="function" then return false end
+    for _,side in ipairs(sides) do
+      local ok,v=pcall(relay.getOutput,side)
+      if ok and v==true then return true end
+    end
+    return false
+  end
+
+  local function render_light_monitor()
+    if not lightMonitor or peripheral.getType(lightMonitorName)~="monitor" then
+      choose_light_monitor()
+    end
+    local mon=lightMonitor
+    if not mon then return end
+
+    local ok,err=pcall(function()
+      local w,h=mon.getSize()
+      lightMonitorWidth=w
+      lightMonitorHeight=h
+      mon.setBackgroundColor(colors.black)
+      mon.setTextColor(colors.white)
+      mon.clear()
+
+      local function clip(s,n)
+        s=tostring(s or "")
+        if n<=0 then return "" end
+        if #s>n then return s:sub(1,n) end
+        return s
+      end
+
+      local function line(y,text,fg,bg)
+        if y<1 or y>h then return end
+        mon.setCursorPos(1,y)
+        mon.setBackgroundColor(bg or colors.black)
+        mon.setTextColor(fg or colors.white)
+        mon.write(clip(text,w))
+        local used=math.min(#tostring(text),w)
+        if used<w then mon.write(string.rep(" ",w-used)) end
+      end
+
+      local function relay_bar(y,startId,endId)
+        if y<1 or y>h then return end
+        local prefix=(startId==0 and "0-7 " or "8-F ")
+        if w<12 then prefix=(startId==0 and "0:" or "8:") end
+        mon.setCursorPos(1,y)
+        mon.setBackgroundColor(colors.black)
+        mon.setTextColor(colors.lightGray)
+        mon.write(clip(prefix,w))
+
+        local x=#prefix+1
+        for id=startId,endId do
+          if x>w then break end
+          local name="redstone_relay_"..tostring(id)
+          mon.setCursorPos(x,y)
+          local present=peripheral.hasType(name,"redstone_relay")
+          local on=present and relay_is_on(name)
+          mon.setTextColor(not present and colors.red or (on and colors.lime or colors.gray))
+          mon.write(not present and "!" or (on and "#" or "."))
+          x=x+1
+        end
+        if x<=w then
+          mon.setCursorPos(x,y)
+          mon.setBackgroundColor(colors.black)
+          mon.write(string.rep(" ",w-x+1))
+        end
+      end
+
+      line(1," LIGHTING",colors.white,colors.blue)
+
+      local lever=read_lever()
+      local lightWord=desired and "ON" or "OFF"
+      local leverWord=lever==nil and "--" or (lever and "ON" or "OFF")
+      line(2,("LIGHT %-3s L %-3s"):format(lightWord,leverWord),
+        desired and colors.lime or colors.lightGray)
+
+      local expected=settings.expected_relays or {}
+      local expectedCount=#expected>0 and #expected or #relays
+      local okRelays=#relays>=expectedCount
+      line(3,("RELAYS %d/%d %s"):format(#relays,expectedCount,okRelays and "OK" or "ERR"),
+        okRelays and colors.lime or colors.red)
+
+      if h>=4 then
+        line(4,animationActive and "ANIM  RUN" or "ANIM  IDLE",
+          animationActive and colors.yellow or colors.gray)
+      end
+      if h>=5 then relay_bar(5,0,7) end
+      if h>=6 then relay_bar(6,8,15) end
+
+      if h>=7 then
+        local fault=lastError
+        local _,missing=expected_state()
+        if not fault and #missing>0 then fault="MISS "..tostring(#missing) end
+        line(h,fault and ("FAULT "..fault) or "STATUS OK",
+          fault and colors.red or colors.lime)
+      end
+    end)
+
+    if not ok then
+      ctx.kernel.log.write("warning","lightingd","lighting monitor draw failed",{
+        monitor=lightMonitorName,error=tostring(err)
+      },ctx.process.pid)
+      lightMonitor=nil
+      lightMonitorName=nil
+    end
+  end
+
   local function expected_state()
     local expected=settings.expected_relays or {}
     local present={}
@@ -155,12 +313,16 @@ return function(ctx)
       lever_side=leverSide,
       lever_input=lever,
       animation_active=animationActive,
+      monitor_name=lightMonitorName,
+      monitor_width=lightMonitorWidth,
+      monitor_height=lightMonitorHeight,
       healthy=(#relays>0 and #missing==0 and lastError==nil),
       error=lastError,
       timestamp=os.epoch and os.epoch("utc") or 0
     }
     config.write_json("/var/lib/cclua/lighting.json",state)
     config.write_json("/var/log/cclua/lighting-health.json",state)
+    render_light_monitor()
     return state
   end
 
@@ -195,6 +357,7 @@ return function(ctx)
     if #relays==0 then return nil,"no relays discovered" end
 
     animationActive=true
+    render_light_monitor()
     local restore=desired
     local step=tonumber(settings.animation_step_ms) or 70
 
@@ -207,8 +370,10 @@ return function(ctx)
 
     for _,name in ipairs(relays) do
       set_relay(name,true)
+      render_light_monitor()
       pause(step)
       set_relay(name,false)
+      render_light_monitor()
     end
 
     for _,name in ipairs(relays) do set_relay(name,true) end
@@ -217,6 +382,7 @@ return function(ctx)
 
     animationActive=false
     sync_lever(false)
+    render_light_monitor()
     ctx.kernel.log.write("info","lightingd","quick lighting animation complete",{
       restored=desired
     },ctx.process.pid)
@@ -272,6 +438,7 @@ return function(ctx)
 
   discover()
   reload_settings()
+  choose_light_monitor()
   local lever=read_lever()
   if leverEnabled and lever~=nil then
     lastLever=lever
@@ -299,8 +466,12 @@ return function(ctx)
       handle(a,b)
     elseif ev=="peripheral" or ev=="peripheral_detach" then
       discover()
+      choose_light_monitor()
       if #relays>0 and not animationActive then set_all(desired,"peripheral-change") end
       heartbeat()
+    elseif ev=="monitor_resize" then
+      choose_light_monitor()
+      render_light_monitor()
     end
   end
 end

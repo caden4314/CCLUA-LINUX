@@ -89,12 +89,14 @@ local function register_services()
     }
   end
 
-  k.services:register{
-    name="dashboard.service",
-    description="CCLUA monitor statistics dashboard",
-    enabled=true,
-    exec=load_service("/usr/lib/cclua/services/dashboard.lua")
-  }
+  if machine.dashboard_enabled~=false then
+    k.services:register{
+      name="dashboard.service",
+      description="CCLUA monitor statistics dashboard",
+      enabled=true,
+      exec=load_service("/usr/lib/cclua/services/dashboard.lua")
+    }
+  end
 end
 
 local function spawn_console()
