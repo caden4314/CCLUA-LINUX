@@ -33,8 +33,17 @@ cclua-lightctl discover
 cclua-lightctl on
 cclua-lightctl off
 cclua-lightctl animate
+cclua-lightctl rooms
+cclua-lightctl room Server Room status
+cclua-lightctl room Server Room on
+cclua-lightctl room Server Room off
+cclua-lightctl room Server Room animate
 cclua-lightctl set redstone_relay_4 on
 ```
+
+Lighting rooms are configured in `/etc/cclua/lighting.json`. Room commands only
+touch the relays assigned to that room; the physical front lever remains the
+building-wide master switch when it is moved.
 
 ## Central app deployment
 

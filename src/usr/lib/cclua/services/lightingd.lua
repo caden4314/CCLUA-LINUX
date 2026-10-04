@@ -18,6 +18,7 @@ return function(ctx)
   local lightMonitorName=nil
   local lightMonitorWidth=0
   local lightMonitorHeight=0
+  local expected_state
 
   local function pause(ms)
     local wake=(os.epoch and os.epoch("utc") or 0)+(tonumber(ms) or 0)
@@ -96,6 +97,34 @@ return function(ctx)
     return found
   end
 
+  local function room_entries()
+    local out={}
+    for name,list in pairs(settings.rooms or {}) do
+      if type(name)=="string" and type(list)=="table" then
+        local relaysForRoom={}
+        for _,relay in ipairs(list) do
+          if type(relay)=="string" then relaysForRoom[#relaysForRoom+1]=relay end
+        end
+        table.sort(relaysForRoom,function(a,b)return relay_id(a)<relay_id(b) end)
+        out[#out+1]={name=name,relays=relaysForRoom}
+      end
+    end
+    table.sort(out,function(a,b)return a.name:lower()<b.name:lower() end)
+    return out
+  end
+
+  local function find_room(name)
+    local wanted=tostring(name or ""):lower()
+    for _,room in ipairs(room_entries()) do
+      if room.name:lower()==wanted then return room end
+    end
+    return nil
+  end
+
+  local function relay_present(name)
+    return peripheral.hasType(name,"redstone_relay")
+  end
+
   local function set_relay(name,value,side)
     if not peripheral.hasType(name,"redstone_relay") then
       return nil,"relay not present: "..tostring(name)
@@ -131,6 +160,28 @@ return function(ctx)
       "lightingd",
       "lighting state "..(desired and "ON" or "OFF"),
       {source=source or "service",relay_count=#relays,error=lastError},
+      ctx.process.pid
+    )
+    return #errors==0,lastError
+  end
+
+  local function set_room(roomName,value,source)
+    discover()
+    local room=find_room(roomName)
+    if not room then return nil,"unknown room: "..tostring(roomName) end
+    if #room.relays==0 then return nil,"room has no relays: "..room.name end
+
+    local errors={}
+    for _,name in ipairs(room.relays) do
+      local ok,err=set_relay(name,value)
+      if not ok then errors[#errors+1]=name..": "..tostring(err) end
+    end
+    lastError=#errors>0 and table.concat(errors,"; ") or nil
+    ctx.kernel.log.write(
+      #errors==0 and "info" or "error",
+      "lightingd",
+      ("room %s %s"):format(room.name,value and "ON" or "OFF"),
+      {room=room.name,value=value==true,source=source or "service",relay_count=#room.relays,error=lastError},
       ctx.process.pid
     )
     return #errors==0,lastError
@@ -257,8 +308,20 @@ return function(ctx)
         okRelays and colors.lime or colors.red)
 
       if h>=4 then
-        line(4,animationActive and "ANIM  RUN" or "ANIM  IDLE",
-          animationActive and colors.yellow or colors.gray)
+        local summaries=room_summary()
+        if animationActive then
+          line(4,"ANIM  RUN",colors.yellow)
+        elseif #summaries>0 then
+          local r=summaries[1]
+          local short=((settings.room_short_names or {})[r.name])
+          if not short then
+            short=r.name:gsub("[^%w]",""):upper():sub(1,3)
+          end
+          line(4,("%s %-5s %d/%d"):format(short,r.state,r.present,r.relay_count),
+            r.healthy and (r.state=="ON" and colors.lime or colors.lightGray) or colors.red)
+        else
+          line(4,"ANIM  IDLE",colors.gray)
+        end
       end
       if h>=5 then relay_bar(5,0,7) end
       if h>=6 then relay_bar(6,8,15) end
@@ -281,7 +344,7 @@ return function(ctx)
     end
   end
 
-  local function expected_state()
+  expected_state=function()
     local expected=settings.expected_relays or {}
     local present={}
     for _,name in ipairs(relays) do present[name]=true end
@@ -290,6 +353,37 @@ return function(ctx)
       if not present[name] then missing[#missing+1]=name end
     end
     return expected,missing
+  end
+
+  local function room_summary()
+    local out={}
+    for _,room in ipairs(room_entries()) do
+      local present,on,missing=0,0,{}
+      for _,name in ipairs(room.relays) do
+        if relay_present(name) then
+          present=present+1
+          if relay_is_on(name) then on=on+1 end
+        else
+          missing[#missing+1]=name
+        end
+      end
+      local state
+      if #missing>0 then state="MISSING"
+      elseif on==#room.relays and #room.relays>0 then state="ON"
+      elseif on==0 then state="OFF"
+      else state="MIXED" end
+      out[#out+1]={
+        name=room.name,
+        relay_count=#room.relays,
+        present=present,
+        on=on,
+        off=math.max(0,present-on),
+        missing_relays=missing,
+        healthy=#missing==0,
+        state=state
+      }
+    end
+    return out
   end
 
   local function snapshot()
@@ -307,6 +401,7 @@ return function(ctx)
       desired_on=desired,
       relay_count=#relays,
       relays=items,
+      rooms=room_summary(),
       expected_relays=expected,
       missing_relays=missing,
       lever_enabled=leverEnabled,
@@ -351,42 +446,60 @@ return function(ctx)
     },managerProtocol)
   end
 
-  local function animate_quick()
+  local function animate_group(group,label)
     if animationActive then return nil,"animation already running" end
     discover()
-    if #relays==0 then return nil,"no relays discovered" end
+    if #group==0 then return nil,"no relays to animate" end
+
+    local restore={}
+    for _,name in ipairs(group) do
+      if relay_present(name) then restore[name]=relay_is_on(name) end
+    end
 
     animationActive=true
     render_light_monitor()
-    local restore=desired
     local step=tonumber(settings.animation_step_ms) or 70
 
-    ctx.kernel.log.write("info","lightingd","quick lighting animation started",{
-      relays=#relays,step_ms=step,restore=restore
+    ctx.kernel.log.write("info","lightingd","lighting animation started",{
+      group=label,relays=#group,step_ms=step
     },ctx.process.pid)
 
-    for _,name in ipairs(relays) do set_relay(name,false) end
+    for _,name in ipairs(group) do if relay_present(name) then set_relay(name,false) end end
     pause(80)
 
-    for _,name in ipairs(relays) do
-      set_relay(name,true)
-      render_light_monitor()
-      pause(step)
-      set_relay(name,false)
-      render_light_monitor()
+    for _,name in ipairs(group) do
+      if relay_present(name) then
+        set_relay(name,true)
+        render_light_monitor()
+        pause(step)
+        set_relay(name,false)
+        render_light_monitor()
+      end
     end
 
-    for _,name in ipairs(relays) do set_relay(name,true) end
+    for _,name in ipairs(group) do if relay_present(name) then set_relay(name,true) end end
     pause(120)
-    for _,name in ipairs(relays) do set_relay(name,restore) end
+    for _,name in ipairs(group) do
+      if restore[name]~=nil then set_relay(name,restore[name]) end
+    end
 
     animationActive=false
-    sync_lever(false)
     render_light_monitor()
-    ctx.kernel.log.write("info","lightingd","quick lighting animation complete",{
-      restored=desired
+    ctx.kernel.log.write("info","lightingd","lighting animation complete",{
+      group=label
     },ctx.process.pid)
     return true
+  end
+
+  local function animate_quick()
+    discover()
+    return animate_group(relays,"all")
+  end
+
+  local function animate_room(roomName)
+    local room=find_room(roomName)
+    if not room then return nil,"unknown room: "..tostring(roomName) end
+    return animate_group(room.relays,room.name)
   end
 
   local function reply(id,msg)
@@ -417,6 +530,28 @@ return function(ctx)
         sender=sender,relay=msg.relay,side=msg.side,value=msg.value,error=err
       },ctx.process.pid)
       reply(sender,{protocol=protocol,op="set",ok=ok,error=err,state=snapshot()})
+      return
+    end
+
+    if msg.op=="rooms" or msg.op=="room_status" then
+      local state=snapshot()
+      if msg.op=="room_status" and not find_room(msg.room) then
+        reply(sender,{protocol=protocol,op=msg.op,ok=false,error="unknown room: "..tostring(msg.room),state=state})
+      else
+        reply(sender,{protocol=protocol,op=msg.op,ok=true,state=state})
+      end
+      return
+    end
+
+    if msg.op=="room_set" then
+      local ok,err=set_room(msg.room,msg.value==true,"network:"..tostring(sender))
+      reply(sender,{protocol=protocol,op=msg.op,ok=ok==true,error=err,state=snapshot()})
+      return
+    end
+
+    if msg.op=="room_animate" then
+      local ok,err=animate_room(msg.room)
+      reply(sender,{protocol=protocol,op=msg.op,ok=ok==true,error=err,state=snapshot()})
       return
     end
 
