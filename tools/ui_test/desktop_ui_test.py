@@ -11,8 +11,10 @@ LIVE22 = Path(r"E:\Minecraft\PrismLauncher\instances\CC Tweaked Creative\.minecr
 OUT = REPO / "artifacts" / "desktop-ui"
 OUT.mkdir(parents=True, exist_ok=True)
 
-WIDTH, HEIGHT = 51, 19
-CELL_W, CELL_H = 14, 24
+WIDTH = int(os.environ.get("CCLUA_UI_WIDTH","51"))
+HEIGHT = int(os.environ.get("CCLUA_UI_HEIGHT","19"))
+CELL_W = int(os.environ.get("CCLUA_UI_CELL_W","14"))
+CELL_H = int(os.environ.get("CCLUA_UI_CELL_H","24"))
 
 CC_COLORS = {
     "0": (240, 240, 240), "1": (242, 178, 51), "2": (229, 127, 216),

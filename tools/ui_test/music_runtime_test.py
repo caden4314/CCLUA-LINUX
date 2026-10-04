@@ -60,6 +60,23 @@ function textutils.unserializeJSON(raw)
   if raw:find('"Spotify Test"',1,true) then
     return {title="Spotify Test",provider_name="Spotify",type="rich"}
   end
+  if raw:find('"catalog_count":1',1,true) then
+    return {ok=true,catalog_count=1}
+  end
+  if raw:find('"bridge-track"',1,true) then
+    return {
+      count=1,
+      tracks={{
+        id="bridge-track",
+        title="Bridge Song",
+        artist="Bridge Artist",
+        duration=210,
+        bytes=123456,
+        source="harmoni-bridge",
+        stream_url="http://127.0.0.1:8765/v1/tracks/bridge-track.dfpwm"
+      }}
+    }
+  end
   return {}
 end
 function textutils.urlEncode(s) return tostring(s):gsub(" ","%%20") end
@@ -70,6 +87,29 @@ function http.get(url,headers,binary)
     return {
       getResponseCode=function() return 200 end,
       readAll=function() return '{"title":"Spotify Test","provider_name":"Spotify","type":"rich"}' end,
+      close=function() end
+    }
+  elseif url=="http://127.0.0.1:8765/v1/catalog" then
+    return {
+      getResponseCode=function() return 200 end,
+      readAll=function() return '{"count":1,"tracks":[{"id":"bridge-track","title":"Bridge Song","artist":"Bridge Artist","duration":210,"bytes":123456,"source":"harmoni-bridge","stream_url":"http://127.0.0.1:8765/v1/tracks/bridge-track.dfpwm"}]}' end,
+      close=function() end
+    }
+  elseif url=="http://127.0.0.1:8765/v1/health" then
+    return {
+      getResponseCode=function() return 200 end,
+      readAll=function() return '{"ok":true,"catalog_count":1}' end,
+      close=function() end
+    }
+  elseif url=="http://127.0.0.1:8765/v1/tracks/bridge-track.dfpwm" then
+    local done=false
+    return {
+      getResponseCode=function() return 200 end,
+      read=function(n)
+        if done then return nil end
+        done=true
+        return "REMOTEAUDIO"
+      end,
       close=function() end
     }
   end
@@ -129,6 +169,14 @@ local match,score=music.find_best("Artist Test Song",tracks)
 assert(match and match.title=="Test Song")
 assert(score>0)
 
+local catalog,bridgeErr=music.catalog()
+assert(catalog and #catalog==2,bridgeErr)
+local remote=music.find_best("Bridge Artist Bridge Song",catalog)
+assert(remote and remote.remote==true and remote.id=="bridge-track")
+
+local status,statusErr=music.bridge_status()
+assert(status and status.catalog_count==1,statusErr)
+
 local meta,err=music.spotify_oembed("https://open.spotify.com/track/abc")
 assert(meta and meta.title=="Spotify Test",err)
 
@@ -138,6 +186,14 @@ assert(bad==nil and baderr)
 local player,perr=music.play(ctx,tracks[1].path,nil,1,tracks[1])
 assert(player and player.speaker=="left",perr)
 assert(music.now_playing() and music.now_playing().title=="Test Song")
+music.stop(ctx)
+assert(music.now_playing()==nil)
+
+local catalog=music.catalog()
+local remote=music.find_best("Bridge Song",catalog)
+local remotePlayer,remoteErr=music.play_track(ctx,remote,nil,1)
+assert(remotePlayer and remotePlayer.remote==true and remotePlayer.track_id=="bridge-track",remoteErr)
+assert(music.now_playing() and music.now_playing().title=="Bridge Song")
 music.stop(ctx)
 assert(music.now_playing()==nil)
 ''')

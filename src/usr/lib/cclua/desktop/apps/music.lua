@@ -4,8 +4,11 @@ local Music=dofile("/usr/lib/cclua/desktop/music.lua")
 local tabs={"Library","Spotify","Direct"}
 
 local function refresh(st)
-  st.tracks=Music.scan()
+  local tracks,bridgeErr=Music.catalog()
+  st.tracks=tracks or {}
+  st.bridge_error=bridgeErr
   st.selected=math.max(1,math.min(math.max(1,#st.tracks),st.selected or 1))
+  st.scroll=math.max(1,math.min(st.scroll or 1,math.max(1,#st.tracks)))
 end
 
 function M.new(ctx)
@@ -116,7 +119,6 @@ function M.draw(ctx,st,ui,x,y,w,h)
   draw_tabs(st,ui,x,y)
 
   if st.tab==1 then
-    refresh(st)
     local tracks=st.tracks or {}
     local now=Music.now_playing()
 
@@ -131,7 +133,10 @@ function M.draw(ctx,st,ui,x,y,w,h)
       local yy=y+1+row
       ui.fill(x,yy,x+w-1,yy,colors.black,colors.white)
       if t then
-        local active=now and now.path==t.path
+        local active=now and (
+          (t.id and now.track_id and tostring(t.id)==tostring(now.track_id))
+          or (t.path and now.path==t.path)
+        )
         local bg=idx==st.selected and colors.lightGray or colors.black
         local fg=idx==st.selected and colors.black or (active and colors.lime or colors.white)
         ui.fill(x,yy,x+w-1,yy,bg,fg)
@@ -144,8 +149,8 @@ function M.draw(ctx,st,ui,x,y,w,h)
       end
     end
     if #tracks==0 then
-      ui.text(x+2,y+4,"No cached music yet.",colors.gray,colors.black)
-      ui.text(x+2,y+5,"Use the importer or Direct tab.",colors.gray,colors.black)
+      ui.text(x+2,y+4,"No music available yet.",colors.gray,colors.black)
+      ui.text(x+2,y+5,st.bridge_error and "Harmoni bridge is offline." or "Bridge library is still converting.",colors.gray,colors.black)
     end
     ui.text(x+1,y+h-2,"Enter play | X stop | R rescan",colors.gray,colors.black)
 
@@ -209,7 +214,7 @@ function M.event(ctx,st,ev,a,b,c,rx,ry,w,h)
       if st.tab==1 then
         local t=selected(st)
         if t then
-          local r,err=Music.play(ctx,t.path,nil,1,t)
+          local r,err=Music.play_track(ctx,t,nil,1)
           st.message=r and ("Playing on "..tostring(r.speaker)) or tostring(err)
         end
       elseif st.tab==2 then
@@ -219,7 +224,7 @@ function M.event(ctx,st,ev,a,b,c,rx,ry,w,h)
       end
       return true
     elseif st.tab==2 and a==keys.p and st.match then
-      local r,err=Music.play(ctx,st.match.path,nil,1,st.match)
+      local r,err=Music.play_track(ctx,st.match,nil,1)
       st.message=r and ("Playing local match on "..tostring(r.speaker)) or tostring(err)
       return true
     elseif (st.tab==2 or st.tab==3) and a==keys.backspace then

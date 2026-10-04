@@ -1,6 +1,7 @@
 local config=dofile("/usr/lib/cclua/config.lua")
 local M={players={}}
 local ROOT="/home/caden/Music"
+local BRIDGE_BASE="http://127.0.0.1:8765/v1"
 
 local function clean_path(path)
   return tostring(path or ""):gsub("^/","")
@@ -41,15 +42,17 @@ function M.scan()
     if not fs.isDir(path) and name:lower():sub(-6)==".dfpwm" then
       local meta=read_json("/"..sidecar(path)) or {}
       out[#out+1]={
+        id="local:"..name,
         path="/"..path,
         file=name,
         title=meta.title or basename(name),
         artist=meta.artist or "",
         album=meta.album or "",
         duration=tonumber(meta.duration),
-        source=meta.source,
+        source=meta.source or "local-cache",
         spotify_url=meta.spotify_url,
         bytes=fs.getSize(path),
+        remote=false,
       }
     end
   end
@@ -59,6 +62,62 @@ function M.scan()
     return aa<bb
   end)
   return out
+end
+
+local function get_json(url)
+  if not http or not http.get then return nil,"HTTP API unavailable" end
+  local h,err=http.get(url,{
+    ["Accept"]="application/json",
+    ["User-Agent"]="CCLUA-Music/0.3"
+  })
+  if not h then return nil,tostring(err or "HTTP request failed") end
+  local code=h.getResponseCode and h.getResponseCode() or 200
+  local raw=h.readAll()
+  h.close()
+  if tonumber(code)~=200 then return nil,"HTTP "..tostring(code) end
+  local ok,data=pcall(textutils.unserializeJSON,raw)
+  if not ok or type(data)~="table" then return nil,"invalid JSON response" end
+  return data
+end
+
+function M.bridge_status()
+  return get_json(BRIDGE_BASE.."/health")
+end
+
+function M.bridge_catalog()
+  local data,err=get_json(BRIDGE_BASE.."/catalog")
+  if not data then return nil,err end
+  local out={}
+  for _,track in ipairs(data.tracks or {}) do
+    out[#out+1]={
+      id=tostring(track.id or ""),
+      title=track.title or "Unknown",
+      artist=track.artist or "",
+      album=track.album or "",
+      duration=tonumber(track.duration),
+      bytes=tonumber(track.bytes),
+      source=track.source or "harmoni-bridge",
+      stream_url=track.stream_url,
+      remote=true,
+    }
+  end
+  return out
+end
+
+function M.catalog()
+  local out={}
+  local remote,remoteErr=M.bridge_catalog()
+  if remote then
+    for _,track in ipairs(remote) do out[#out+1]=track end
+  end
+  for _,track in ipairs(M.scan()) do out[#out+1]=track end
+  table.sort(out,function(a,b)
+    local aa=normalize((a.artist or "").." "..(a.title or a.file or ""))
+    local bb=normalize((b.artist or "").." "..(b.title or b.file or ""))
+    if aa==bb then return tostring(a.id or "")<tostring(b.id or "") end
+    return aa<bb
+  end)
+  return out,remoteErr
 end
 
 function M.find_best(query,tracks)
@@ -219,6 +278,94 @@ function M.play(ctx,path,speakerName,volume,meta)
   end)
 
   return {pid=proc.pid,speaker=resolved,path=path}
+end
+
+function M.play_remote(ctx,track,speakerName,volume)
+  if type(track)~="table" then return nil,"track metadata required" end
+  local url=tostring(track.stream_url or "")
+  if url:sub(1,#BRIDGE_BASE)~=BRIDGE_BASE then
+    return nil,"refusing non-bridge stream URL"
+  end
+
+  local speaker,resolved=find_speaker(speakerName)
+  if not speaker then return nil,"no speaker attached" end
+
+  M.stop(ctx,resolved)
+  local parent=ctx.process or {}
+  local proc,err=ctx.kernel.process.create{
+    ppid=parent.pid or 1,
+    name="cclua-music-stream",
+    uid=parent.uid or 1000,
+    gid=parent.gid or 1000,
+    groups=parent.groups or {},
+    cwd=parent.cwd or "/home/caden",
+    capabilities=parent.capabilities or {},
+    argv={"music-stream",tostring(track.id or "")},
+  }
+  if not proc then return nil,err end
+
+  local key=tostring(resolved)
+  M.players[key]={
+    pid=proc.pid,
+    track_id=track.id,
+    title=track.title or "Unknown",
+    speaker=resolved,
+    remote=true,
+    stream_url=url,
+    started=os.epoch and os.epoch("utc") or 0
+  }
+
+  ctx.kernel.scheduler:add(proc,function()
+    local okRun,runErr=pcall(function()
+      local h,httpErr=http.get(url,{
+        ["Accept"]="audio/x-dfpwm",
+        ["User-Agent"]="CCLUA-Music/0.3"
+      },true)
+      if not h then error(tostring(httpErr or "bridge stream unavailable"),0) end
+      local code=h.getResponseCode and h.getResponseCode() or 200
+      if tonumber(code)~=200 and tonumber(code)~=206 then
+        h.close()
+        error("bridge stream HTTP "..tostring(code),0)
+      end
+
+      local dfpwm=require("cc.audio.dfpwm")
+      local decoder=dfpwm.make_decoder()
+      while true do
+        local chunk=h.read(16*1024)
+        if not chunk then break end
+        local audio=decoder(chunk)
+        while true do
+          local okPlay,accepted=pcall(speaker.playAudio,audio,tonumber(volume) or 1)
+          if not okPlay then h.close();error(accepted,0) end
+          if accepted then break end
+          local ev=coroutine.yield("wait_event",{"speaker_audio_empty","terminate"})
+          if ev=="terminate" then h.close();return end
+        end
+      end
+      h.close()
+      coroutine.yield("wait_event",{"speaker_audio_empty","peripheral_detach","terminate"})
+    end)
+
+    local current=M.players[key]
+    if current and current.pid==proc.pid then M.players[key]=nil end
+    if not okRun then
+      ctx.kernel.log.write("error","music","bridge playback failed",{
+        id=track.id,title=track.title,speaker=resolved,error=tostring(runErr)
+      },proc.pid)
+      return 1
+    end
+    return 0
+  end)
+
+  return {pid=proc.pid,speaker=resolved,track_id=track.id,remote=true}
+end
+
+function M.play_track(ctx,track,speakerName,volume)
+  if type(track)~="table" then return nil,"track metadata required" end
+  if track.remote or track.stream_url then
+    return M.play_remote(ctx,track,speakerName,volume)
+  end
+  return M.play(ctx,track.path,speakerName,volume,track)
 end
 
 function M.now_playing()
