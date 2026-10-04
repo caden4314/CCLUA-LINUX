@@ -118,7 +118,12 @@ return function(ctx)
 
     local lampSide=status.lamp_side or machine.status_light_side or "bottom"
     text(2,9,("Status lamp  %s / %s"):format(lampSide,status.lamp_output and "ON" or "OFF"),
-      status.lamp_output and colors.lime or colors.gray)
+      status.lamp_output and colors.red or colors.gray)
+    local faultCode=tonumber(status.error_code or 0) or 0
+    text(2,10,faultCode>0
+      and ("Fault code   %d - %s"):format(faultCode,clipped(status.error_reason or "fault",w-19))
+      or "Fault code   none",
+      faultCode>0 and colors.red or colors.gray)
 
     text(2,11,"NETWORK",colors.cyan)
     text(2,12,("Address      %s"):format(machine.address or "-"),colors.lightGray)
@@ -186,6 +191,11 @@ return function(ctx)
     text(2,6,("Installed  %s"):format(tostring(mgr.installed_commit or "-"):sub(1,12)),colors.lightGray)
     text(2,7,("Available  %s"):format(tostring(mgr.image_commit or git.imageCommit or git.commit or "-"):sub(1,12)),colors.lightGray)
     text(2,8,("Slot       %s   files %s"):format(mgr.active_slot or git.activeSlot or "-",mgr.files or git.files or "-"),colors.lightGray)
+    local managerFault=tonumber(status.error_code or 0) or 0
+    if managerFault>0 then
+      text(math.floor(w*0.55),4,("FAULT %d"):format(managerFault),colors.red)
+      text(math.floor(w*0.55),5,clipped(status.error_reason or "system fault",math.floor(w*0.45)),colors.red)
+    end
 
     text(2,10,"GITHUB UPDATE",colors.cyan)
     local phase=mgr.state or "STARTING"
