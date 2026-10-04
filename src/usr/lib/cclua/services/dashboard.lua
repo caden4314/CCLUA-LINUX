@@ -67,8 +67,8 @@ return function(ctx)
 
   local function status_color(state)
     state=tostring(state or "UNKNOWN"):upper()
-    if state=="HEALTHY" then return colors.lime end
-    if state=="UPDATING" or state=="BOOTING" then return colors.yellow end
+    if state=="HEALTHY" or state=="CURRENT" then return colors.lime end
+    if state=="UPDATING" or state=="BOOTING" or state=="CHECKING" or state=="DOWNLOADING" or state=="STAGING" or state=="VERIFYING" or state=="READY" or state=="ACTIVATING" or state=="AVAILABLE" then return colors.yellow end
     if state=="DEGRADED" or state=="FAILED" or state=="ROLLBACK" then return colors.red end
     return colors.lightGray
   end
@@ -158,45 +158,87 @@ return function(ctx)
     monitor.clear()
 
     local status=read("/var/lib/cclua/status.json",{state="BOOTING"})
-    local net=read("/var/lib/cclua/network.json",{peers={},stats={}})
     local git=read("/var/lib/cclua/github/state.json",{})
+    local mgr=read("/var/lib/cclua/manager-state.json",{})
+    local peers=read("/var/lib/cclua/manager-peers.json",{nodes={}})
+    local net=read("/var/lib/cclua/network.json",{peers={},stats={}})
 
-    draw_header("CCLUA CLUSTER MANAGER | "..(machine.hostname or "manager"))
-    text(2,4,"MANAGER",colors.cyan)
-    text(12,4,"["..tostring(status.state or "UNKNOWN").."]",status_color(status.state))
-    text(2,5,("Address  %s"):format(machine.address or "-"),colors.lightGray)
-    text(2,6,("Git ref  %s"):format(git.ref or machine.channel or "-"),colors.lightGray)
-    text(2,7,("Commit   %s"):format(tostring(git.commit or "-"):sub(1,12)),colors.lightGray)
-    text(2,8,("Slot     %s  files %s"):format(git.activeSlot or "-",git.files or "-"),colors.lightGray)
+    local function progress_bar(y,current,total)
+      if y<1 or y>h then return end
+      local width=math.max(8,w-4)
+      local pct=total and total>0 and math.max(0,math.min(1,current/total)) or 0
+      local filled=math.floor(width*pct+0.5)
+      monitor.setCursorPos(3,y)
+      monitor.setBackgroundColor(colors.gray)
+      monitor.write(string.rep(" ",width))
+      if filled>0 then
+        monitor.setCursorPos(3,y)
+        monitor.setBackgroundColor(colors.lime)
+        monitor.write(string.rep(" ",filled))
+      end
+      monitor.setBackgroundColor(colors.black)
+    end
 
-    text(2,10,"NODES",colors.cyan)
-    local y=11
-    if #(net.peers or {})==0 then
-      text(2,y,"Waiting for node heartbeats...",colors.orange)
+    draw_header("CCLUA NETWORK SERVER | "..(machine.hostname or "linux-network"))
+    text(2,4,"SYSTEM",colors.cyan)
+    text(10,4,"["..tostring(status.state or "UNKNOWN").."]",status_color(status.state))
+    text(2,5,("Role       %s"):format(machine.role or "network-manager"),colors.lightGray)
+    text(2,6,("Installed  %s"):format(tostring(mgr.installed_commit or "-"):sub(1,12)),colors.lightGray)
+    text(2,7,("Available  %s"):format(tostring(mgr.image_commit or git.imageCommit or git.commit or "-"):sub(1,12)),colors.lightGray)
+    text(2,8,("Slot       %s   files %s"):format(mgr.active_slot or git.activeSlot or "-",mgr.files or git.files or "-"),colors.lightGray)
+
+    text(2,10,"GITHUB UPDATE",colors.cyan)
+    local phase=mgr.state or "STARTING"
+    text(16,10,"["..tostring(phase).."]",status_color(phase))
+    text(2,11,("Repo       %s"):format(mgr.repo or "caden4314/CCLUA-LINUX"),colors.lightGray)
+    text(2,12,("Ref        %s"):format(mgr.ref or git.ref or machine.channel or "main"),colors.lightGray)
+
+    local busy=phase=="CHECKING" or phase=="DOWNLOADING" or phase=="STAGING" or phase=="VERIFYING" or phase=="ACTIVATING"
+    if busy then
+      text(2,13,("%-10s %s"):format(tostring(mgr.current_action or "WORK"),clipped(mgr.current_file or "repository",w-14)),colors.yellow)
+      progress_bar(14,mgr.progress or 0,mgr.total or 0)
+      local pct=(mgr.total or 0)>0 and math.floor(((mgr.progress or 0)/(mgr.total or 1))*100) or 0
+      text(2,15,("Progress   %s/%s  %d%%"):format(mgr.progress or 0,mgr.total or 0,pct),colors.lightGray)
     else
-      for _,peer in ipairs(net.peers or {}) do
-        if y>h-2 then break end
-        local age=math.max(0,((os.epoch("utc")-(peer.last_message or 0))/1000))
-        local online=age<8
-        local c=online and colors.lime or colors.red
-        local st=peer.status or {}
-        text(2,y,(online and "[+] " or "[!] ")..
-          clipped((peer.hostname or ("node-"..tostring(peer.id))),math.max(10,math.floor(w*0.38))),c)
-        text(math.floor(w*0.42),y,
-          ("ID %-3s svc %-2s proc %-2s age %.0fs"):format(
-            tostring(peer.id),tostring(st.services or "-"),
-            tostring(st.processes or "-"),age
-          ),colors.lightGray)
-        y=y+1
+      text(2,13,("Last check %s"):format(mgr.last_check or "-"),colors.lightGray)
+    end
+
+    local d=mgr.delta or git.lastDelta or {}
+    text(2,16,("Delta      +%d  ~%d  -%d  =%d"):format(
+      d.added or 0,d.changed or 0,d.removed or 0,d.unchanged or 0
+    ),colors.lightGray)
+    if mgr.last_error then text(2,17,"Error      "..tostring(mgr.last_error),colors.red) end
+
+    local nodesY=mgr.last_error and 19 or 18
+    if nodesY<=h-2 then
+      text(2,nodesY,"FLEET",colors.cyan)
+      local y=nodesY+1
+      local nodes=peers.nodes or {}
+      if #nodes==0 and net.peers then nodes=net.peers end
+      if #nodes==0 then
+        text(2,y,"Waiting for Ubuntu Server nodes...",colors.orange)
+      else
+        local now=os.epoch and os.epoch("utc") or 0
+        for _,peer in ipairs(nodes) do
+          if y>h-1 then break end
+          local last=peer.last_seen or peer.last_message or 0
+          local age=math.max(0,(now-last)/1000)
+          local online=age<10
+          local st=peer.status or {}
+          text(2,y,(online and "[+] " or "[!] ")..
+            clipped(peer.hostname or ("node-"..tostring(peer.id)),math.max(10,math.floor(w*0.34))),
+            online and colors.lime or colors.red)
+          text(math.floor(w*0.38),y,
+            ("ID %-3s %-10s svc %-2s age %.0fs"):format(
+              tostring(peer.id or "-"),tostring(peer.role or st.role or "server"),
+              tostring(st.services or "-"),age
+            ),colors.lightGray)
+          y=y+1
+        end
       end
     end
 
-    if h>=y+2 then
-      text(2,h-1,("Network RX/TX %s/%s | peers %d"):format(
-        (net.stats or {}).rx or 0,(net.stats or {}).tx or 0,#(net.peers or {})
-      ),colors.gray)
-    end
-    text(2,h,"CCLUA Network Manager",colors.lightBlue)
+    text(2,h,"Ubuntu Server + CCLUA managerd | "..tostring(monitorName or "monitor"),colors.lightBlue)
   end
 
   choose_monitor()
@@ -212,7 +254,7 @@ return function(ctx)
     if ev=="timer" and a==timer then
       if monitor then
         local ok,err=pcall(function()
-          if machine.role=="manager" then draw_manager() else draw_server() end
+          if machine.role=="manager" or machine.role=="network-manager" then draw_manager() else draw_server() end
         end)
         if not ok then
           ctx.kernel.log.write("warning","dashboard","draw failed",{error=tostring(err)},ctx.process.pid)
