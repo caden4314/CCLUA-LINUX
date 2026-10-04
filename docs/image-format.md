@@ -40,7 +40,11 @@ CCLUA-IMAGE/
 └─ packages/
 ```
 
-The packed `.luaiso` representation may use compression/encoding, but the logical paths above remain stable.
+The packed `.luaiso` representation uses a JSON container with a canonical manifest and base64-encoded file records. The logical paths above remain stable.
+
+The current bootloader keeps `startup.lua` and `luaiso.lua` outside the image. On first boot (or when `/Boot/install-pending` exists), it reads `/Boot/system.luaiso`, validates the container/record sizes, materializes the immutable system trees, records the installed build metadata, and then boots PID 1. Machine identity, `/home`, and `/var` remain outside the image.
+
+Desktop images are sourced from the verified Ubuntu 22.04.5 Desktop ISO for package/filesystem/service semantics, but x86_64 ELF binaries are converted or replaced with CCLUA-native Lua implementations because CC:Tweaked is not an x86/Linux virtual machine.
 
 ## Manifest
 

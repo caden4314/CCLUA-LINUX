@@ -123,6 +123,30 @@ print(desktop and "CCLUA-LINUX Ubuntu Desktop" or "CCLUA-LINUX Ubuntu Server")
 print(("%s | ID %d"):format(machine.hostname or os.getComputerLabel() or "node",os.getComputerID()))
 bootlog("node bootloader start id="..tostring(os.getComputerID()).." role="..tostring(machine.role))
 
+local isoPath="Boot/system.luaiso"
+local isoPending="Boot/install-pending"
+if fs.exists(isoPath) and (fs.exists(isoPending) or not fs.exists("System/init/init.lua")) then
+  print("Loading CCLUA .luaiso image...")
+  bootlog("luaiso install start path="..isoPath)
+  local okLoader,loader=pcall(dofile,"luaiso.lua")
+  if not okLoader or type(loader)~="table" then
+    error("CCLUA image loader unavailable: "..tostring(loader),0)
+  end
+  local result,isoErr=loader.install(isoPath,{clean=true})
+  if not result then
+    bootlog("luaiso install failed: "..tostring(isoErr))
+    error("CCLUA .luaiso install failed: "..tostring(isoErr),0)
+  end
+  write_json("/var/lib/cclua/luaiso.json",{
+    schema=1,role=result.role,build_id=result.build_id,
+    file_count=result.file_count,
+    installed_at=os.epoch and os.epoch("utc") or 0
+  })
+  if fs.exists(isoPending) then fs.delete(isoPending) end
+  print(("Image installed: %s (%d files)"):format(tostring(result.role),tonumber(result.file_count) or 0))
+  bootlog("luaiso install complete build="..tostring(result.build_id))
+end
+
 local function activate(slot,commit,recordPrevious)
   if not slot_usable(slot) then return nil,"slot "..tostring(slot).." is not bootable" end
   local source=slot_root(slot)

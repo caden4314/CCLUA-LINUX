@@ -20,5 +20,9 @@
   "desktop_session": "ubuntu",
   "desktop_user": "caden",
   "display_backend": "computer-terminal",
-  "external_monitor_enabled": false
+  "external_monitor_enabled": false,
+  "boot_image": "/Boot/system.luaiso",
+  "desktop_shell": "cclua-gnome",
+  "window_manager": "cclua-compositor",
+  "desktop_version": "0.2"
 }
