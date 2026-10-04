@@ -17,9 +17,11 @@ end
 
 function mock_monitor(blockW,blockH)
   local current=0.5
+  local setCalls=0
   local m={}
-  function m.setTextScale(s) current=s end
+  function m.setTextScale(s) current=s;setCalls=setCalls+1 end
   function m.getTextScale() return current end
+  function m.getSetScaleCalls() return setCalls end
   function m.getSize()
     -- Model the CCPerf 2x backing density. A one-monitor viewport which
     -- normally exposes about 51x19 at stock 0.5 has 102x38 at 0.5 and
@@ -39,6 +41,11 @@ local one=mock_monitor(1,1)
 local scale,w,h,fits=layout.fit(one,{min_width=46,min_height=18,max_scale=3})
 assert(scale==1.0,("expected 1.0 got %s (%sx%s)"):format(scale,w,h))
 assert(fits and w>=46 and h>=18)
+assert(one.getSetScaleCalls()==1,"initial fit should resize once")
+local calls=one.getSetScaleCalls()
+local scaleAgain=layout.fit(one,{min_width=46,min_height=18,max_scale=3})
+assert(scaleAgain==1.0 and one.getSetScaleCalls()==calls,
+  "stable fit must not call setTextScale again")
 
 local wall=mock_monitor(3,2)
 local s2,w2,h2,f2=layout.fit(wall,{min_width=70,min_height=24,max_scale=3})
