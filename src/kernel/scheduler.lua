@@ -13,7 +13,17 @@ function M.new(kernel)
   local ok,req,arg=coroutine.resume(p.coroutine,...)
   if not ok then
    p.state="crashed"; p.error=tostring(req); p.exit_code=1
-   kernel.log.write("error","scheduler","process crashed: "..p.name,{error=p.error},p.pid)
+   local trace=p.error
+   if debug and debug.traceback then
+    local traceOk,traceValue=pcall(debug.traceback,p.coroutine,p.error)
+    if traceOk and traceValue then trace=tostring(traceValue) end
+   end
+   if #trace>6000 then trace=trace:sub(1,6000).."\n<truncated>" end
+   p.traceback=trace
+   p.ended_at=(os.epoch and os.epoch("utc") or 0)
+   kernel.log.write("error","scheduler","process crashed: "..p.name,{
+    error=p.error,traceback=p.traceback,state=p.state,cpu_resumes=p.cpu_resumes
+   },p.pid)
    if os.queueEvent then os.queueEvent("cclua_process_exit",p.pid,p.exit_code,"crashed") end
    return false
   end
@@ -101,6 +111,13 @@ function M.new(kernel)
   if wakeTimer and os.cancelTimer then pcall(os.cancelTimer,wakeTimer) end
  end
  function s:stop() self.running=false end
+ function s.sleep(sec)
+  local now=(os.epoch and os.epoch("utc")) or 0
+  return coroutine.yield("sleep",now+math.floor((tonumber(sec) or 0)*1000))
+ end
+ function s.wait_event(filter)
+  return coroutine.yield("wait_event",filter)
+ end
  return s
 end
 function M.wait_event(f) return coroutine.yield("wait_event",f) end

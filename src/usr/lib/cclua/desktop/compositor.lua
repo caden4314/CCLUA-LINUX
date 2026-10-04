@@ -78,6 +78,8 @@ function M.run(ctx)
   local restoring=true
   local updateCache={}
   local updateCacheAt=0
+  local healthCache={network={},post={},status={}}
+  local healthCacheAt=0
 
   local ui={cursor=nil,cursor_y=nil}
   function ui.text(x,y,s,fg,bg) Canvas.put(canvas,x,y,s,fg,bg) end
@@ -91,6 +93,19 @@ function M.run(ctx)
       updateCacheAt=now
     end
     return updateCache
+  end
+
+  local function system_health()
+    local now=os.epoch and os.epoch("utc") or 0
+    if now-healthCacheAt>1500 then
+      healthCache={
+        network=Config.read_json("/var/lib/cclua/network-health.json",{}) or {},
+        post=Config.read_json("/var/lib/cclua/post.json",{}) or {},
+        status=Config.read_json("/var/lib/cclua/status.json",{}) or {},
+      }
+      healthCacheAt=now
+    end
+    return healthCache
   end
 
   local function top_visible()
@@ -267,9 +282,26 @@ function M.run(ctx)
     ui.center(1,centerText:sub(1,20),colors.white,colors.gray)
 
     local clock=os.date and os.date("%H:%M") or ""
-    local net=(machine.address and machine.address~="") and "N" or "X"
-    local right=net.." "..clock
-    ui.text(math.max(1,W-#right-1),1,right,colors.white,colors.gray)
+    local health=system_health()
+    local net=health.network or {}
+    local state=tostring(net.state or "CHECKING"):upper()
+    local netLabel
+    if state=="ONLINE" then
+      netLabel="NET "..tostring(net.manager_rtt_ms or "-").."ms"
+    elseif state=="NO_MODEM" then
+      netLabel="NET X"
+    elseif state=="DEGRADED" or state=="OFFLINE" then
+      netLabel="NET !"
+    else
+      netLabel="NET ..."
+    end
+    local netColor=state=="ONLINE" and colors.lime
+      or (state=="DEGRADED" or state=="OFFLINE" or state=="NO_MODEM") and colors.red
+      or colors.yellow
+    local right=netLabel.."  "..clock
+    local x=math.max(1,W-#right-1)
+    ui.text(x,1,netLabel,netColor,colors.gray)
+    ui.text(x+#netLabel+2,1,clock,colors.white,colors.gray)
   end
 
   local function draw_overview()
@@ -321,20 +353,29 @@ function M.run(ctx)
 
   local function draw_system_menu()
     local update=update_state()
-    local width=math.min(27,W-6)
+    local health=system_health()
+    local network=health.network or {}
+    local post=health.post or {}
+    local system=health.status or {}
+    local width=math.min(34,W-6)
     local x1=W-width+1
     local x2=W
     local y1=2
-    local y2=math.min(H,10)
+    local y2=math.min(H,13)
 
     ui.fill(x1,y1,x2,y2,colors.black,colors.white)
     ui.fill(x1,y1,x2,y1,colors.gray,colors.white)
     ui.text(x1+1,y1,"System",colors.white,colors.gray)
 
     local rows={
-      {"Network",machine.address or "offline",colors.cyan},
+      {"System",tostring(system.state or "BOOTING"),system.state=="HEALTHY" and colors.lime or colors.yellow},
+      {"POST",tostring(post.state or "UNKNOWN"),post.fatal and colors.red or post.degraded and colors.yellow or colors.lime},
+      {"Network",tostring(network.state or "CHECKING"),
+        network.state=="ONLINE" and colors.lime or network.state=="DEGRADED" and colors.red or colors.yellow},
+      {"RTT",tostring(network.manager_rtt_ms or "-").." ms",colors.cyan},
+      {"Missed",tostring(network.missed_probes or 0),tonumber(network.missed_probes or 0)>0 and colors.yellow or colors.lightGray},
       {"Update",tostring(update.state or "UNKNOWN"),update.state=="CURRENT" and colors.lime or colors.orange},
-      {"Image",tostring(update.current_commit or "?"):sub(1,14),colors.lightGray},
+      {"Image",tostring(update.current_commit or "?"):sub(1,16),colors.lightGray},
       {"User","caden",colors.white},
     }
     local yy=y1+2

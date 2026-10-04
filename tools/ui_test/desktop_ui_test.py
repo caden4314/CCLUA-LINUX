@@ -232,6 +232,13 @@ end
         device["devices"] = self.lua.table()
         device["list"] = self.lua.eval("function(_) return {} end")
         kernel["device"] = device
+        services = self.lua.table()
+        services["list"] = self.lua.eval(
+            "function() return {{name='systemd-networkd.service',state='active',pid=10,total_restarts=0},"
+            "{name='peripherald.service',state='active',pid=11,total_restarts=0},"
+            "{name='cclua-statusd.service',state='active',pid=12,total_restarts=0}} end"
+        )
+        kernel["services"] = services
         kernel["exec"] = self.lua.table_from({
             "resolve": self.lua.eval("function(_) return nil end"),
             "load": self.lua.eval("function(_) return nil,'not available in preview' end"),
@@ -310,6 +317,10 @@ def main():
         ("02_files","Files",[("mouse_click",1,2,4)]),
         ("03_editor","Text Editor",[("mouse_click",1,2,5)]),
         ("04_monitor","System Monitor",[("mouse_click",1,2,6)]),
+        ("04_monitor_health","System Monitor Health",[
+            ("mouse_click",1,2,6),
+            ("key",258),("key",258),("key",258),
+        ]),
         ("05_devices","Devices",[("mouse_click",1,2,7)]),
         ("06_control","Control Center",[("mouse_click",1,2,8)]),
         ("07_music","Music",[("mouse_click",1,2,9)]),

@@ -9,6 +9,9 @@ end
 return {main=function(ctx,args)
   local machine=config.machine()
   local status=config.read_json("/var/lib/cclua/status.json",{state="BOOTING"})
+  local post=config.read_json("/var/lib/cclua/post.json",{state="UNKNOWN"})
+  local link=config.read_json("/var/lib/cclua/network-health.json",{state="CHECKING"})
+  local session=config.read_json("/var/lib/cclua/session-health.json",{})
   local update=config.read_json("/var/lib/cclua/update-state.json",{state="IDLE"})
   local net=config.read_json("/var/lib/cclua/network.json",{peers={},stats={}})
 
@@ -30,8 +33,17 @@ return {main=function(ctx,args)
   print(("Services:    %d/%d active, %d failed"):format(active,total,failed))
   print(("Processes:   %d"):format(#ctx.kernel.process.all()))
   print(("Peripherals: %d"):format((function() local n=0 for _ in pairs(ctx.kernel.device.devices or {}) do n=n+1 end return n end)()))
+  print(("POST:        %s (%s/%s/%s)"):format(
+    post.state or "UNKNOWN",post.pass or 0,post.warn or 0,post.fail or 0
+  ))
   print(("Address:     %s"):format(machine.address or "-"))
   print(("Manager:     %s"):format(machine.manager or "-"))
+  print(("Link:        %s  RTT %sms  missed %s"):format(
+    link.state or "CHECKING",tostring(link.manager_rtt_ms or "-"),tostring(link.missed_probes or 0)
+  ))
+  print(("Modems:      %s  reopens %s"):format(
+    tostring(link.modem_count or 0),tostring(link.reopen_count or 0)
+  ))
   print(("Peers:       %d"):format(#(net.peers or {})))
   print(("Update:      %s (%s%%)"):format(
     update.state or update.phase or "IDLE",
@@ -40,7 +52,12 @@ return {main=function(ctx,args)
   print(("Auto update: %s"):format(update.auto_apply==false and "disabled" or "enabled"))
   print(("Installed:   %s"):format(short(update.current_commit or update.commit or update.build or update.version)))
   print(("Available:   %s"):format(short(update.target_commit or update.available_commit or update.manager_commit)))
-  print(("Manager:     %s"):format(update.manager_state or (update.manager_id and ("ID "..tostring(update.manager_id))) or "-"))
+  print(("Update mgr:  %s"):format(update.manager_state or (update.manager_id and ("ID "..tostring(update.manager_id))) or "-"))
+  print(("Session:     %s%s"):format(
+    session.mode or "-",
+    session.recovery and " (RECOVERY)" or ""
+  ))
+  print(("Restarts:    %s"):format(tostring(status.service_restarts or 0)))
   if update.current_action then
     print(("Working:     %s %s"):format(tostring(update.current_action),tostring(update.current_file or "")))
   end

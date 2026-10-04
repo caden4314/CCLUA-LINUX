@@ -70,9 +70,9 @@ return function(ctx)
 
   local function status_color(state)
     state=tostring(state or "BOOTING"):upper()
-    if state=="HEALTHY" or state=="CURRENT" then return colors.lime end
+    if state=="HEALTHY" or state=="CURRENT" or state=="ONLINE" or state=="PASSED" then return colors.lime end
     if state=="UPDATING" or state=="BOOTING" or state=="CHECKING" or state=="DOWNLOADING" or state=="STAGING" or state=="VERIFYING" or state=="READY" or state=="ACTIVATING" or state=="AVAILABLE" then return colors.yellow end
-    if state=="DEGRADED" or state=="FAILED" or state=="ROLLBACK" then return colors.red end
+    if state=="DEGRADED" or state=="FAILED" or state=="ROLLBACK" or state=="OFFLINE" or state=="NO_MODEM" then return colors.red end
     return colors.lightGray
   end
 
@@ -105,6 +105,8 @@ return function(ctx)
     monitor.clear()
 
     local status=read("/var/lib/cclua/status.json",{state="BOOTING"})
+    local post=read("/var/lib/cclua/post.json",{state="UNKNOWN"})
+    local link=read("/var/lib/cclua/network-health.json",{state="CHECKING"})
     local update=read("/var/lib/cclua/update-state.json",{})
     local net=read("/var/lib/cclua/network.json",{peers={},stats={}})
     local active,failed,total=service_counts()
@@ -122,10 +124,13 @@ return function(ctx)
     local fault=tonumber(status.error_code or 0) or 0
     text(2,6,("Periph %d  Fault %d"):format(count(ctx.kernel.device.devices),fault),
       fault>0 and colors.red or colors.lightGray)
+    text(2,7,("POST %-9s Link %-9s"):format(
+      tostring(post.state or "UNKNOWN"),tostring(link.state or "CHECKING")
+    ),post.fatal and colors.red or post.degraded and colors.yellow or colors.lightGray)
 
     text(2,8,"NETWORK",colors.cyan)
     text(2,9,clipped(machine.address or "-",w-2),colors.lightGray)
-    text(2,10,("Mgr %s"):format(machine.manager or "-"),colors.lightGray)
+    text(2,10,("Mgr %s  RTT %sms"):format(machine.manager or "-",tostring(link.manager_rtt_ms or "-")),colors.lightGray)
     text(2,11,("Peers %d  RX/TX %s/%s"):format(
       #(net.peers or {}),(net.stats or {}).rx or 0,(net.stats or {}).tx or 0
     ),colors.lightGray)
@@ -176,6 +181,8 @@ return function(ctx)
     monitor.clear()
 
     local status=read("/var/lib/cclua/status.json",{state="BOOTING"})
+    local post=read("/var/lib/cclua/post.json",{state="UNKNOWN"})
+    local link=read("/var/lib/cclua/network-health.json",{state="CHECKING"})
     local update=read("/var/lib/cclua/update-state.json",{})
     local net=read("/var/lib/cclua/network.json",{peers={},stats={}})
     local active,failed,total=service_counts()
@@ -195,15 +202,22 @@ return function(ctx)
       status.lamp_output and colors.red or colors.gray)
     local faultCode=tonumber(status.error_code or 0) or 0
     text(2,10,faultCode>0
-      and ("Fault code   %d - %s"):format(faultCode,clipped(status.error_reason or "fault",w-19))
-      or "Fault code   none",
-      faultCode>0 and colors.red or colors.gray)
+      and ("Fault %d     %s"):format(faultCode,clipped(status.error_reason or "fault",w-14))
+      or ("POST         %s (%s/%s/%s)"):format(
+        tostring(post.state or "UNKNOWN"),post.pass or 0,post.warn or 0,post.fail or 0
+      ),
+      faultCode>0 and colors.red or (post.degraded and colors.yellow or colors.gray))
 
     text(2,11,"NETWORK",colors.cyan)
     text(2,12,("Address      %s"):format(machine.address or "-"),colors.lightGray)
     text(2,13,("Manager      %s"):format(machine.manager or "-"),colors.lightGray)
-    text(2,14,("Peers        %d"):format(#(net.peers or {})),colors.lightGray)
-    text(2,15,("RX/TX        %s / %s"):format((net.stats or {}).rx or 0,(net.stats or {}).tx or 0),colors.lightGray)
+    text(2,14,("Link         %-10s RTT %sms missed %s"):format(
+      tostring(link.state or "CHECKING"),tostring(link.manager_rtt_ms or "-"),tostring(link.missed_probes or 0)
+    ),status_color(link.state))
+    text(2,15,("Peers        %d  modems %s"):format(#(net.peers or {}),tostring(link.modem_count or 0)),colors.lightGray)
+    text(2,16,("RX/TX        %s / %s  dup %s"):format(
+      (net.stats or {}).rx or 0,(net.stats or {}).tx or 0,(net.stats or {}).duplicates or 0
+    ),colors.lightGray)
 
     if h>=18 then
       text(2,17,"UPDATE",colors.cyan)
@@ -245,6 +259,8 @@ return function(ctx)
     monitor.clear()
 
     local status=read("/var/lib/cclua/status.json",{state="BOOTING"})
+    local post=read("/var/lib/cclua/post.json",{state="UNKNOWN"})
+    local link=read("/var/lib/cclua/network-health.json",{state="CHECKING"})
     local git=read("/var/lib/cclua/github/state.json",{})
     local mgr=read("/var/lib/cclua/manager-state.json",{})
     local peers=read("/var/lib/cclua/manager-peers.json",{nodes={}})
@@ -273,6 +289,9 @@ return function(ctx)
     text(2,6,("Installed  %s"):format(tostring(mgr.installed_commit or "-"):sub(1,12)),colors.lightGray)
     text(2,7,("Available  %s"):format(tostring(mgr.image_commit or git.imageCommit or git.commit or "-"):sub(1,12)),colors.lightGray)
     text(2,8,("Slot       %s   files %s"):format(mgr.active_slot or git.activeSlot or "-",mgr.files or git.files or "-"),colors.lightGray)
+    text(2,9,("POST %-9s  NET %-9s modems %s"):format(
+      tostring(post.state or "UNKNOWN"),tostring(link.state or "CHECKING"),tostring(link.modem_count or 0)
+    ),post.fatal and colors.red or post.degraded and colors.yellow or colors.lightGray)
     local managerFault=tonumber(status.error_code or 0) or 0
     if managerFault>0 then
       text(math.floor(w*0.55),4,("FAULT %d"):format(managerFault),colors.red)

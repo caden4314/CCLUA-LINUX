@@ -83,11 +83,11 @@ return function(ctx)
   local function status_color(state,isOnline)
     if not isOnline then return colors.red end
     state=tostring(state or "BOOTING"):upper()
-    if state=="HEALTHY" or state=="CURRENT" then return colors.lime end
+    if state=="HEALTHY" or state=="CURRENT" or state=="ONLINE" or state=="PASSED" then return colors.lime end
     if state=="UPDATING" or state=="BOOTING" or state=="CHECKING" or
        state=="DOWNLOADING" or state=="STAGING" or state=="VERIFYING" or
        state=="READY" or state=="ACTIVATING" then return colors.yellow end
-    if state=="DEGRADED" or state=="FAILED" or state=="OFFLINE" then return colors.red end
+    if state=="DEGRADED" or state=="FAILED" or state=="OFFLINE" or state=="NO_MODEM" then return colors.red end
     return colors.lightGray
   end
 
@@ -131,7 +131,7 @@ return function(ctx)
 
   local function draw_list(defs,map,w,h)
     local y=4
-    line(3,"NODE        STATUS      UPDATE       PROC SVC  AGE",colors.cyan,colors.black)
+    line(3,"NODE        STATUS      LINK       UPDATE       RST AGE",colors.cyan,colors.black)
     for _,def in ipairs(defs) do
       if y>h-2 then break end
       local n=node_for(def,map)
@@ -140,11 +140,13 @@ return function(ctx)
       local isOn=online(n)
       local state=isOn and tostring(st.system_state or "BOOTING") or "OFFLINE"
       local ustate=isOn and tostring(upd.state or "CHECKING") or "-"
+      local link=st.network or {}
+      local linkState=isOn and tostring(link.state or "CHECKING") or "-"
       local pct=tonumber(upd.percent or (ustate=="CURRENT" and 100 or 0)) or 0
       local age=n and string.format("%.1fs",age_seconds(n)) or "--"
-      local row=("%-11s %-11s %-10s %3d%%  %4s %3s %5s"):format(
-        display_name(def,n),state,ustate,pct,
-        tostring(st.processes or "-"),tostring(st.services or "-"),age
+      local row=("%-11s %-11s %-10s %-10s %3d%% %3s %5s"):format(
+        display_name(def,n),state,linkState,ustate,pct,
+        tostring(st.service_restarts or 0),age
       )
       line(y,row,status_color(state,isOn),colors.black)
       y=y+1
@@ -174,6 +176,9 @@ return function(ctx)
       local isOn=online(n)
       local state=isOn and tostring(st.system_state or "BOOTING") or "OFFLINE"
       local ustate=isOn and tostring(upd.state or "CHECKING") or "-"
+      local link=st.network or {}
+      local post=st.post or {}
+      local linkState=isOn and tostring(link.state or "CHECKING") or "-"
       local pct=tonumber(upd.percent or (ustate=="CURRENT" and 100 or 0)) or 0
       local fg=status_color(state,isOn)
       local headerBg=isOn and colors.gray or colors.red
@@ -187,8 +192,10 @@ return function(ctx)
         tostring(upd.current_commit or st.current_commit or "-"):sub(1,8),
         n and string.format("%.1fs",age_seconds(n)) or "--"
       ),colors.gray,colors.black)
-      local workload=(tonumber(st.processes or 0) or 0)>0 and "WORKLOAD ACTIVE" or "IDLE"
-      segment(y+4,x,colW,workload,colors.lightGray,colors.black)
+      segment(y+4,x,colW,("NET %-9s %sms  POST %-8s R%s"):format(
+        linkState,tostring(link.manager_rtt_ms or "-"),
+        tostring(post.state or "UNKNOWN"),tostring(st.service_restarts or 0)
+      ),status_color(linkState,isOn),colors.black)
     end
   end
 
@@ -208,7 +215,13 @@ return function(ctx)
         local st=n and n.status or {}
         local state=tostring(st.system_state or "BOOTING"):upper()
         local upd=tostring((st.update or {}).state or "CHECKING"):upper()
-        if not isOn or state=="DEGRADED" or state=="FAILED" or upd=="FAILED" or upd=="OFFLINE" then
+        local link=tostring((st.network or {}).state or "CHECKING"):upper()
+        local post=st.post or {}
+        if not isOn
+          or state=="DEGRADED" or state=="FAILED"
+          or upd=="FAILED" or upd=="OFFLINE"
+          or link=="DEGRADED" or link=="NO_MODEM" or link=="OFFLINE"
+          or post.fatal==true or tostring(post.state or ""):upper()=="FAILED" then
           faults=faults+1
         end
       end

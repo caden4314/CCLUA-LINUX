@@ -63,39 +63,56 @@ return function(ctx)
   local function classify()
     local failed=failed_services()
     local update=update_state()
+    local post=config.read_json("/var/lib/cclua/post.json",{})
+    local network=config.read_json("/var/lib/cclua/network-health.json",{})
     local phase=tostring(update.state or update.phase or ""):upper()
+    local postState=tostring(post.state or "UNKNOWN"):upper()
+    local networkState=tostring(network.state or "UNKNOWN"):upper()
+    local managerRole=machine.role=="manager" or machine.role=="network-manager"
+
+    if post.fatal==true or postState=="FAILED" then
+      return "DEGRADED",5,"POST validation failure",failed,update,post,network
+    end
 
     if #failed>0 then
-      return "DEGRADED",1,"service failure",failed,update
+      return "DEGRADED",1,"service failure",failed,update,post,network
     end
 
     if phase=="FAILED" or phase=="ROLLBACK" then
-      return "DEGRADED",2,"update/rollback failure",failed,update
+      return "DEGRADED",2,"update/rollback failure",failed,update,post,network
+    end
+
+    if os.clock()>12 and not managerRole
+      and (networkState=="DEGRADED" or networkState=="NO_MODEM" or networkState=="OFFLINE") then
+      local reason=networkState=="NO_MODEM"
+        and "network modem unavailable"
+        or ("manager link "..networkState:lower())
+      return "DEGRADED",3,reason,failed,update,post,network
     end
 
     if phase=="OFFLINE" or phase=="DEGRADED"
       or tostring(update.manager_state or ""):upper()=="DEGRADED" then
-      return "DEGRADED",3,"manager/network fault",failed,update
+      return "DEGRADED",3,"manager/update link fault",failed,update,post,network
     end
 
     local badRole,roleReason=role_fault()
     if badRole then
-      return "DEGRADED",4,roleReason,failed,update
+      return "DEGRADED",4,roleReason,failed,update,post,network
     end
 
     local updating={
       CHECKING=true,DOWNLOADING=true,VERIFYING=true,STAGING=true,
       READY=true,ACTIVATING=true,HEALTH_CHECK=true,AVAILABLE=true
     }
-    if updating[phase] then return "UPDATING",0,nil,failed,update end
+    if updating[phase] then return "UPDATING",0,nil,failed,update,post,network end
 
     if os.clock()<4
       or not active_service("systemd-networkd.service")
       or not active_service("peripherald.service") then
-      return "BOOTING",0,nil,failed,update
+      return "BOOTING",0,nil,failed,update,post,network
     end
 
-    return "HEALTHY",0,nil,failed,update
+    return "HEALTHY",0,nil,failed,update,post,network
   end
 
   local function lamp(code,tick)
@@ -114,7 +131,7 @@ return function(ctx)
   local previousCode=nil
   local previousLamp=nil
   local tick=0
-  local cachedState,cachedErrorCode,cachedErrorReason,cachedFailed,cachedUpdate=nil,nil,nil,nil,nil
+  local cachedState,cachedErrorCode,cachedErrorReason,cachedFailed,cachedUpdate,cachedPost,cachedNetwork=nil,nil,nil,nil,nil,nil,nil
   local timer=os.startTimer(0.15)
 
   while true do
@@ -126,10 +143,10 @@ return function(ctx)
       -- Health classification reads several state files. Sample those about
       -- once per second instead of on every 150 ms lamp-animation tick.
       if cachedState==nil or tick%7==1 then
-        cachedState,cachedErrorCode,cachedErrorReason,cachedFailed,cachedUpdate=classify()
+        cachedState,cachedErrorCode,cachedErrorReason,cachedFailed,cachedUpdate,cachedPost,cachedNetwork=classify()
       end
-      local state,errorCode,errorReason,failed,update=
-        cachedState,cachedErrorCode,cachedErrorReason,cachedFailed,cachedUpdate
+      local state,errorCode,errorReason,failed,update,post,network=
+        cachedState,cachedErrorCode,cachedErrorReason,cachedFailed,cachedUpdate,cachedPost,cachedNetwork
 
       local output=lamp(errorCode,tick)
       if output~=previousLamp then
@@ -153,6 +170,25 @@ return function(ctx)
           failed_services=failed_names(failed),
           failed_units=failed,
           update=update,
+          post={
+            state=post and post.state,
+            pass=post and post.pass,
+            warn=post and post.warn,
+            fail=post and post.fail,
+            fatal=post and post.fatal,
+          },
+          network={
+            state=network and network.state,
+            manager_rtt_ms=network and network.manager_rtt_ms,
+            missed_probes=network and network.missed_probes,
+            modem_count=network and network.modem_count,
+            manager_age_seconds=network and network.manager_age_seconds,
+          },
+          service_restarts=(function()
+            local total=0
+            for _,u in ipairs(ctx.kernel.services:list()) do total=total+(tonumber(u.total_restarts) or 0) end
+            return total
+          end)(),
           timestamp=os.epoch and os.epoch("utc") or 0
         }
         config.write_json("/var/lib/cclua/status.json",payload)

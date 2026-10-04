@@ -1,4 +1,6 @@
 local M={}
+local config=dofile("/usr/lib/cclua/config.lua")
+local TABS={"Processes","Services","Devices","Health"}
 
 function M.new(ctx)
   return {title="System Monitor",icon="M",tab=1,selected=1,scroll=1}
@@ -41,18 +43,50 @@ local function peripheral_rows(ctx)
   return out
 end
 
+local function health_rows(ctx)
+  local post=config.read_json("/var/lib/cclua/post.json",{})
+  local net=config.read_json("/var/lib/cclua/network-health.json",{})
+  local status=config.read_json("/var/lib/cclua/status.json",{})
+  local update=config.read_json("/var/lib/cclua/update-state.json",{})
+  local session=config.read_json("/var/lib/cclua/session-health.json",{})
+  local restarts=0
+  local failed=0
+  for _,u in ipairs(ctx.kernel.services:list()) do
+    restarts=restarts+(tonumber(u.total_restarts) or 0)
+    if u.state=="failed" then failed=failed+1 end
+  end
+
+  local function row(a,b,c) return {a=tostring(a),b=tostring(b or "-"),c=tostring(c or "")} end
+  return {
+    row("System",status.state or "BOOTING",status.error_reason or ""),
+    row("POST",post.state or "UNKNOWN",
+      ("%s pass / %s warn / %s fail"):format(post.pass or 0,post.warn or 0,post.fail or 0)),
+    row("Network",net.state or "UNKNOWN",
+      ("RTT %sms / missed %s"):format(net.manager_rtt_ms or "-",net.missed_probes or 0)),
+    row("Modems",net.modem_count or 0,
+      ("reopens %s"):format(net.reopen_count or 0)),
+    row("Manager age",net.manager_age_seconds and string.format("%.1fs",net.manager_age_seconds) or "-",""),
+    row("Update",update.state or update.phase or "IDLE",
+      tostring(update.current_commit or "-"):sub(1,16)),
+    row("Session",session.mode or "-",
+      session.recovery and "RECOVERY" or ("crash streak "..tostring(session.crash_streak or 0))),
+    row("Services",#ctx.kernel.services:list(),
+      ("%d failed / %d restarts"):format(failed,restarts)),
+  }
+end
+
 local function rows(ctx,tab)
   if tab==2 then return service_rows(ctx) end
   if tab==3 then return peripheral_rows(ctx) end
+  if tab==4 then return health_rows(ctx) end
   return process_rows(ctx)
 end
 
 function M.draw(ctx,st,ui,x,y,w,h)
   ui.fill(x,y,x+w-1,y+h-1,colors.black,colors.white)
 
-  local tabs={"Processes","Services","Devices"}
   local tx=x+1
-  for i,label in ipairs(tabs) do
+  for i,label in ipairs(TABS) do
     local bg=i==st.tab and colors.gray or colors.black
     local fg=i==st.tab and colors.white or colors.lightGray
     ui.text(tx,y," "..label.." ",fg,bg)
@@ -69,7 +103,8 @@ function M.draw(ctx,st,ui,x,y,w,h)
   local header
   if st.tab==1 then header="PID   NAME                       STATE"
   elseif st.tab==2 then header="SERVICE                        STATE   PID"
-  else header="DEVICE                         TYPE" end
+  elseif st.tab==3 then header="DEVICE                         TYPE"
+  else header="CHECK                          STATE        DETAIL" end
   ui.text(x+1,y+1,header:sub(1,math.max(1,w-2)),colors.gray,colors.black)
 
   for line=1,body-1 do
@@ -86,8 +121,10 @@ function M.draw(ctx,st,ui,x,y,w,h)
         text=("%-5s %-26s %s"):format(item.a,item.b:sub(1,26),item.c)
       elseif st.tab==2 then
         text=("%-30s %-7s %s"):format(item.a:sub(1,30),item.b,item.c)
-      else
+      elseif st.tab==3 then
         text=("%-30s %s"):format(item.a:sub(1,30),item.b)
+      else
+        text=("%-28s %-12s %s"):format(item.a:sub(1,28),item.b:sub(1,12),item.c)
       end
       ui.text(x+1,yy,text:sub(1,math.max(1,w-2)),fg,bg)
     end
@@ -98,18 +135,25 @@ function M.draw(ctx,st,ui,x,y,w,h)
   ui.text(x,y+h-1,footer:sub(1,w),colors.lightGray,colors.gray)
 end
 
+local function tab_at(rx)
+  local x=2
+  for i,label in ipairs(TABS) do
+    local width=#label+2
+    if rx and rx>=x and rx<x+width then return i end
+    x=x+width+1
+  end
+  return nil
+end
+
 function M.event(ctx,st,ev,a,b,c,rx,ry,w,h)
   if ev=="key" then
-    if a==keys.tab then st.tab=st.tab%3+1;st.selected=1;st.scroll=1;return true end
+    if a==keys.tab then st.tab=st.tab%#TABS+1;st.selected=1;st.scroll=1;return true end
     if a==keys.up then st.selected=math.max(1,st.selected-1);return true end
     if a==keys.down then st.selected=math.min(math.max(1,#(st._rows or {})),st.selected+1);return true end
   elseif ev=="mouse_click" and ry then
     if ry==1 then
-      if rx and rx<14 then st.tab=1
-      elseif rx and rx<27 then st.tab=2
-      else st.tab=3 end
-      st.selected=1;st.scroll=1
-      return true
+      local selected=tab_at(rx)
+      if selected then st.tab=selected;st.selected=1;st.scroll=1;return true end
     elseif ry>=3 and ry<h then
       local idx=st.scroll+ry-3
       if (st._rows or {})[idx] then st.selected=idx;return true end

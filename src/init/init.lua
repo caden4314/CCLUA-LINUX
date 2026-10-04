@@ -7,7 +7,7 @@ local init,err=k.process.create{
 }
 if not init then k.panic.raise(k,"cannot create PID 1",{error=err}) end
 
-local function register_services()
+local function register_services(recoveryMode)
   local imported=k.services:load_ubuntu_reference()
   k.log.write("info","init","imported Ubuntu systemd unit metadata",{units=imported},1)
 
@@ -59,6 +59,12 @@ local function register_services()
     enabled=true,
     exec=load_service("/usr/lib/cclua/services/controld.lua")
   }
+
+  -- Fatal POST failures must still be able to reach a diagnostic shell. Do
+  -- not load optional/role-specific units which may be the thing POST found
+  -- missing or corrupt.
+  if recoveryMode then return end
+
   local config=dofile("/usr/lib/cclua/config.lua")
   local machine=config.machine()
   local managerRole=machine.role=="manager" or machine.role=="network-manager"
@@ -183,46 +189,148 @@ end
 k.scheduler:add(init,function()
   local config=dofile("/usr/lib/cclua/config.lua")
   local machine=config.machine()
-  local desktop=machine.role=="desktop-client"
+  local wantsDesktop=machine.role=="desktop-client"
     or tostring(machine.image or ""):find("desktop",1,true)~=nil
+  local desktop=wantsDesktop
 
   k.log.write("info","init",desktop and "CCLUA Ubuntu Desktop boot" or "CCLUA Ubuntu Server boot",{
     role=machine.role,image=machine.image
   },1)
-  print(desktop and "CCLUA Ubuntu 22.04.5 LTS Desktop" or "CCLUA Ubuntu 22.04.5 LTS Server")
-  print("Kernel "..k.version.version.." ABI "..k.version.kernel_abi)
-  print("Starting services...")
 
-  register_services()
-  k.services:start_enabled()
+  -- POST runs after the kernel is mounted/scheduled but before any role
+  -- services start. This gives us a real boot gate instead of discovering a
+  -- broken image after the service fleet has already started.
+  local postResult
+  do
+    local ok,postOrErr=pcall(function()
+      return dofile("/usr/lib/cclua/post.lua").run(
+        {kernel=k,process=init},
+        {animate=true,monitors=true}
+      )
+    end)
+    if ok and type(postOrErr)=="table" then
+      postResult=postOrErr
+    else
+      postResult={
+        state="FAILED",fatal=true,degraded=true,
+        pass=0,warn=0,fail=1,fatal_count=1,
+        checks={{id="post-engine",label="POST engine",state="FAIL",critical=true,detail=tostring(postOrErr)}}
+      }
+      k.log.write("critical","init","POST engine failed",{error=tostring(postOrErr)},1)
+    end
+  end
+
+  local recovery=postResult.fatal==true
+  register_services(recovery)
+
+  if recovery then
+    desktop=false
+    term.setTextColor(colors.red)
+    print("Entering CCLUA recovery mode: fatal POST failure.")
+    term.setTextColor(colors.white)
+
+    -- Keep only the minimum diagnostic/control plane online. Role services,
+    -- dashboards and update activation are intentionally held back until an
+    -- operator can inspect the failure.
+    local safe={
+      "systemd-journald.service",
+      "systemd-networkd.service",
+      "systemd-resolved.service",
+      "peripherald.service",
+      "cclua-statusd.service",
+      "cclua-controld.service",
+    }
+    for _,name in ipairs(safe) do
+      local ok,err=k.services:start(name)
+      if not ok then k.log.write("error","init","recovery service failed to start",{unit=name,error=err},1) end
+    end
+  else
+    print("Starting CCLUA services...")
+    k.services:start_enabled()
+  end
+
+  local function write_session_state(mode,session,crashStreak,lastError)
+    config.write_json("/var/lib/cclua/session-health.json",{
+      schema=1,
+      mode=mode,
+      desired=wantsDesktop and "desktop" or "console",
+      recovery=recovery,
+      pid=session and session.pid or nil,
+      state=session and session.state or "missing",
+      crash_streak=crashStreak or 0,
+      last_error=lastError,
+      timestamp=os.epoch and os.epoch("utc") or 0,
+    })
+  end
 
   local session,serr
   if desktop then session,serr=spawn_desktop()
   else session,serr=spawn_console() end
 
+  if not session and desktop then
+    k.log.write("error","init","desktop session spawn failed; falling back to recovery console",{error=serr},1)
+    desktop=false
+    recovery=true
+    session,serr=spawn_console()
+  elseif not session then
+    k.log.write("critical","init","console spawn failed",{error=serr},1)
+  end
+
   if not session then
-    k.log.write("error","init",desktop and "desktop session spawn failed" or "console spawn failed",{error=serr},1)
-    session=select(1,spawn_console())
+    k.panic.raise(k,"unable to start an interactive session",{error=serr,recovery=recovery})
   end
 
   local crashStreak=0
+  write_session_state(desktop and "desktop" or "console",session,crashStreak,nil)
+
   while true do
-    local ev,pid=coroutine.yield("wait_event","cclua_process_exit")
+    local ev,pid,exitCode,exitState=coroutine.yield("wait_event","cclua_process_exit")
     if ev=="cclua_process_exit" and session and pid==session.pid then
-      local crashed=session.state=="crashed"
-      if crashed then crashStreak=math.min(crashStreak+1,5)
+      local crashed=session.state=="crashed" or exitState=="crashed"
+      local lastError=session.error or session.traceback
+      if crashed then crashStreak=math.min(crashStreak+1,8)
       else crashStreak=0 end
 
-      k.log.write("warning","init",
+      k.log.write(crashed and "error" or "warning","init",
         desktop and "desktop session exited; restarting" or "console shell exited; restarting",
-        {crashed=crashed,crash_streak=crashStreak},1)
+        {
+          crashed=crashed,crash_streak=crashStreak,exit_code=exitCode,
+          error=lastError,mode=desktop and "desktop" or "console"
+        },1)
 
-      if crashed and k.scheduler and k.scheduler.sleep then
-        k.scheduler.sleep(math.min(4,0.5*(2^(crashStreak-1))))
+      -- A desktop which crashes repeatedly is more useful as a working
+      -- recovery console than as an endless compositor restart loop.
+      if desktop and crashed and crashStreak>=3 then
+        k.log.write("critical","init","desktop crash loop; switching to recovery console",{
+          crash_streak=crashStreak,error=lastError
+        },1)
+        desktop=false
+        recovery=true
+        crashStreak=0
       end
 
-      if desktop then session=select(1,spawn_desktop())
-      else session=select(1,spawn_console()) end
+      if crashed and k.scheduler and k.scheduler.sleep then
+        k.scheduler.sleep(math.min(8,0.5*(2^math.max(0,crashStreak-1))))
+      end
+
+      local nextSession,nextErr
+      if desktop then nextSession,nextErr=spawn_desktop()
+      else nextSession,nextErr=spawn_console() end
+      session=nextSession
+
+      if not session then
+        k.log.write("critical","init","session restart failed",{error=nextErr,mode=desktop and "desktop" or "console"},1)
+        if desktop then
+          desktop=false
+          recovery=true
+          session,nextErr=spawn_console()
+        end
+      end
+
+      if not session then
+        k.panic.raise(k,"interactive session restart failed",{error=nextErr})
+      end
+      write_session_state(desktop and "desktop" or "console",session,crashStreak,lastError)
     end
   end
 end)

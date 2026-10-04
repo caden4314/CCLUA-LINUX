@@ -18,13 +18,17 @@ end
 local function value_rows(ctx,section)
   local m=config.machine()
   if section==2 then
+    local n=config.read_json("/var/lib/cclua/network-health.json",{})
     return {
       {"Hostname",m.hostname or "test-client"},
       {"Address",m.address or "unconfigured"},
-      {"Netmask",m.netmask or "255.255.255.0"},
-      {"Manager",m.manager or "10.27.0.1"},
       {"Network",m.network or "10.27.0.0/24"},
-      {"Status","Connected"},
+      {"Manager",m.manager or "10.27.0.1"},
+      {"Link",n.state or "CHECKING"},
+      {"RTT",(n.manager_rtt_ms and tostring(n.manager_rtt_ms).." ms") or "-"},
+      {"Missed",tostring(n.missed_probes or 0)},
+      {"Modems",tostring(n.modem_count or 0)},
+      {"Reopens",tostring(n.reopen_count or 0)},
     }
   elseif section==3 then
     local u=config.read_json("/var/lib/cclua/update-state.json",{})
@@ -47,6 +51,7 @@ local function value_rows(ctx,section)
       {"Session","ubuntu"},
     }
   end
+  local post=config.read_json("/var/lib/cclua/post.json",{})
   return {
     {"OS","Ubuntu 22.04.5 LTS Desktop"},
     {"Device",m.hostname or "test-client"},
@@ -54,6 +59,7 @@ local function value_rows(ctx,section)
     {"Kernel",tostring(ctx.kernel.version.version)},
     {"Kernel ABI",tostring(ctx.kernel.version.kernel_abi)},
     {"Role",m.role or "desktop-client"},
+    {"POST",post.state or "UNKNOWN"},
     {"Processes",tostring(#ctx.kernel.process.all())},
     {"User","caden"},
   }

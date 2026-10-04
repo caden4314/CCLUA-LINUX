@@ -153,6 +153,7 @@ return function(ctx)
     local p=payload(extra)
     config.write_json("/var/lib/cclua/update-state.json",p)
     config.write_json("/var/log/cclua/update-health.json",p)
+    local health=config.read_json("/var/lib/cclua/status.json",{})
     pcall(rednet.send,managerId,{
       protocol=protocol,
       op="node_update_status",
@@ -161,10 +162,16 @@ return function(ctx)
       status={
         hostname=machine.hostname,
         role=machine.role,
-        system_state=(state=="FAILED" or state=="OFFLINE") and "DEGRADED"
-          or ((state=="CURRENT") and "HEALTHY" or "UPDATING"),
+        system_state=health.state
+          or ((state=="FAILED" or state=="OFFLINE") and "DEGRADED"
+          or ((state=="CURRENT") and "HEALTHY" or "UPDATING")),
         current_commit=local_commit(),
         update=p,
+        post=health.post,
+        network=health.network,
+        service_restarts=health.service_restarts or 0,
+        error_code=health.error_code,
+        error_reason=health.error_reason,
       }
     },protocol)
     lastStatePublishAt=now
@@ -185,6 +192,11 @@ return function(ctx)
       system_state=health.state or "BOOTING",
       current_commit=local_commit(),
       update=update,
+      post=health.post,
+      network=health.network,
+      service_restarts=health.service_restarts or 0,
+      error_code=health.error_code,
+      error_reason=health.error_reason,
       processes=#ctx.kernel.process.all(),
       services=(function()
         local n=0

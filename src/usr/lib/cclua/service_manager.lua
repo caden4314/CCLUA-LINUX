@@ -6,6 +6,15 @@ function M.new(kernel)
     assert(unit and unit.name,"unit name required")
     unit.state=unit.state or "inactive"
     unit.enabled=unit.enabled==true
+    if type(unit.exec)=="function" then
+      if unit.restart==nil then unit.restart="on-failure" end
+      unit.restart_delay=tonumber(unit.restart_delay) or 0.75
+      unit.restart_max_delay=tonumber(unit.restart_max_delay) or 8
+      unit.restart_burst=tonumber(unit.restart_burst) or 5
+      unit.restart_window=tonumber(unit.restart_window) or 60
+      unit.restart_count=tonumber(unit.restart_count) or 0
+      unit.total_restarts=tonumber(unit.total_restarts) or 0
+    end
     self.units[unit.name]=unit
     return unit
   end
@@ -52,7 +61,7 @@ function M.new(kernel)
   function self:start(name)
     local u=self:get(name)
     if not u then return nil,"Unit "..tostring(name).." not found." end
-    if u.state=="active" and u.pid then return true,u.pid end
+    if (u.state=="active" or u.state=="activating") and u.pid then return true,u.pid end
     if type(u.exec)~="function" then return nil,"Unit has no executable." end
 
     local proc,err=kernel.process.create{
@@ -62,20 +71,99 @@ function M.new(kernel)
     }
     if not proc then return nil,err end
     u.state="activating";u.pid=proc.pid
+    u.error=nil
+    u.traceback=nil
+
+    local function trace_message(value)
+      local msg=tostring(value)
+      if debug and debug.traceback then
+        local ok,trace=pcall(debug.traceback,msg,3)
+        if ok and trace then return tostring(trace) end
+      end
+      return msg
+    end
+
+    local function should_restart()
+      return u.restart=="always" or u.restart=="on-failure"
+    end
 
     kernel.scheduler:add(proc,function()
-      u.state="active"
-      kernel.log.write("info","service","Started "..u.name,nil,proc.pid)
-      local ok,res=pcall(u.exec,{kernel=kernel,process=proc,unit=u})
-      if not ok then
-        u.state="failed";u.error=tostring(res)
-        kernel.log.write("error","service","Failed "..u.name..": "..u.error,{
-          unit=u.name,error=u.error,pid=proc.pid
+      local attempt=0
+      local burstStart=nil
+
+      while true do
+        u.state="active"
+        u.started_at=(os.epoch and os.epoch("utc")) or 0
+        kernel.log.write("info","service",
+          attempt==0 and ("Started "..u.name) or ("Restarted "..u.name),
+          {attempt=attempt,total_restarts=u.total_restarts or 0},proc.pid)
+
+        local ok,res=pcall(u.exec,{kernel=kernel,process=proc,unit=u})
+        if ok then
+          u.last_exit_code=tonumber(res) or 0
+          u.last_exit_at=(os.epoch and os.epoch("utc")) or 0
+          if u.restart=="always" then
+            -- An "always" unit treats a clean return as a restart request but
+            -- keeps ownership of the current supervisor PID.
+            res="service exited normally"
+          else
+            u.state="inactive"
+            u.pid=nil
+            return tonumber(res) or 0
+          end
+        end
+
+        local stamp=((os.epoch and os.epoch("utc")) or 0)/1000
+        if not burstStart or stamp-burstStart>u.restart_window then
+          burstStart=stamp
+          attempt=0
+        end
+        attempt=attempt+1
+        u.restart_count=attempt
+        u.total_restarts=(u.total_restarts or 0)+1
+        u.error=tostring(res)
+        u.traceback=trace_message(res)
+        u.last_failure_at=(os.epoch and os.epoch("utc")) or 0
+
+        local exhausted=attempt>u.restart_burst
+        if not should_restart() or exhausted then
+          u.state="failed"
+          kernel.log.write("critical","service",
+            exhausted
+              and ("Restart limit reached for "..u.name)
+              or ("Failed "..u.name..": "..u.error),
+            {
+              unit=u.name,error=u.error,traceback=u.traceback,pid=proc.pid,
+              restart_count=attempt,restart_burst=u.restart_burst,
+              total_restarts=u.total_restarts
+            },proc.pid)
+          error(res,0)
+        end
+
+        local delay=math.min(
+          u.restart_max_delay,
+          u.restart_delay*(2^math.max(0,attempt-1))
+        )
+        u.state="activating"
+        kernel.log.write("warning","service","Service failure; scheduling restart",{
+          unit=u.name,error=u.error,traceback=u.traceback,
+          restart_in=delay,restart_count=attempt,
+          restart_burst=u.restart_burst
         },proc.pid)
-        error(res,0)
+
+        if kernel.scheduler and kernel.scheduler.sleep then
+          kernel.scheduler.sleep(delay)
+        else
+          sleep(delay)
+        end
+
+        -- stop() marks the process killed. Do not resurrect an explicitly
+        -- stopped service after the backoff timer.
+        if proc.state=="killed" or u.pid~=proc.pid then
+          u.state="inactive"
+          return 143
+        end
       end
-      u.state="inactive";u.pid=nil
-      return tonumber(res) or 0
     end)
     return true,proc.pid
   end
