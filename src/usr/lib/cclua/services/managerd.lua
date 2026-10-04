@@ -336,8 +336,23 @@ return function(ctx)
     local previous=rebuild and {schema=1,commit=nil,files={}} or readManifest(active,state)
     local added,changed,removed,unchanged=calculateDelta(previous,nextManifest)
 
+    local bootChanged=rebuild==true
+    if not bootChanged then
+      for _,list in ipairs({added,changed,removed}) do
+        for _,rel in ipairs(list) do
+          if not desktop_only(rel) then
+            bootChanged=true
+            break
+          end
+        end
+        if bootChanged then break end
+      end
+    end
+    local previousImage=state.imageCommit or state.commit or installedCommit()
+
     runtime.delta={
-      added=#added,changed=#changed,removed=#removed,unchanged=#unchanged
+      added=#added,changed=#changed,removed=#removed,unchanged=#unchanged,
+      boot_changed=bootChanged
     }
     runtime.total=#added+#changed+#removed
     runtime.progress=0
@@ -420,7 +435,11 @@ return function(ctx)
 
     local ok,merr=writeAll(manifestPath,textutils.serializeJSON(nextManifest))
     if not ok then removeTree(slot);return nil,merr end
-    writeAll(commitPath,head.."\n")
+
+    -- The cache slot always advances to the latest repository payload, but
+    -- its boot commit only advances when a common/server file changed.
+    local bootCommit=bootChanged and head or previousImage
+    writeAll(commitPath,tostring(bootCommit).."\n")
 
     local files,bytes=0,0
     for _,meta in pairs(nextManifest.files) do
@@ -429,16 +448,16 @@ return function(ctx)
     end
 
     state.activeSlot=inactiveName
-    state.imageCommit=head
+    state.imageCommit=bootChanged and head or previousImage
     state.repoCommit=head
-    state.commit=head
+    state.commit=state.imageCommit
     state.ref=CFG.ref
     state.files=files
     state.bytes=bytes
     state.updatedAt=os.epoch and os.epoch("utc") or 0
     state.lastDelta={
       added=#added,changed=#changed,removed=#removed,unchanged=#unchanged,
-      downloadedBytes=runtime.downloadedBytes
+      downloadedBytes=runtime.downloadedBytes,bootChanged=bootChanged
     }
     local saved,serr=saveState(state)
     if not saved then return nil,serr end
