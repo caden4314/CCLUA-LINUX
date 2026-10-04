@@ -1,5 +1,12 @@
 local config=dofile("/usr/lib/cclua/config.lua")
-local M={players={}}
+local M={
+  players={},
+  queue={},
+  queue_index=0,
+  repeat_mode="off",
+  shuffle=false,
+  default_volume=0.85,
+}
 local ROOT="/home/caden/Music"
 local BRIDGE_BASE="http://127.0.0.1:8765/v1"
 
@@ -49,6 +56,22 @@ local function make_dfpwm_decoder()
     end
     return output
   end
+end
+
+local function clamp(v,lo,hi)
+  v=tonumber(v) or lo
+  if v<lo then return lo end
+  if v>hi then return hi end
+  return v
+end
+
+local function pcm_s8_decode(input)
+  local out={}
+  for i=1,#input do
+    local b=string.byte(input,i)
+    out[i]=b>=128 and b-256 or b
+  end
+  return out
 end
 
 local function clean_path(path)
@@ -146,6 +169,10 @@ function M.bridge_catalog()
       bytes=tonumber(track.bytes),
       source=track.source or "harmoni-bridge",
       stream_url=track.stream_url,
+      pcm_stream_url=track.pcm_stream_url,
+      preferred_format=track.preferred_format,
+      sample_rate=tonumber(track.sample_rate) or 48000,
+      channels=tonumber(track.channels) or 1,
       remote=true,
     }
   end
@@ -263,12 +290,17 @@ function M.stop(ctx,speakerName)
   return true
 end
 
-function M.play(ctx,path,speakerName,volume,meta)
+function M.play(ctx,path,speakerName,volume,meta,opts)
   local host=clean_path(path)
   if not fs.exists(host) or fs.isDir(host) then return nil,"track file not found" end
+  opts=opts or {}
 
   local speaker,resolved=find_speaker(speakerName)
   if not speaker then return nil,"no speaker attached" end
+
+  local start=math.max(0,tonumber(opts.position) or 0)
+  local duration=meta and tonumber(meta.duration) or nil
+  if duration then start=math.min(start,math.max(0,duration-0.05)) end
 
   M.stop(ctx,resolved)
   local parent=ctx.process or {}
@@ -285,25 +317,48 @@ function M.play(ctx,path,speakerName,volume,meta)
   if not proc then return nil,err end
 
   local key=tostring(resolved)
-  M.players[key]={
-    pid=proc.pid,path=path,title=meta and meta.title or basename(path),
-    speaker=resolved,started=os.epoch and os.epoch("utc") or 0
+  local player={
+    pid=proc.pid,
+    path=path,
+    track=meta,
+    track_id=meta and meta.id or nil,
+    title=meta and meta.title or basename(path),
+    artist=meta and meta.artist or "",
+    duration=duration,
+    position=start,
+    speaker=resolved,
+    state="playing",
+    volume=clamp(volume or M.default_volume,0,1),
+    format="DFPWM 48k",
+    sample_rate=48000,
+    started=os.epoch and os.epoch("utc") or 0,
   }
+  M.default_volume=player.volume
+  M.players[key]=player
 
   ctx.kernel.scheduler:add(proc,function()
     local okRun,runErr=pcall(function()
       local decoder=make_dfpwm_decoder()
       local h=fs.open(host,"rb")
       if not h then error("unable to open "..tostring(path),0) end
+      if start>0 and h.seek then
+        pcall(h.seek,"set",math.floor(start*6000))
+      end
 
       while true do
         local chunk=h.read(16*1024)
         if not chunk then break end
         local audio=decoder(chunk)
         while true do
-          local okPlay,accepted=pcall(speaker.playAudio,audio,tonumber(volume) or 1)
+          local current=M.players[key]
+          if not current or current.pid~=proc.pid then h.close();return end
+          local okPlay,accepted=pcall(speaker.playAudio,audio,current.volume)
           if not okPlay then h.close();error(accepted,0) end
-          if accepted then break end
+          if accepted then
+            current.position=(current.position or 0)+(#audio/48000)
+            if current.duration then current.position=math.min(current.duration,current.position) end
+            break
+          end
           local ev=coroutine.yield("wait_event",{"speaker_audio_empty","terminate"})
           if ev=="terminate" then h.close();return end
         end
@@ -314,24 +369,37 @@ function M.play(ctx,path,speakerName,volume,meta)
     end)
 
     local current=M.players[key]
-    if current and current.pid==proc.pid then M.players[key]=nil end
+    local natural=current and current.pid==proc.pid
+    if natural then M.players[key]=nil end
     if not okRun then
       ctx.kernel.log.write("error","music","playback failed",{
-        path=path,speaker=resolved,error=tostring(runErr)
+        path=path,speaker=resolved,error=tostring(runErr),position=player.position
       },proc.pid)
       return 1
     end
+    if natural and M._auto_advance then M._auto_advance(ctx,resolved,player) end
     return 0
   end)
 
-  return {pid=proc.pid,speaker=resolved,path=path}
+  return player
 end
 
-function M.play_remote(ctx,track,speakerName,volume)
+function M.play_remote(ctx,track,speakerName,volume,opts)
   if type(track)~="table" then return nil,"track metadata required" end
-  local url=tostring(track.stream_url or "")
+  opts=opts or {}
+  local pcmUrl=tostring(track.pcm_stream_url or "")
+  local dfpwmUrl=tostring(track.stream_url or "")
+  local usePcm=pcmUrl:sub(1,#BRIDGE_BASE)==BRIDGE_BASE
+  local url=usePcm and pcmUrl or dfpwmUrl
   if url:sub(1,#BRIDGE_BASE)~=BRIDGE_BASE then
     return nil,"refusing non-bridge stream URL"
+  end
+
+  local duration=tonumber(track.duration)
+  local start=math.max(0,tonumber(opts.position) or 0)
+  if duration then start=math.min(start,math.max(0,duration-0.05)) end
+  if usePcm and start>0 then
+    url=url..(url:find("?",1,true) and "&" or "?").."start="..("%.3f"):format(start)
   end
 
   local speaker,resolved=find_speaker(speakerName)
@@ -352,22 +420,36 @@ function M.play_remote(ctx,track,speakerName,volume)
   if not proc then return nil,err end
 
   local key=tostring(resolved)
-  M.players[key]={
+  local player={
     pid=proc.pid,
+    track=track,
     track_id=track.id,
     title=track.title or "Unknown",
+    artist=track.artist or "",
+    duration=duration,
+    position=start,
     speaker=resolved,
     remote=true,
     stream_url=url,
-    started=os.epoch and os.epoch("utc") or 0
+    state="playing",
+    volume=clamp(volume or M.default_volume,0,1),
+    format=usePcm and "PCM 48k" or "DFPWM 48k",
+    sample_rate=48000,
+    started=os.epoch and os.epoch("utc") or 0,
   }
+  M.default_volume=player.volume
+  M.players[key]=player
 
   ctx.kernel.scheduler:add(proc,function()
     local okRun,runErr=pcall(function()
-      local h,httpErr=http.get(url,{
-        ["Accept"]="audio/x-dfpwm",
-        ["User-Agent"]="CCLUA-Music/0.3"
-      },true)
+      local headers={
+        ["Accept"]=usePcm and "application/octet-stream" or "audio/x-dfpwm",
+        ["User-Agent"]="CCLUA-Music/0.4"
+      }
+      if not usePcm and start>0 then
+        headers["Range"]="bytes="..tostring(math.floor(start*6000)).."-"
+      end
+      local h,httpErr=http.get(url,headers,true)
       if not h then error(tostring(httpErr or "bridge stream unavailable"),0) end
       local code=h.getResponseCode and h.getResponseCode() or 200
       if tonumber(code)~=200 and tonumber(code)~=206 then
@@ -375,15 +457,22 @@ function M.play_remote(ctx,track,speakerName,volume)
         error("bridge stream HTTP "..tostring(code),0)
       end
 
-      local decoder=make_dfpwm_decoder()
+      local decoder=usePcm and pcm_s8_decode or make_dfpwm_decoder()
+      local chunkSize=usePcm and (12*1024) or (16*1024)
       while true do
-        local chunk=h.read(16*1024)
+        local chunk=h.read(chunkSize)
         if not chunk then break end
         local audio=decoder(chunk)
         while true do
-          local okPlay,accepted=pcall(speaker.playAudio,audio,tonumber(volume) or 1)
+          local current=M.players[key]
+          if not current or current.pid~=proc.pid then h.close();return end
+          local okPlay,accepted=pcall(speaker.playAudio,audio,current.volume)
           if not okPlay then h.close();error(accepted,0) end
-          if accepted then break end
+          if accepted then
+            current.position=(current.position or 0)+(#audio/48000)
+            if current.duration then current.position=math.min(current.duration,current.position) end
+            break
+          end
           local ev=coroutine.yield("wait_event",{"speaker_audio_empty","terminate"})
           if ev=="terminate" then h.close();return end
         end
@@ -393,30 +482,198 @@ function M.play_remote(ctx,track,speakerName,volume)
     end)
 
     local current=M.players[key]
-    if current and current.pid==proc.pid then M.players[key]=nil end
+    local natural=current and current.pid==proc.pid
+    if natural then M.players[key]=nil end
     if not okRun then
       ctx.kernel.log.write("error","music","bridge playback failed",{
-        id=track.id,title=track.title,speaker=resolved,error=tostring(runErr)
+        id=track.id,title=track.title,speaker=resolved,error=tostring(runErr),
+        format=player.format,position=player.position
       },proc.pid)
       return 1
+    end
+    if natural and M._auto_advance then
+      M._auto_advance(ctx,resolved,player)
     end
     return 0
   end)
 
-  return {pid=proc.pid,speaker=resolved,track_id=track.id,remote=true}
+  return player
 end
 
-function M.play_track(ctx,track,speakerName,volume)
+function M.play_track(ctx,track,speakerName,volume,opts)
   if type(track)~="table" then return nil,"track metadata required" end
-  if track.remote or track.stream_url then
-    return M.play_remote(ctx,track,speakerName,volume)
+  if track.remote or track.stream_url or track.pcm_stream_url then
+    return M.play_remote(ctx,track,speakerName,volume,opts)
   end
-  return M.play(ctx,track.path,speakerName,volume,track)
+  return M.play(ctx,track.path,speakerName,volume,track,opts)
 end
 
 function M.now_playing()
   for _,player in pairs(M.players) do return player end
   return nil
+end
+
+local function player_key(player)
+  return player and tostring(player.speaker or "") or nil
+end
+
+local function halt_for_control(ctx,player)
+  if not player then return false end
+  if player.pid then
+    local proc=ctx.kernel.process.get(player.pid)
+    if proc and proc.state~="exited" and proc.state~="killed" and proc.state~="crashed" then
+      ctx.kernel.process.exit(proc,143,"killed")
+      if os.queueEvent then os.queueEvent("cclua_process_exit",proc.pid,143,"killed") end
+    end
+  end
+  local speaker=find_speaker(player.speaker)
+  if speaker and speaker.stop then pcall(speaker.stop) end
+  player.pid=nil
+  return true
+end
+
+function M.play_from_queue(ctx,tracks,index,speakerName,volume)
+  M.queue={}
+  for i,t in ipairs(tracks or {}) do M.queue[i]=t end
+  if #M.queue==0 then return nil,"queue is empty" end
+  M.queue_index=math.max(1,math.min(#M.queue,tonumber(index) or 1))
+  return M.play_track(ctx,M.queue[M.queue_index],speakerName,volume)
+end
+
+local function queue_advance(ctx,step,speakerName,volume,automatic)
+  local count=#M.queue
+  if count==0 then return nil,"queue is empty" end
+
+  if M.repeat_mode=="one" and automatic then
+    return M.play_track(ctx,M.queue[M.queue_index],speakerName,volume,{position=0})
+  end
+
+  local idx=M.queue_index
+  if M.shuffle and count>1 then
+    local old=idx
+    repeat idx=math.random(1,count) until idx~=old
+  else
+    idx=idx+(step or 1)
+    if idx>count then
+      if M.repeat_mode=="all" then idx=1 else return nil,"end of queue" end
+    elseif idx<1 then
+      if M.repeat_mode=="all" then idx=count else idx=1 end
+    end
+  end
+
+  M.queue_index=idx
+  return M.play_track(ctx,M.queue[idx],speakerName,volume,{position=0})
+end
+
+function M.next(ctx)
+  local player=M.now_playing()
+  return queue_advance(
+    ctx,1,
+    player and player.speaker or nil,
+    player and player.volume or M.default_volume,
+    false
+  )
+end
+
+function M.previous(ctx)
+  local player=M.now_playing()
+  if player and tonumber(player.position or 0)>3 then
+    return M.seek(ctx,0)
+  end
+  return queue_advance(
+    ctx,-1,
+    player and player.speaker or nil,
+    player and player.volume or M.default_volume,
+    false
+  )
+end
+
+function M.pause(ctx)
+  local player=M.now_playing()
+  if not player then return nil,"nothing playing" end
+  if player.state=="paused" then return player end
+  halt_for_control(ctx,player)
+  player.state="paused"
+  M.players[player_key(player)]=player
+  return player
+end
+
+function M.resume(ctx)
+  local player=M.now_playing()
+  if not player then return nil,"nothing paused" end
+  if player.state~="paused" then return player end
+  local track=player.track
+  if not track then return nil,"track cannot resume" end
+  return M.play_track(ctx,track,player.speaker,player.volume,{position=player.position or 0})
+end
+
+function M.toggle_pause(ctx)
+  local player=M.now_playing()
+  if not player then return nil,"nothing playing" end
+  if player.state=="paused" then return M.resume(ctx) end
+  return M.pause(ctx)
+end
+
+function M.seek(ctx,seconds)
+  local player=M.now_playing()
+  if not player then return nil,"nothing playing" end
+  local target=math.max(0,tonumber(seconds) or 0)
+  if player.duration then target=math.min(target,math.max(0,player.duration-0.05)) end
+  if player.state=="paused" then
+    player.position=target
+    return player
+  end
+  if not player.track then return nil,"track cannot seek" end
+  return M.play_track(ctx,player.track,player.speaker,player.volume,{position=target})
+end
+
+function M.seek_relative(ctx,delta)
+  local player=M.now_playing()
+  if not player then return nil,"nothing playing" end
+  return M.seek(ctx,(tonumber(player.position) or 0)+(tonumber(delta) or 0))
+end
+
+function M.set_volume(volume)
+  local v=clamp(volume,0,1)
+  M.default_volume=v
+  local player=M.now_playing()
+  if player then player.volume=v end
+  return v
+end
+
+function M.adjust_volume(delta)
+  local player=M.now_playing()
+  local current=player and player.volume or M.default_volume
+  return M.set_volume(current+(tonumber(delta) or 0))
+end
+
+function M.cycle_repeat()
+  if M.repeat_mode=="off" then M.repeat_mode="all"
+  elseif M.repeat_mode=="all" then M.repeat_mode="one"
+  else M.repeat_mode="off" end
+  return M.repeat_mode
+end
+
+function M.toggle_shuffle()
+  M.shuffle=not M.shuffle
+  return M.shuffle
+end
+
+function M.playback_state()
+  local player=M.now_playing()
+  return {
+    player=player,
+    queue_index=M.queue_index,
+    queue_count=#M.queue,
+    repeat_mode=M.repeat_mode,
+    shuffle=M.shuffle,
+    volume=player and player.volume or M.default_volume,
+  }
+end
+
+function M._auto_advance(ctx,speakerName,previous)
+  local nextPlayer=queue_advance(ctx,1,speakerName,previous and previous.volume or M.default_volume,true)
+  return nextPlayer
 end
 
 return M

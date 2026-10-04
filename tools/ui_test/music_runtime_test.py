@@ -46,6 +46,10 @@ function fs.open(p,mode)
         done=true
         return value:sub(1,n)
       end,
+      seek=function(whence,offset)
+        done=false
+        return tonumber(offset) or 0
+      end,
       close=function() end
     }
   end
@@ -73,7 +77,9 @@ function textutils.unserializeJSON(raw)
         duration=210,
         bytes=123456,
         source="harmoni-bridge",
-        stream_url="http://127.0.0.1:8765/v1/tracks/bridge-track.dfpwm"
+        stream_url="http://127.0.0.1:8765/v1/tracks/bridge-track.dfpwm",
+        pcm_stream_url="http://127.0.0.1:8765/v1/tracks/bridge-track.pcm",
+        preferred_format="pcm_s8"
       }}
     }
   end
@@ -92,13 +98,24 @@ function http.get(url,headers,binary)
   elseif url=="http://127.0.0.1:8765/v1/catalog" then
     return {
       getResponseCode=function() return 200 end,
-      readAll=function() return '{"count":1,"tracks":[{"id":"bridge-track","title":"Bridge Song","artist":"Bridge Artist","duration":210,"bytes":123456,"source":"harmoni-bridge","stream_url":"http://127.0.0.1:8765/v1/tracks/bridge-track.dfpwm"}]}' end,
+      readAll=function() return '{"count":1,"tracks":[{"id":"bridge-track","title":"Bridge Song","artist":"Bridge Artist","duration":210,"bytes":123456,"source":"harmoni-bridge","stream_url":"http://127.0.0.1:8765/v1/tracks/bridge-track.dfpwm","pcm_stream_url":"http://127.0.0.1:8765/v1/tracks/bridge-track.pcm","preferred_format":"pcm_s8"}]}' end,
       close=function() end
     }
   elseif url=="http://127.0.0.1:8765/v1/health" then
     return {
       getResponseCode=function() return 200 end,
       readAll=function() return '{"ok":true,"catalog_count":1}' end,
+      close=function() end
+    }
+  elseif url:find("http://127.0.0.1:8765/v1/tracks/bridge-track.pcm",1,true)==1 then
+    local done=false
+    return {
+      getResponseCode=function() return 200 end,
+      read=function(n)
+        if done then return nil end
+        done=true
+        return string.char(0,127,128,255)
+      end,
       close=function() end
     }
   elseif url=="http://127.0.0.1:8765/v1/tracks/bridge-track.dfpwm" then
@@ -116,9 +133,13 @@ function http.get(url,headers,binary)
   return nil,"not mocked"
 end
 
-local speaker={stops=0}
+speaker={stops=0,last=nil,last_volume=nil}
 function speaker.stop() speaker.stops=speaker.stops+1 end
-function speaker.playAudio(_) return true end
+function speaker.playAudio(audio,volume)
+  speaker.last=audio
+  speaker.last_volume=volume
+  return true
+end
 peripheral={}
 function peripheral.hasType(name,kind) return name=="left" and kind=="speaker" end
 function peripheral.wrap(name) if name=="left" then return speaker end end
@@ -195,15 +216,70 @@ assert(music.now_playing()==nil)
 
 local catalog=music.catalog()
 local remote=music.find_best("Bridge Song",catalog)
-local remotePlayer,remoteErr=music.play_track(ctx,remote,nil,1)
-assert(remotePlayer and remotePlayer.remote==true and remotePlayer.track_id=="bridge-track",remoteErr)
-assert(music.now_playing() and music.now_playing().title=="Bridge Song")
+local remoteIndex=1
+for i,t in ipairs(catalog) do if t.id=="bridge-track" then remoteIndex=i break end end
+local remotePlayer,remoteErr=music.play_from_queue(ctx,catalog,remoteIndex,nil,0.8)
+assert(remotePlayer and remotePlayer.remote==true,remoteErr)
+assert(remotePlayer.format=="PCM 48k","bridge should prefer PCM")
+assert(music.now_playing() and music.now_playing().state=="playing")
+
 local remoteCo=coroutine.create(procs[remotePlayer.pid].worker)
 local okRemote,remoteYield=coroutine.resume(remoteCo)
-assert(okRemote and remoteYield=="wait_event","remote DFPWM worker failed before audio drain")
-local okRemoteDone=coroutine.resume(remoteCo,"speaker_audio_empty")
-assert(okRemoteDone and coroutine.status(remoteCo)=="dead")
+assert(okRemote and remoteYield=="wait_event","remote PCM worker failed before audio drain")
+assert(#speaker.last==4)
+assert(speaker.last[1]==0 and speaker.last[2]==127 and speaker.last[3]==-128 and speaker.last[4]==-1)
+assert(math.abs((speaker.last_volume or 0)-0.8)<0.001)
+assert(music.now_playing().position>0)
+
+local paused=music.pause(ctx)
+assert(paused and paused.state=="paused" and paused.pid==nil)
+paused.position=20
+local resumed=music.resume(ctx)
+assert(resumed and resumed.state=="playing" and resumed.position==20)
+assert(resumed.stream_url:find("start=20.000",1,true))
+
+local volume=music.adjust_volume(-0.15)
+assert(math.abs(volume-0.65)<0.001)
+assert(math.abs(music.now_playing().volume-0.65)<0.001)
+
+local sought=music.seek_relative(ctx,10)
+assert(sought and sought.position>=29.9 and sought.position<=30.1)
+assert(sought.stream_url:find("start=30.000",1,true))
+
+assert(music.cycle_repeat()=="all")
+assert(music.cycle_repeat()=="one")
+assert(music.cycle_repeat()=="off")
+assert(music.toggle_shuffle()==true)
+assert(music.toggle_shuffle()==false)
+
+music.stop(ctx)
 assert(music.now_playing()==nil)
+
+local remote2={}
+for k,v in pairs(remote) do remote2[k]=v end
+remote2.id="bridge-track-2"
+remote2.title="Bridge Song Two"
+local first=music.play_from_queue(ctx,{remote,remote2},1,nil,0.75)
+assert(first and first.title=="Bridge Song")
+local second,secondErr=music.next(ctx)
+assert(second and second.title=="Bridge Song Two",secondErr)
+assert(music.playback_state().queue_index==2)
+local previous,previousErr=music.previous(ctx)
+assert(previous and previous.title=="Bridge Song",previousErr)
+assert(music.playback_state().queue_index==1)
+music.stop(ctx)
+
+local localPlayer=music.play_from_queue(ctx,tracks,1,nil,0.7)
+assert(localPlayer and localPlayer.format=="DFPWM 48k")
+local localPaused=music.pause(ctx)
+assert(localPaused and localPaused.state=="paused")
+local localResume=music.resume(ctx)
+assert(localResume and localResume.state=="playing")
+music.stop(ctx)
 ''')
 
 print("MUSIC_RUNTIME_OK")
+print("PCM_SIGNED_AUDIO_PASS")
+print("TRANSPORT_CONTROLS_PASS")
+print("QUEUE_NAVIGATION_PASS")
+print("LOCAL_DFPWM_FALLBACK_PASS")

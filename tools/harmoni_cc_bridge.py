@@ -24,7 +24,7 @@ import threading
 import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -229,6 +229,13 @@ class HarmoniBridge:
             "total": status.get("total", 0),
             "source_exists": status.get("source_exists", False),
             "catalog_count": load_json(self.catalog_path, {}).get("count", 0),
+            "playback": {
+                "preferred_format": "pcm_s8",
+                "sample_rate": 48000,
+                "channels": 1,
+                "seek": True,
+                "dfpwm_fallback": True,
+            },
         }
 
     def public_catalog(self) -> dict[str, Any]:
@@ -249,8 +256,10 @@ class HarmoniBridge:
                 "sample_rate": 48000,
                 "channels": 1,
                 "format": "dfpwm",
+                "preferred_format": "pcm_s8",
                 "source": "harmoni-bridge",
                 "stream_url": f"{base}/tracks/{track_id}.dfpwm",
+                "pcm_stream_url": f"{base}/tracks/{track_id}.pcm",
             })
         return {
             "schema": 1,
@@ -266,6 +275,20 @@ class HarmoniBridge:
             output = Path(str(rec.get("output") or ""))
             if output.is_file() and output.parent.resolve() == self.library_dir.resolve():
                 return output
+        return None
+
+    def source_track_path(self, track_id: str) -> Path | None:
+        source_root = self.cfg.source.resolve()
+        for rec in self.records.values():
+            if rec.get("state") != STATE_DONE or str(rec.get("id")) != str(track_id):
+                continue
+            source = Path(str(rec.get("source") or ""))
+            try:
+                resolved = source.resolve()
+            except OSError:
+                continue
+            if resolved.is_file() and resolved.parent == source_root:
+                return resolved
         return None
 
     def make_http_handler(self):
@@ -342,8 +365,71 @@ class HarmoniBridge:
                             return
                         remaining -= len(chunk)
 
+            def send_pcm_track(self, track_id: str, start_seconds: float = 0.0) -> None:
+                source = bridge.source_track_path(track_id)
+                if source is None:
+                    self.send_json({"ok": False, "error": "track source not found"}, HTTPStatus.NOT_FOUND)
+                    return
+
+                start_seconds = max(0.0, float(start_seconds or 0.0))
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("X-CCLUA-Audio-Format", "pcm_s8")
+                self.send_header("X-CCLUA-Sample-Rate", "48000")
+                self.send_header("X-CCLUA-Channels", "1")
+                self.send_header("X-CCLUA-Start-Seconds", f"{start_seconds:.3f}")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Connection", "close")
+                self.end_headers()
+                self.close_connection = True
+
+                if self.command == "HEAD":
+                    return
+
+                cmd = [
+                    ffmpeg_exe(), "-hide_banner", "-loglevel", "error",
+                ]
+                if start_seconds > 0:
+                    cmd += ["-ss", f"{start_seconds:.6f}"]
+                cmd += [
+                    "-i", str(source),
+                    "-vn", "-map", "0:a:0",
+                    "-ac", "1", "-ar", "48000",
+                    "-acodec", "pcm_s8", "-f", "s8", "pipe:1",
+                ]
+
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    stdin=subprocess.DEVNULL,
+                )
+                try:
+                    assert proc.stdout is not None
+                    while True:
+                        chunk = proc.stdout.read(32 * 1024)
+                        if not chunk:
+                            break
+                        try:
+                            self.wfile.write(chunk)
+                            self.wfile.flush()
+                        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                            return
+                finally:
+                    if proc.stdout is not None:
+                        proc.stdout.close()
+                    if proc.poll() is None:
+                        proc.terminate()
+                        try:
+                            proc.wait(timeout=1.0)
+                        except subprocess.TimeoutExpired:
+                            proc.kill()
+                    else:
+                        proc.wait()
+
             def route(self) -> None:
-                path = urlparse(self.path).path
+                parsed = urlparse(self.path)
+                path = parsed.path
                 if path == "/v1/health":
                     self.send_json({"ok": True, "service": "harmoni-cc-bridge", **bridge.public_status()})
                 elif path == "/v1/status":
@@ -356,6 +442,17 @@ class HarmoniBridge:
                         self.send_json({"ok": False, "error": "invalid track id"}, HTTPStatus.BAD_REQUEST)
                     else:
                         self.send_track(track_id)
+                elif path.startswith("/v1/tracks/") and path.endswith(".pcm"):
+                    track_id = path[len("/v1/tracks/"):-len(".pcm")]
+                    if not track_id or not all(c in "0123456789abcdefABCDEF" for c in track_id):
+                        self.send_json({"ok": False, "error": "invalid track id"}, HTTPStatus.BAD_REQUEST)
+                    else:
+                        try:
+                            start = float((parse_qs(parsed.query).get("start") or ["0"])[0])
+                        except (TypeError, ValueError):
+                            self.send_json({"ok": False, "error": "invalid start"}, HTTPStatus.BAD_REQUEST)
+                            return
+                        self.send_pcm_track(track_id, start)
                 else:
                     self.send_json({"ok": False, "error": "not found"}, HTTPStatus.NOT_FOUND)
 

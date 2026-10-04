@@ -44,7 +44,58 @@ end
 local function format_duration(sec)
   sec=tonumber(sec)
   if not sec then return "--:--" end
+  sec=math.max(0,sec)
   return ("%d:%02d"):format(math.floor(sec/60),math.floor(sec%60))
+end
+
+local function play_selected(ctx,st,track)
+  track=track or selected(st)
+  if not track then return nil,"no track selected" end
+  local state=Music.playback_state()
+  return Music.play_from_queue(ctx,st.tracks,st.selected,nil,state.volume)
+end
+
+local function draw_transport(ctx,st,ui,x,y,w,h)
+  local state=Music.playback_state()
+  local now=state.player
+  local top=y+h-6
+
+  ui.fill(x,top,x+w-1,y+h-2,colors.black,colors.white)
+  ui.fill(x,top,x+w-1,top,colors.gray,colors.white)
+
+  if not now then
+    ui.text(x+1,top,"No track playing",colors.lightGray,colors.gray)
+    ui.text(x+1,top+1,"[------------------------]  --:-- / --:--",colors.gray,colors.black)
+  else
+    local status=now.state=="paused" and "PAUSED" or "PLAYING"
+    local label=(now.artist and now.artist~="") and (now.artist.." - "..now.title) or now.title
+    ui.text(x+1,top,fit(status.."  "..label,math.max(1,w-18)),
+      now.state=="paused" and colors.yellow or colors.lime,colors.gray)
+    local quality=tostring(now.format or "audio")
+    ui.text(x+w-#quality-1,top,quality,colors.white,colors.gray)
+
+    local duration=tonumber(now.duration) or 0
+    local position=math.max(0,tonumber(now.position) or 0)
+    local barW=math.max(8,w-19)
+    local pct=duration>0 and math.max(0,math.min(1,position/duration)) or 0
+    local fill=math.floor(barW*pct+0.5)
+    local bar="["..string.rep("=",fill)..string.rep("-",barW-fill).."]"
+    ui.text(x+1,top+1,format_duration(position),colors.lightGray,colors.black)
+    ui.text(x+7,top+1,bar,colors.white,colors.black)
+    local total=format_duration(now.duration)
+    ui.text(x+w-#total-1,top+1,total,colors.lightGray,colors.black)
+  end
+
+  local action=now and now.state=="paused" and "[PLAY]" or "[PAUSE]"
+  local controls="|<  -10  "..action.."  +10  >|  V- V+  R:"..
+    tostring(state.repeat_mode):upper().."  S:"..(state.shuffle and "ON" or "OFF")
+  ui.text(x+1,top+2,fit(controls,math.max(1,w-2)),colors.white,colors.black)
+
+  local queue=("Queue %d/%d  Vol %d%%"):format(
+    tonumber(state.queue_index) or 0,tonumber(state.queue_count) or 0,
+    math.floor((tonumber(state.volume) or 0)*100+0.5))
+  ui.text(x+1,top+3,fit(queue,math.max(1,w-2)),colors.lightGray,colors.black)
+  ui.text(x+1,top+4,fit("Space play/pause | <-/-> seek | N/P track | -/+ volume | Q repeat | S shuffle",math.max(1,w-2)),colors.gray,colors.black)
 end
 
 local function direct_download(st)
@@ -123,7 +174,7 @@ function M.draw(ctx,st,ui,x,y,w,h)
     local now=Music.now_playing()
 
     ui.text(x+1,y+1,"TITLE / ARTIST                     TIME",colors.gray,colors.black)
-    local body=math.max(1,h-4)
+    local body=math.max(1,h-8)
     if st.selected<st.scroll then st.scroll=st.selected end
     if st.selected>=st.scroll+body then st.scroll=st.selected-body+1 end
 
@@ -152,7 +203,7 @@ function M.draw(ctx,st,ui,x,y,w,h)
       ui.text(x+2,y+4,"No music available yet.",colors.gray,colors.black)
       ui.text(x+2,y+5,st.bridge_error and "Harmoni bridge is offline." or "Bridge library is still converting.",colors.gray,colors.black)
     end
-    ui.text(x+1,y+h-2,"Enter play | X stop | R rescan",colors.gray,colors.black)
+    draw_transport(ctx,st,ui,x,y,w,h)
 
   elseif st.tab==2 then
     ui.text(x+1,y+2,"Spotify link resolver",colors.orange,colors.black)
@@ -206,6 +257,29 @@ function M.event(ctx,st,ev,a,b,c,rx,ry,w,h)
       st.selected=math.max(1,st.selected-1);return true
     elseif a==keys.down and st.tab==1 then
       st.selected=math.min(math.max(1,#(st.tracks or {})),st.selected+1);return true
+    elseif a==keys.space and st.tab==1 then
+      local now=Music.now_playing()
+      local r,err
+      if now then r,err=Music.toggle_pause(ctx)
+      else r,err=play_selected(ctx,st) end
+      st.message=r and (r.state=="paused" and "Playback paused" or "Playback resumed") or tostring(err)
+      return true
+    elseif a==keys.left and st.tab==1 then
+      local r,err=Music.seek_relative(ctx,-10)
+      st.message=r and ("Seek "..format_duration(r.position)) or tostring(err)
+      return true
+    elseif a==keys.right and st.tab==1 then
+      local r,err=Music.seek_relative(ctx,10)
+      st.message=r and ("Seek "..format_duration(r.position)) or tostring(err)
+      return true
+    elseif a==keys.n and st.tab==1 then
+      local r,err=Music.next(ctx);st.message=r and ("Next: "..tostring(r.title)) or tostring(err);return true
+    elseif a==keys.p and st.tab==1 then
+      local r,err=Music.previous(ctx);st.message=r and ("Previous: "..tostring(r.title)) or tostring(err);return true
+    elseif a==keys.q and st.tab==1 then
+      st.message="Repeat "..Music.cycle_repeat();return true
+    elseif a==keys.s and st.tab==1 then
+      st.message="Shuffle "..(Music.toggle_shuffle() and "on" or "off");return true
     elseif a==keys.r and st.tab==1 then
       refresh(st);st.message="Library rescanned";return true
     elseif a==keys.x and st.tab==1 then
@@ -214,8 +288,8 @@ function M.event(ctx,st,ev,a,b,c,rx,ry,w,h)
       if st.tab==1 then
         local t=selected(st)
         if t then
-          local r,err=Music.play_track(ctx,t,nil,1)
-          st.message=r and ("Playing on "..tostring(r.speaker)) or tostring(err)
+          local r,err=play_selected(ctx,st,t)
+          st.message=r and ("Playing on "..tostring(r.speaker).." ["..tostring(r.format or "audio").."]") or tostring(err)
         end
       elseif st.tab==2 then
         resolve_spotify(st)
@@ -233,6 +307,13 @@ function M.event(ctx,st,ev,a,b,c,rx,ry,w,h)
       st.input="";st.spotify=nil;st.match=nil;st.message="Input cleared";return true
     end
 
+  elseif ev=="char" and st.tab==1 then
+    if a=="-" then
+      local v=Music.adjust_volume(-0.05);st.message=("Volume %d%%"):format(math.floor(v*100+0.5));return true
+    elseif a=="+" or a=="=" then
+      local v=Music.adjust_volume(0.05);st.message=("Volume %d%%"):format(math.floor(v*100+0.5));return true
+    end
+
   elseif ev=="char" and (st.tab==2 or st.tab==3) then
     st.input=st.input..tostring(a or "")
     return true
@@ -248,7 +329,36 @@ function M.event(ctx,st,ev,a,b,c,rx,ry,w,h)
       else st.tab=3 end
       st.input="";st.message=nil
       return true
-    elseif st.tab==1 and ry>=3 and ry<h-2 then
+    elseif st.tab==1 and ry==h-4 then
+      local now=Music.now_playing()
+      if now and tonumber(now.duration) and tonumber(now.duration)>0 then
+        local left=8
+        local right=math.max(left+1,w-10)
+        local pct=math.max(0,math.min(1,(rx-left)/(right-left)))
+        local r,err=Music.seek(ctx,tonumber(now.duration)*pct)
+        st.message=r and ("Seek "..format_duration(r.position)) or tostring(err)
+        return true
+      end
+    elseif st.tab==1 and ry==h-3 then
+      local r,err
+      if rx<=4 then r,err=Music.previous(ctx)
+      elseif rx<=9 then r,err=Music.seek_relative(ctx,-10)
+      elseif rx<=18 then
+        if Music.now_playing() then r,err=Music.toggle_pause(ctx) else r,err=play_selected(ctx,st) end
+      elseif rx<=23 then r,err=Music.seek_relative(ctx,10)
+      elseif rx<=27 then r,err=Music.next(ctx)
+      elseif rx<=31 then
+        local v=Music.adjust_volume(-0.05);st.message=("Volume %d%%"):format(math.floor(v*100+0.5));return true
+      elseif rx<=35 then
+        local v=Music.adjust_volume(0.05);st.message=("Volume %d%%"):format(math.floor(v*100+0.5));return true
+      elseif rx<=44 then
+        st.message="Repeat "..Music.cycle_repeat();return true
+      else
+        st.message="Shuffle "..(Music.toggle_shuffle() and "on" or "off");return true
+      end
+      st.message=r and "Playback updated" or tostring(err)
+      return true
+    elseif st.tab==1 and ry>=3 and ry<=h-6 then
       local idx=st.scroll+ry-3
       if (st.tracks or {})[idx] then st.selected=idx;return true end
     end

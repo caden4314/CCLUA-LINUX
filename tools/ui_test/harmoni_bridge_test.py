@@ -161,10 +161,23 @@ try:
         track=catalog["tracks"][0]
         assert track["id"]==rec["id"]
         assert track["stream_url"].endswith(f"/tracks/{rec['id']}.dfpwm")
+        assert track["pcm_stream_url"].endswith(f"/tracks/{rec['id']}.pcm")
+        assert track["preferred_format"]=="pcm_s8"
 
         with urllib.request.urlopen(track["stream_url"],timeout=3) as response:
             body=response.read()
         assert body==output.read_bytes()
+
+        with urllib.request.urlopen(track["pcm_stream_url"],timeout=3) as response:
+            pcm=response.read()
+            assert response.headers.get("X-CCLUA-Audio-Format")=="pcm_s8"
+            assert response.headers.get("X-CCLUA-Sample-Rate")=="48000"
+        assert len(pcm)>=11000
+        assert set(pcm)=={0}
+
+        with urllib.request.urlopen(track["pcm_stream_url"]+"?start=0.10",timeout=3) as response:
+            seeked=response.read()
+        assert 6000<=len(seeked)<len(pcm)
 
         req=urllib.request.Request(track["stream_url"],headers={"Range":"bytes=2-9"})
         with urllib.request.urlopen(req,timeout=3) as response:
@@ -181,5 +194,6 @@ try:
     print("DFPWM_CONVERSION", output.stat().st_size)
     print("DONE_STICKY", "PASS")
     print("HTTP_CATALOG_STREAM_RANGE", "PASS")
+    print("PCM_48K_STREAM_SEEK", "PASS")
 finally:
     shutil.rmtree(root, ignore_errors=True)
