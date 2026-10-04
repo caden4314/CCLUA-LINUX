@@ -1,41 +1,89 @@
 local M={}
-local exec=dofile("/usr/lib/cclua/exec.lua")
 
 local function push(st,line)
   st.lines[#st.lines+1]=tostring(line or "")
-  while #st.lines>200 do table.remove(st.lines,1) end
+  while #st.lines>500 do table.remove(st.lines,1) end
+end
+
+local function pretty_path(path)
+  path=tostring(path or "/")
+  if path=="/home/caden" then return "~" end
+  if path:sub(1,12)=="/home/caden/" then return "~/"..path:sub(13) end
+  return path
 end
 
 function M.new(ctx)
   return {
-    title="Terminal",icon=">_",cwd=ctx.process.cwd or "/home/caden",
+    title="Terminal",icon="T",
+    cwd=ctx.process.cwd or "/home/caden",
     input="",lines={
-      "Ubuntu 22.04.5 LTS (CCLUA)",
-      "Type 'help' for commands.",
+      "Ubuntu 22.04.5 LTS",
+      "CCLUA terminal — type 'help' for commands.",
       ""
-    }
+    },
+    history={},historyIndex=nil,
   }
+end
+
+function M.snapshot(st)
+  return {cwd=st.cwd}
+end
+
+function M.open(ctx,st,opts)
+  if opts and opts.cwd then st.cwd=opts.cwd return true end
+  return false
 end
 
 local function words(line)
   local out={}
-  for w in tostring(line):gmatch("%S+") do out[#out+1]=w end
+  local buf={}
+  local quote=nil
+  local escape=false
+  local function flush()
+    if #buf>0 then out[#out+1]=table.concat(buf);buf={} end
+  end
+  for i=1,#line do
+    local ch=line:sub(i,i)
+    if escape then
+      buf[#buf+1]=ch
+      escape=false
+    elseif ch=="\\" then
+      escape=true
+    elseif quote then
+      if ch==quote then quote=nil else buf[#buf+1]=ch end
+    elseif ch=="'" or ch=='"' then
+      quote=ch
+    elseif ch:match("%s") then
+      flush()
+    else
+      buf[#buf+1]=ch
+    end
+  end
+  flush()
   return out
 end
 
 local function capture(st)
-  local t={x=1,y=1,w=80,h=40,fg=colors.white,bg=colors.black}
+  local t={x=1,y=1,w=100,h=50,fg=colors.white,bg=colors.black}
+  local pending=""
   function t.write(s)
     s=tostring(s or "")
-    local parts={}
-    for part in (s.."\n"):gmatch("(.-)\n") do parts[#parts+1]=part end
-    for i,part in ipairs(parts) do
-      if part~="" then push(st,part) end
-      if i<#parts then t.x=1;t.y=t.y+1 else t.x=t.x+#part end
+    pending=pending..s
+    while true do
+      local p=pending:find("\n",1,true)
+      if not p then break end
+      push(st,pending:sub(1,p-1))
+      pending=pending:sub(p+1)
+      t.x=1;t.y=t.y+1
+    end
+    if pending~="" then
+      -- Most CCLUA commands write complete lines, but keep partial output visible.
+      if #st.lines==0 or st.lines[#st.lines]~=pending then push(st,pending) end
+      pending=""
     end
   end
   function t.blit(s) t.write(s) end
-  function t.clear() end
+  function t.clear() st.lines={} end
   function t.clearLine() end
   function t.getCursorPos() return t.x,t.y end
   function t.setCursorPos(x,y) t.x=x;t.y=y end
@@ -58,21 +106,38 @@ end
 local function run_command(ctx,st,line)
   local argv=words(line)
   if #argv==0 then return end
-  push(st,"caden@test-client:"..st.cwd.."$ "..line)
+
+  st.history[#st.history+1]=line
+  while #st.history>100 do table.remove(st.history,1) end
+  st.historyIndex=nil
+
+  local prompt="caden@test-client:"..pretty_path(st.cwd).."$ "
+  push(st,prompt..line)
 
   if argv[1]=="clear" then st.lines={};return end
   if argv[1]=="pwd" then push(st,st.cwd);return end
   if argv[1]=="cd" then
     local target=argv[2] or "/home/caden"
-    if target:sub(1,1)~="/" then target=ctx.kernel.vfs.normalize(st.cwd.."/"..target) end
+    if target=="~" then target="/home/caden"
+    elseif target:sub(1,2)=="~/" then target="/home/caden/"..target:sub(3)
+    elseif target:sub(1,1)~="/" then target=ctx.kernel.vfs.normalize(st.cwd.."/"..target) end
     target=ctx.kernel.vfs.normalize(target)
-    if ctx.kernel.vfs.exists(target) and ctx.kernel.vfs.isDir(target) then st.cwd=target
-    else push(st,"bash: cd: "..target..": No such directory") end
+    if ctx.kernel.vfs.exists(target) and ctx.kernel.vfs.isDir(target) then
+      st.cwd=target
+    else
+      push(st,"bash: cd: "..target..": No such file or directory")
+    end
+    return
+  end
+  if argv[1]=="history" then
+    local first=math.max(1,#st.history-19)
+    for i=first,#st.history do push(st,("%3d  %s"):format(i,st.history[i])) end
     return
   end
   if argv[1]=="help" then
-    push(st,"Builtins: cd pwd clear help")
-    push(st,"All CCLUA commands are available: ls cat ps ip apt ...")
+    push(st,"Builtins: cd pwd clear history help")
+    push(st,"Common commands: ls cat ps ip apt dpkg uname systemctl")
+    push(st,"Shortcuts: Up/Down history, Ctrl+L clear, Ctrl+Alt+T new terminal")
     return
   end
 
@@ -80,7 +145,9 @@ local function run_command(ctx,st,line)
   if not path then push(st,argv[1]..": command not found");return end
   local mod,err=ctx.kernel.exec.load(path)
   if not mod then push(st,argv[1]..": "..tostring(err));return end
-  local args={};for i=2,#argv do args[#args+1]=argv[i] end
+
+  local args={}
+  for i=2,#argv do args[#args+1]=argv[i] end
   local old=term.current()
   local cap=capture(st)
   term.redirect(cap)
@@ -92,28 +159,62 @@ local function run_command(ctx,st,line)
   if not ok then push(st,"error: "..tostring(res)) end
 end
 
+local function history_move(st,delta)
+  if #st.history==0 then return end
+  if st.historyIndex==nil then st.historyIndex=#st.history+1 end
+  st.historyIndex=math.max(1,math.min(#st.history+1,st.historyIndex+delta))
+  if st.historyIndex>#st.history then st.input=""
+  else st.input=st.history[st.historyIndex] end
+end
+
 function M.draw(ctx,st,ui,x,y,w,h,active)
   ui.fill(x,y,x+w-1,y+h-1,colors.black,colors.white)
-  local body=h-2
+
+  local body=math.max(1,h-2)
   local start=math.max(1,#st.lines-body+1)
   local row=0
   for i=start,#st.lines do
     row=row+1
-    ui.text(x+1,y+row-1,st.lines[i]:sub(1,math.max(1,w-2)),colors.lightGray,colors.black)
+    if row>body then break end
+    ui.text(x+1,y+row-1,(st.lines[i] or ""):sub(1,math.max(1,w-2)),colors.lightGray,colors.black)
   end
-  local prompt="caden@test-client:"..st.cwd.."$ "..st.input
-  ui.text(x+1,y+h-1,prompt:sub(math.max(1,#prompt-w+3)),colors.white,colors.black)
-  if active then ui.cursor=x+math.min(w-2,#prompt+1);ui.cursor_y=y+h-1 end
+
+  ui.fill(x,y+h-1,x+w-1,y+h-1,colors.black,colors.white)
+  local prompt="caden@test-client:"..pretty_path(st.cwd).."$ "
+  local full=prompt..st.input
+  local visible=full
+  if #visible>w-2 then visible=visible:sub(-(w-2)) end
+  ui.text(x+1,y+h-1,visible,colors.white,colors.black)
+
+  if active then
+    ui.cursor=x+math.min(w-2,#visible+1)
+    ui.cursor_y=y+h-1
+  end
 end
 
 function M.event(ctx,st,ev,a,b,c)
-  if ev=="char" then st.input=st.input..tostring(a);return true end
+  if ev=="char" then
+    st.input=st.input..tostring(a)
+    return true
+  end
+
   if ev=="key" then
-    if a==keys.backspace then st.input=st.input:sub(1,-2);return true end
+    if a==keys.backspace then
+      st.input=st.input:sub(1,-2)
+      return true
+    end
     if a==keys.enter then
-      local line=st.input;st.input=""
+      local line=st.input
+      st.input=""
       run_command(ctx,st,line)
       return true
+    end
+    if a==keys.up then history_move(st,-1);return true end
+    if a==keys.down then history_move(st,1);return true end
+    if a==keys.home then st.input="";return true end
+    if a==keys.l and (keys.leftCtrl or keys.rightCtrl) then
+      -- Modifier state is owned by the compositor, so Ctrl+L is handled there.
+      return false
     end
   end
   return false

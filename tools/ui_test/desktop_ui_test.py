@@ -297,48 +297,53 @@ def main():
     cases=[
         ("00_workspace","Workspace",[]),
         ("01_terminal","Terminal",[
-            ("mouse_click",1,2,4),
+            ("mouse_click",1,2,3),
             *[("char",c) for c in "help"],
             ("key",257),
         ]),
-        ("02_files","Files",[("mouse_click",1,2,7)]),
-        ("03_settings","Settings",[("mouse_click",1,2,10)]),
-        ("04_software_search","Software search",[
+        ("02_files","Files",[("mouse_click",1,2,5)]),
+        ("03_editor","Text Editor",[("mouse_click",1,2,7)]),
+        ("04_monitor","System Monitor",[("mouse_click",1,2,9)]),
+        ("05_settings","Settings",[("mouse_click",1,2,11)]),
+        ("06_software_search","Software search",[
             ("mouse_click",1,2,13),
             *[("char",c) for c in "gnome"],
         ]),
-        ("05_terminal_maximized","Maximized Terminal",[
-            ("mouse_click",1,2,4),
+        ("07_terminal_maximized","Maximized Terminal",[
+            ("mouse_click",1,2,3),
             ("mouse_click",1,43,3),
         ]),
-        ("06_multiwindow","Multi-window + Alt-Tab",[
-            ("mouse_click",1,2,4),
-            ("mouse_click",1,2,7),
+        ("08_multiwindow","Multi-window + Alt-Tab",[
+            ("mouse_click",1,2,3),
+            ("mouse_click",1,2,5),
             ("key",342),("key",258),("key_up",342),
         ]),
-        ("07_dragged_window","Dragged Terminal",[
-            ("mouse_click",1,2,4),
+        ("09_dragged_window","Dragged Terminal",[
+            ("mouse_click",1,2,3),
             ("mouse_click",1,15,3),
             ("mouse_drag",1,20,6),
             ("mouse_up",1,20,6),
         ]),
-        ("08_resized_window","Resized Terminal",[
-            ("mouse_click",1,2,4),
+        ("10_resized_window","Resized Terminal",[
+            ("mouse_click",1,2,3),
             ("mouse_click",1,49,17),
             ("mouse_drag",1,43,14),
             ("mouse_up",1,43,14),
         ]),
-        ("09_close_window","Close Terminal",[
-            ("mouse_click",1,2,4),
+        ("11_close_window","Close Terminal",[
+            ("mouse_click",1,2,3),
             ("mouse_click",1,48,3),
         ]),
-        ("10_activities_overview","Activities overview",[
+        ("12_activities_overview","Activities overview",[
             ("mouse_click",1,5,1),
         ]),
-        ("11_minimize_restore","Minimize and restore",[
-            ("mouse_click",1,2,4),
+        ("13_minimize_restore","Minimize and restore",[
+            ("mouse_click",1,2,3),
             ("mouse_click",1,39,3),
-            ("mouse_click",1,2,4),
+            ("mouse_click",1,2,3),
+        ]),
+        ("14_system_menu","System status menu",[
+            ("mouse_click",1,49,1),
         ]),
     ]
     captures=[run_case(*case) for case in cases]
