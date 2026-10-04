@@ -138,7 +138,7 @@ function dofile(path)
 end
 
 local nextPid=200
-local procs={}
+procs={}
 ctx={process={pid=100,uid=1000,gid=1000,groups={},cwd="/home/caden",capabilities={}}}
 ctx.kernel={
   process={
@@ -151,7 +151,7 @@ ctx.kernel={
     get=function(pid) return procs[pid] end,
     exit=function(p,code,state) p.state=state or "exited";p.exit_code=code end
   },
-  scheduler={add=function(proc,fn) proc.worker=fn end},
+  scheduler={add=function(self,proc,fn) proc.worker=fn end},
   log={write=function(...) end}
 }
 
@@ -186,7 +186,11 @@ assert(bad==nil and baderr)
 local player,perr=music.play(ctx,tracks[1].path,nil,1,tracks[1])
 assert(player and player.speaker=="left",perr)
 assert(music.now_playing() and music.now_playing().title=="Test Song")
-music.stop(ctx)
+local localCo=coroutine.create(procs[player.pid].worker)
+local okLocal,localYield=coroutine.resume(localCo)
+assert(okLocal and localYield=="wait_event","local DFPWM worker failed before audio drain")
+local okLocalDone=coroutine.resume(localCo,"speaker_audio_empty")
+assert(okLocalDone and coroutine.status(localCo)=="dead")
 assert(music.now_playing()==nil)
 
 local catalog=music.catalog()
@@ -194,7 +198,11 @@ local remote=music.find_best("Bridge Song",catalog)
 local remotePlayer,remoteErr=music.play_track(ctx,remote,nil,1)
 assert(remotePlayer and remotePlayer.remote==true and remotePlayer.track_id=="bridge-track",remoteErr)
 assert(music.now_playing() and music.now_playing().title=="Bridge Song")
-music.stop(ctx)
+local remoteCo=coroutine.create(procs[remotePlayer.pid].worker)
+local okRemote,remoteYield=coroutine.resume(remoteCo)
+assert(okRemote and remoteYield=="wait_event","remote DFPWM worker failed before audio drain")
+local okRemoteDone=coroutine.resume(remoteCo,"speaker_audio_empty")
+assert(okRemoteDone and coroutine.status(remoteCo)=="dead")
 assert(music.now_playing()==nil)
 ''')
 

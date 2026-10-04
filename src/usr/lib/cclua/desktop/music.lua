@@ -3,6 +3,54 @@ local M={players={}}
 local ROOT="/home/caden/Music"
 local BRIDGE_BASE="http://127.0.0.1:8765/v1"
 
+-- CCLUA processes intentionally do not expose ComputerCraft's global require().
+-- Keep the small DFPWM decoder local so music playback works in the sandboxed
+-- Desktop runtime without broadening the process module-loading surface.
+local function make_dfpwm_decoder()
+  local floor=math.floor
+  local charge,strength,previousBit=0,0,false
+  local previousCharge=0
+  local lowPassCharge=0
+  local PREC=10
+  local PREC_POW=2^PREC
+  local PREC_HALF=2^(PREC-1)
+  local STRENGTH_MIN=2^(PREC-8+1)
+
+  return function(input)
+    if type(input)~="string" then error("DFPWM decoder expected string",2) end
+    local output={}
+    local outN=0
+    for i=1,#input do
+      local inputByte=string.byte(input,i)
+      for _=1,8 do
+        local currentBit=(inputByte%2)==1
+        local target=currentBit and 127 or -128
+        local nextCharge=charge+floor((strength*(target-charge)+PREC_HALF)/PREC_POW)
+        if nextCharge==charge and nextCharge~=target then
+          nextCharge=nextCharge+(currentBit and 1 or -1)
+        end
+
+        local z=currentBit==previousBit and PREC_POW-1 or 0
+        if strength~=z then strength=strength+(currentBit==previousBit and 1 or -1) end
+        if strength<STRENGTH_MIN then strength=STRENGTH_MIN end
+        charge=nextCharge
+
+        local antijerk=charge
+        if currentBit~=previousBit then
+          antijerk=floor((charge+previousCharge+1)/2)
+        end
+        previousCharge,previousBit=charge,currentBit
+
+        lowPassCharge=lowPassCharge+floor(((antijerk-lowPassCharge)*140+0x80)/256)
+        outN=outN+1
+        output[outN]=lowPassCharge
+        inputByte=floor(inputByte/2)
+      end
+    end
+    return output
+  end
+end
+
 local function clean_path(path)
   return tostring(path or ""):gsub("^/","")
 end
@@ -244,8 +292,7 @@ function M.play(ctx,path,speakerName,volume,meta)
 
   ctx.kernel.scheduler:add(proc,function()
     local okRun,runErr=pcall(function()
-      local dfpwm=require("cc.audio.dfpwm")
-      local decoder=dfpwm.make_decoder()
+      local decoder=make_dfpwm_decoder()
       local h=fs.open(host,"rb")
       if not h then error("unable to open "..tostring(path),0) end
 
@@ -328,8 +375,7 @@ function M.play_remote(ctx,track,speakerName,volume)
         error("bridge stream HTTP "..tostring(code),0)
       end
 
-      local dfpwm=require("cc.audio.dfpwm")
-      local decoder=dfpwm.make_decoder()
+      local decoder=make_dfpwm_decoder()
       while true do
         local chunk=h.read(16*1024)
         if not chunk then break end
