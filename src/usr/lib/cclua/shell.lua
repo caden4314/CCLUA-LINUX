@@ -67,7 +67,7 @@ local function banner(ctx)
   term.setTextColor(colors.gray)
   print("")
   print("CCLUA Kernel "..ctx.kernel.version.version.." - Ubuntu reference 22.04.5")
-  print("Type 'help' for shell help, 'systemctl list-units' for services.")
+  print("Type 'help' for shell help, 'cclua-status' for system health.")
   print("")
   term.setTextColor(colors.white)
 end
@@ -95,7 +95,7 @@ local function builtin(ctx,args)
     term.setTextColor(colors.cyan);print("CCLUA Ubuntu shell");term.setTextColor(colors.white)
     print("Builtins: cd pwd export clear exit help")
     print("Useful:   ls cat cp mv rm mkdir grep find ps kill")
-    print("Admin:    systemctl journalctl dmesg peripherals ip ping hostnamectl")
+    print("Admin:    cclua-status systemctl journalctl dmesg peripherals ip ping hostnamectl")
     print("Packages: apt dpkg")
     return true,0
   end
