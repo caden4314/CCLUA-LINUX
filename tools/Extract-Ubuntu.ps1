@@ -76,6 +76,7 @@ function Extract-SquashLayer {
         $unexpected = @($errorLines | Where-Object {
             $_ -notmatch "^ERROR: Cannot create symbolic link" -and
             $_ -notmatch "^ERROR: Dangerous link path was ignored" -and
+            $_ -notmatch "^ERROR: Temporary link file is not empty" -and
             $_ -notmatch "^ERROR: Cannot create .* special file" -and
             $_ -notmatch "^ERROR: Cannot create .* device"
         })

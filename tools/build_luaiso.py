@@ -66,7 +66,17 @@ def main():
             if args.role=="desktop" else "ubuntu-22.04.5-live-server-amd64.iso",
     }
     iso=ROOT/".cache"/"ubuntu"/provenance["source_iso"]
-    if iso.exists():
+    sums=ROOT/".cache"/"ubuntu"/"SHA256SUMS"
+    expected=None
+    if sums.exists():
+        for line in sums.read_text(encoding="utf-8").splitlines():
+            parts=line.split()
+            if len(parts)>=2 and parts[-1].lstrip("*")==provenance["source_iso"]:
+                expected=parts[0]
+                break
+    if expected:
+        provenance["source_iso_sha256"]=expected
+    elif iso.exists():
         provenance["source_iso_sha256"]=sha256_file(iso)
 
     generated=ROOT/"generated"/"ubuntu-22.04.5"/args.role
