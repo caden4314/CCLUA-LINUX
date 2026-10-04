@@ -316,32 +316,75 @@ return function(ctx)
     reload_settings()
     local mapping=settings.monitor_rooms or {}
     local wanted={}
+    local available={}
+    local assigned={}
+    local missing={}
+
+    for _,name in ipairs(peripheral.getNames()) do
+      if peripheral.getType(name)=="monitor" then available[name]=true end
+    end
+
+    local function attach(name,roomName)
+      local mon=peripheral.wrap(name)
+      if not mon then return end
+      pcall(mon.setTextScale,tonumber(settings.monitor_scale) or 0.5)
+      pcall(mon.setCursorBlink,false)
+      local ok,w,h=pcall(mon.getSize)
+      if not ok then return end
+
+      local old=monitors[name]
+      local changed=not old or old.w~=w or old.h~=h or old.room~=roomName
+      local item=old or {name=name,cache={},zones={}}
+      item.mon=mon
+      item.room=roomName
+      item.w=w
+      item.h=h
+
+      if changed then
+        item.cache={}
+        item.zones={}
+        pcall(mon.setBackgroundColor,colors.black)
+        pcall(mon.setTextColor,colors.white)
+        pcall(mon.clear)
+      end
+
+      wanted[name]=item
+      assigned[name]=true
+    end
 
     for name,roomName in pairs(mapping) do
-      if peripheral.getType(name)=="monitor" and find_room(roomName) then
-        local mon=peripheral.wrap(name)
-        if mon then
-          pcall(mon.setTextScale,tonumber(settings.monitor_scale) or 0.5)
-          pcall(mon.setCursorBlink,false)
-          local ok,w,h=pcall(mon.getSize)
-          if ok then
-            local old=monitors[name]
-            local changed=not old or old.w~=w or old.h~=h or old.room~=roomName
-            local item=old or {name=name,cache={},zones={}}
-            item.mon=mon
-            item.room=roomName
-            item.w=w
-            item.h=h
-            if changed then
-              item.cache={}
-              item.zones={}
-              pcall(mon.setBackgroundColor,colors.black)
-              pcall(mon.setTextColor,colors.white)
-              pcall(mon.clear)
-            end
-            wanted[name]=item
-          end
-        end
+      if find_room(roomName) then
+        if available[name] then attach(name,roomName)
+        else missing[#missing+1]={name=name,room=roomName} end
+      end
+    end
+
+    -- If exactly one configured panel disappeared and exactly one new monitor
+    -- appeared on the lighting bus, safely treat it as a replacement panel.
+    -- This handles broken/replaced CC monitors whose peripheral ID changes.
+    if settings.monitor_auto_rebind~=false and #missing==1 then
+      local unassigned={}
+      for name in pairs(available) do
+        if not assigned[name] and not mapping[name] then unassigned[#unassigned+1]=name end
+      end
+      table.sort(unassigned)
+
+      if #unassigned==1 then
+        local oldName=missing[1].name
+        local roomName=missing[1].room
+        local newName=unassigned[1]
+
+        mapping[oldName]=nil
+        mapping[newName]=roomName
+        settings.monitor_rooms=mapping
+        config.write_json("/etc/cclua/lighting.json",settings)
+
+        ctx.kernel.log.write("info","lightingd","lighting monitor automatically rebound",{
+          room=roomName,old_monitor=oldName,new_monitor=newName
+        },ctx.process.pid)
+
+        monitors=wanted
+        return discover_monitors()
       end
     end
 
@@ -553,6 +596,22 @@ return function(ctx)
 
   local function heartbeat()
     local state=snapshot()
+    local compactLighting={
+      schema=state.schema,
+      hostname=state.hostname,
+      computer_id=state.computer_id,
+      healthy=state.healthy,
+      relay_count=state.relay_count,
+      expected_relay_count=#(state.expected_relays or {}),
+      rooms=state.rooms,
+      monitors=state.monitors,
+      monitor_count=state.monitor_count,
+      animation_active=state.animation_active,
+      animation_room=state.animation_room,
+      error=state.error,
+      timestamp=state.timestamp
+    }
+
     rednet.send(managerId,{
       protocol=managerProtocol,
       op="status",
@@ -562,7 +621,7 @@ return function(ctx)
         hostname=machine.hostname,
         role=machine.role,
         system_state=state.healthy and "HEALTHY" or "DEGRADED",
-        lighting=state,
+        lighting=compactLighting,
         relays=state.relay_count,
         processes=#ctx.kernel.process.all(),
         services=(function()
