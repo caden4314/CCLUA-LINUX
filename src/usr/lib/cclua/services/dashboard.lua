@@ -1,5 +1,6 @@
 return function(ctx)
   local config=dofile("/usr/lib/cclua/config.lua")
+  local monitorLayout=dofile("/usr/lib/cclua/monitor_layout.lua")
   local machine=config.machine()
   local monitor=nil
   local monitorName=nil
@@ -20,9 +21,15 @@ return function(ctx)
       end)
     end
     if monitor then
-      pcall(monitor.setTextScale,tonumber(machine.monitor_text_scale) or 0.5)
-      pcall(monitor.setBackgroundColor,colors.black)
-      pcall(monitor.setTextColor,colors.white)
+      local fit=monitorLayout.configure(monitor,machine,{
+        min_width=46,
+        min_height=18,
+        max_scale=3.0,
+      })
+      ctx.unit.details=ctx.unit.details or {}
+      ctx.unit.details.monitor_scale=fit.scale
+      ctx.unit.details.monitor_width=fit.width
+      ctx.unit.details.monitor_height=fit.height
     end
     return monitor
   end

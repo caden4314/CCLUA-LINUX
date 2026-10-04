@@ -1,5 +1,6 @@
 return function(ctx)
   local config=dofile("/usr/lib/cclua/config.lua")
+  local monitorLayout=dofile("/usr/lib/cclua/monitor_layout.lua")
   local net=dofile("/usr/lib/cclua/net.lua")
   local pixelbox=dofile("/usr/lib/cclua/ui/pixelbox_lite.lua")
   local machine=config.machine()
@@ -74,8 +75,9 @@ return function(ctx)
       monitor=nil
     end
     if not monitor then return end
-    pcall(monitor.setTextScale,tonumber(machine.monitor_text_scale) or 0.5)
-    pcall(monitor.setCursorBlink,false)
+    monitorLayout.configure(monitor,machine,{
+      min_width=58,min_height=20,max_scale=3.0,
+    })
     monitor.setBackgroundColor(colors.black)
     monitor.setTextColor(colors.white)
     monitor.clear()

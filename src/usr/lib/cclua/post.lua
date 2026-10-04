@@ -1,4 +1,5 @@
 local config=dofile("/usr/lib/cclua/config.lua")
+local monitorLayout=dofile("/usr/lib/cclua/monitor_layout.lua")
 local M={}
 
 local function now()
@@ -76,7 +77,13 @@ local function setup_monitors(machine)
   local targets=monitor_targets(machine)
   for _,target in ipairs(targets) do
     local m=target.obj
-    pcall(m.setTextScale,tonumber(machine.post_monitor_text_scale or machine.monitor_text_scale) or 0.5)
+    local fixed=nil
+    if tostring(machine.monitor_ui_scale_mode or "auto"):lower()=="fixed" then
+      fixed=tonumber(machine.post_monitor_text_scale or machine.monitor_text_scale)
+    end
+    monitorLayout.fit(m,{
+      min_width=46,min_height=16,max_scale=3.0,fixed_scale=fixed,
+    })
     pcall(m.setCursorBlink,false)
     pcall(m.setBackgroundColor,colors.black)
     pcall(m.setTextColor,colors.white)

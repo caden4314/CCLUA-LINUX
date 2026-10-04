@@ -1,5 +1,6 @@
 return function(ctx)
   local config=dofile("/usr/lib/cclua/config.lua")
+  local monitorLayout=dofile("/usr/lib/cclua/monitor_layout.lua")
   local net=dofile("/usr/lib/cclua/net.lua")
   local machine=config.machine()
 
@@ -357,12 +358,19 @@ return function(ctx)
     local function attach(name,roomName,kind)
       local mon=peripheral.wrap(name)
       if not mon then return end
-      local scale=(kind=="master" and tonumber(settings.master_monitor_scale))
-        or tonumber(settings.monitor_scale) or 0.5
-      pcall(mon.setTextScale,scale)
+      local fixed=nil
+      if tostring(settings.monitor_scale_mode or "auto"):lower()=="fixed" then
+        fixed=(kind=="master" and tonumber(settings.master_monitor_scale))
+          or tonumber(settings.monitor_scale) or 0.5
+      end
+      local scale,w,h=monitorLayout.fit(mon,{
+        min_width=kind=="master" and 52 or 24,
+        min_height=kind=="master" and 20 or 12,
+        max_scale=3.0,
+        fixed_scale=fixed,
+      })
       pcall(mon.setCursorBlink,false)
-      local ok,w,h=pcall(mon.getSize)
-      if not ok then return end
+      if not w or not h or w<=0 or h<=0 then return end
 
       local old=monitors[name]
       kind=kind or "room"

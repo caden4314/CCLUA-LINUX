@@ -1,5 +1,6 @@
 return function(ctx)
   local config=dofile("/usr/lib/cclua/config.lua")
+  local monitorLayout=dofile("/usr/lib/cclua/monitor_layout.lua")
   local net=dofile("/usr/lib/cclua/net.lua")
   local machine=config.machine()
   local protocol="cclua-gps-v1"
@@ -32,10 +33,9 @@ return function(ctx)
       monitor=nil
     end
     if monitor then
-      pcall(monitor.setTextScale,tonumber(machine.monitor_text_scale) or 0.5)
-      pcall(monitor.setCursorBlink,false)
-      pcall(monitor.setBackgroundColor,colors.black)
-      pcall(monitor.setTextColor,colors.white)
+      monitorLayout.configure(monitor,machine,{
+        min_width=44,min_height=18,max_scale=3,
+      })
       pcall(monitor.clear)
       cache={}
     end

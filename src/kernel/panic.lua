@@ -28,7 +28,9 @@ local function monitor_panic(name,msg)
   local m=peripheral.wrap(name)
   if not m then return end
   pcall(function()
-    m.setTextScale(0.5)
+    -- Keep panic text physically readable even when CCPerf gives monitors
+    -- a denser backing terminal.
+    m.setTextScale(1.0)
     m.setCursorBlink(false)
     m.setBackgroundColor(colors.black)
     m.setTextColor(colors.white)
@@ -70,8 +72,7 @@ function M.raise(k,msg,details)
     local ok,value=pcall(debug.traceback,tostring(msg),2)
     if ok and value then trace=tostring(value) end
   end
-  if #trace>8000 then trace=trace:sub(1,8000).."
-<truncated>" end
+  if #trace>8000 then trace=trace:sub(1,8000).."\n<truncated>" end
 
   k.log.write("emerg","panic",msg,{details=details,traceback=trace})
   persist(msg,details,trace)
