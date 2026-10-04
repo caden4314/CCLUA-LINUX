@@ -69,6 +69,9 @@ function M.new(kernel)
       local ok,res=pcall(u.exec,{kernel=kernel,process=proc,unit=u})
       if not ok then
         u.state="failed";u.error=tostring(res)
+        kernel.log.write("error","service","Failed "..u.name..": "..u.error,{
+          unit=u.name,error=u.error,pid=proc.pid
+        },proc.pid)
         error(res,0)
       end
       u.state="inactive";u.pid=nil

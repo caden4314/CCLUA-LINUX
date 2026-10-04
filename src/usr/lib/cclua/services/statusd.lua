@@ -17,8 +17,14 @@ return function(ctx)
   local function failed_services()
     local out={}
     for _,u in ipairs(ctx.kernel.services:list()) do
-      if u.state=="failed" then out[#out+1]=u.name end
+      if u.state=="failed" then out[#out+1]={name=u.name,error=u.error} end
     end
+    return out
+  end
+
+  local function failed_names(failed)
+    local out={}
+    for _,u in ipairs(failed or {}) do out[#out+1]=u.name end
     return out
   end
 
@@ -72,7 +78,7 @@ return function(ctx)
       pcall(redstone.setOutput,side,output)
 
       if state~=previous or tick%20==0 then
-        config.write_json("/var/lib/cclua/status.json",{
+        local payload={
           schema=1,
           state=state,
           healthy=state=="HEALTHY",
@@ -81,10 +87,13 @@ return function(ctx)
           role=machine.role,
           lamp_side=side,
           lamp_output=output,
-          failed_services=failed,
+          failed_services=failed_names(failed),
+          failed_units=failed,
           update=update,
           timestamp=os.epoch and os.epoch("utc") or 0
-        })
+        }
+        config.write_json("/var/lib/cclua/status.json",payload)
+        config.write_json("/var/log/cclua/health.json",payload)
       end
 
       if state~=previous then
@@ -92,7 +101,7 @@ return function(ctx)
           state=="DEGRADED" and "error" or "info",
           "statusd",
           "system status "..state,
-          {lamp_side=side,failed_services=failed},
+          {lamp_side=side,failed_services=failed_names(failed),failed_units=failed},
           ctx.process.pid
         )
         previous=state

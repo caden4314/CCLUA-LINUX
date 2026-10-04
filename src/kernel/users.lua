@@ -3,15 +3,23 @@ local M={}
 local PASSWD="/etc/passwd"
 local GROUP="/etc/group"
 
+local function strip_bom(s)
+  s=tostring(s or "")
+  if s:sub(1,3)==string.char(0xEF,0xBB,0xBF) then return s:sub(4) end
+  return s:gsub("^ï»¿","")
+end
+
 local function read_lines(path)
   local host=path:gsub("^/","")
   local out={}
   if not fs.exists(host) then return out end
   local h=fs.open(host,"r")
   if not h then return out end
+  local first=true
   while true do
     local line=h.readLine()
     if not line then break end
+    if first then line=strip_bom(line);first=false end
     out[#out+1]=line
   end
   h.close()
@@ -22,7 +30,7 @@ local function write_lines(path,lines)
   local host=path:gsub("^/","")
   local h=fs.open(host,"w")
   if not h then return nil,"cannot write "..path end
-  for _,line in ipairs(lines) do h.writeLine(line) end
+  for _,line in ipairs(lines) do h.writeLine(strip_bom(line)) end
   h.close()
   return true
 end
