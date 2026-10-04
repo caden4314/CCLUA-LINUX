@@ -113,6 +113,8 @@ return function(ctx)
       files=state.files,
       bytes=state.bytes,
       node_count=(function() local n=0 for _ in pairs(runtime.nodes) do n=n+1 end return n end)(),
+      poll_seconds=CFG.pollSeconds,
+      announce_seconds=CFG.announceSeconds,
       timestamp=os.epoch and os.epoch("utc") or 0,
     }
   end
@@ -445,7 +447,10 @@ return function(ctx)
     if type(msg)=="table" then
       n.hostname=msg.hostname or (msg.status and msg.status.hostname) or n.hostname
       n.role=msg.role or (msg.status and msg.status.role) or n.role
-      n.status=msg.status or n.status
+      if type(msg.status)=="table" then
+        n.status=n.status or {}
+        for k,v in pairs(msg.status) do n.status[k]=v end
+      end
     end
     runtime.nodes[sender]=n
     local out={}

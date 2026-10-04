@@ -125,6 +125,20 @@ return function(ctx)
     local p=payload(extra)
     config.write_json("/var/lib/cclua/update-state.json",p)
     config.write_json("/var/log/cclua/update-health.json",p)
+    pcall(rednet.send,managerId,{
+      protocol=protocol,
+      op="node_update_status",
+      hostname=machine.hostname,
+      role=machine.role,
+      status={
+        hostname=machine.hostname,
+        role=machine.role,
+        system_state=(state=="FAILED" or state=="OFFLINE") and "DEGRADED"
+          or ((state=="CURRENT") and "HEALTHY" or "UPDATING"),
+        current_commit=local_commit(),
+        update=p,
+      }
+    },protocol)
   end
 
   local function open_modems()

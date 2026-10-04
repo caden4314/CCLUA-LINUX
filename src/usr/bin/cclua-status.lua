@@ -33,10 +33,17 @@ return {main=function(ctx,args)
   print(("Address:     %s"):format(machine.address or "-"))
   print(("Manager:     %s"):format(machine.manager or "-"))
   print(("Peers:       %d"):format(#(net.peers or {})))
-  print(("Update:      %s"):format(update.state or update.phase or "IDLE"))
+  print(("Update:      %s (%s%%)"):format(
+    update.state or update.phase or "IDLE",
+    tostring(update.percent or ((update.state=="CURRENT") and 100 or 0))
+  ))
   print(("Installed:   %s"):format(short(update.current_commit or update.commit or update.build or update.version)))
-  print(("Available:   %s"):format(short(update.available_commit or update.manager_commit)))
+  print(("Available:   %s"):format(short(update.target_commit or update.available_commit or update.manager_commit)))
   print(("Manager:     %s"):format(update.manager_state or (update.manager_id and ("ID "..tostring(update.manager_id))) or "-"))
+  if update.current_action then
+    print(("Working:     %s %s"):format(tostring(update.current_action),tostring(update.current_file or "")))
+  end
+  if update.last_result then print(("Last result: %s"):format(tostring(update.last_result))) end
   print(("Lamp:        %s / %s"):format(
     status.lamp_side or machine.status_light_side or "bottom",
     status.lamp_output and "ON" or "OFF"
