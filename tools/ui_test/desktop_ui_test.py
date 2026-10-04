@@ -140,7 +140,7 @@ function colors.toBlit(c)
   return string.format("%x",n)
 end
 
-keys={backspace=259,tab=258,enter=257,left=263,right=262,down=264,up=265,
+keys={escape=256,backspace=259,tab=258,enter=257,left=263,right=262,down=264,up=265,
       q=81,t=84,leftCtrl=341,rightCtrl=345,leftAlt=342,rightAlt=346}
 ''')
 
@@ -331,6 +331,14 @@ def main():
         ("09_close_window","Close Terminal",[
             ("mouse_click",1,2,4),
             ("mouse_click",1,48,3),
+        ]),
+        ("10_activities_overview","Activities overview",[
+            ("mouse_click",1,5,1),
+        ]),
+        ("11_minimize_restore","Minimize and restore",[
+            ("mouse_click",1,2,4),
+            ("mouse_click",1,39,3),
+            ("mouse_click",1,2,4),
         ]),
     ]
     captures=[run_case(*case) for case in cases]

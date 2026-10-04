@@ -33,6 +33,8 @@ function M.run(ctx)
   local nextId=1
   local active=nil
   local drag=nil
+  local overview=false
+  local overviewCards={}
   local ctrl,alt=false,false
 
   local ui={cursor=nil,cursor_y=nil}
@@ -40,8 +42,16 @@ function M.run(ctx)
   function ui.fill(x1,y1,x2,y2,bg,fg,ch) Canvas.fill(canvas,x1,y1,x2,y2,bg,fg,ch) end
   function ui.center(y,s,fg,bg,x1,x2) Canvas.center(canvas,y,s,fg,bg,x1,x2) end
 
+  local function top_visible()
+    for i=#windows,1,-1 do
+      if not windows[i].minimized then return windows[i] end
+    end
+    return nil
+  end
+
   local function focus(win)
     if not win then active=nil;return end
+    win.minimized=false
     for i=#windows,1,-1 do
       if windows[i]==win then table.remove(windows,i);break end
     end
@@ -53,7 +63,12 @@ function M.run(ctx)
     for i=#windows,1,-1 do
       if windows[i]==win then table.remove(windows,i);break end
     end
-    active=windows[#windows]
+    active=top_visible()
+  end
+
+  local function minimize(win)
+    win.minimized=true
+    active=top_visible()
   end
 
   local function launch(name)
@@ -93,31 +108,76 @@ function M.run(ctx)
     end
   end
 
+  local function app_running(name)
+    for _,w in ipairs(windows) do
+      if w.app==name then return w end
+    end
+  end
+
   local function draw_desktop()
     ui.cursor=nil;ui.cursor_y=nil
     canvas:reset(colors.purple,colors.white)
 
     ui.fill(1,1,W,1,colors.gray,colors.white)
-    ui.text(2,1,"Activities",colors.white,colors.gray)
+    ui.text(2,1,overview and "Applications" or "Activities",colors.white,colors.gray)
     local host=(dofile("/usr/lib/cclua/config.lua").machine().hostname or "test-client")
     ui.center(1,host,colors.white,colors.gray)
     local clock=os.date and os.date("%H:%M") or ""
-    ui.text(math.max(1,W-#clock-1),1,clock,colors.white,colors.gray)
+    ui.text(math.max(1,W-#clock-3),1,"N "..clock,colors.white,colors.gray)
 
     ui.fill(1,2,4,H,colors.black,colors.white)
+    local dockIcon={
+      terminal={"T",colors.orange},
+      files={"F",colors.cyan},
+      system={"S",colors.lightGray},
+      packages={"A",colors.magenta},
+    }
     local dy=3
     for _,name in ipairs(ORDER) do
-      local spec=APP[name]
-      local running=false
-      for _,w in ipairs(windows) do if w.app==name then running=true end end
-      local bg=running and colors.gray or colors.black
+      local running=app_running(name)
+      local icon=dockIcon[name] or {APP[name].icon,colors.white}
+      local bg=(running and running==active and not running.minimized) and colors.gray or colors.black
       ui.fill(1,dy,4,dy+2,bg,colors.white)
-      ui.center(dy+1,spec.icon,colors.white,bg,1,4)
+      ui.center(dy+1,icon[1],icon[2],bg,1,4)
+      if running then ui.text(4,dy+1,".",colors.orange,bg) end
       dy=dy+3
     end
 
-    ui.text(7,3,"Ubuntu 22.04 LTS",colors.lightGray,colors.purple)
-    ui.text(7,4,"CCLUA Desktop",colors.orange,colors.purple)
+    if not overview then
+      ui.text(7,3,"Ubuntu 22.04 LTS",colors.lightGray,colors.purple)
+      ui.text(7,4,"CCLUA Desktop",colors.orange,colors.purple)
+      ui.text(7,H-1,"Activities  |  Ctrl+Alt+T Terminal",colors.lightGray,colors.purple)
+    end
+  end
+
+  local function draw_overview()
+    ui.fill(5,2,W,H,colors.black,colors.white)
+    ui.center(2,"Applications",colors.white,colors.black,5,W)
+
+    local cards={
+      {name="terminal",label="Terminal",fg=colors.orange},
+      {name="files",label="Files",fg=colors.cyan},
+      {name="system",label="Settings",fg=colors.lightGray},
+      {name="packages",label="Software",fg=colors.magenta},
+    }
+    local cardW=math.max(16,math.floor((W-8)/2))
+    local cardH=4
+    for i,card in ipairs(cards) do
+      local col=(i-1)%2
+      local row=math.floor((i-1)/2)
+      local x=6+col*(cardW+1)
+      local y=4+row*(cardH+1)
+      local x2=math.min(W-1,x+cardW-1)
+      ui.fill(x,y,x2,y+cardH-1,colors.gray,colors.white)
+      ui.center(y+1,card.label,card.fg,colors.gray,x,x2)
+      local running=app_running(card.name)
+      if running then
+        ui.center(y+2,running.minimized and "minimized" or "running",colors.lime,colors.gray,x,x2)
+      end
+      card.x1=x;card.x2=x2;card.y1=y;card.y2=y+cardH-1
+    end
+    ui.text(6,H-1,"Esc closes overview",colors.gray,colors.black)
+    return cards
   end
 
   local function draw_window(win,isActive)
@@ -127,8 +187,9 @@ function M.run(ctx)
     ui.fill(win.x+1,win.y+1,win.x+win.w-2,win.y+win.h-2,colors.black,colors.white)
     ui.fill(win.x,win.y,win.x+win.w-1,win.y,titleBg,colors.white)
 
-    ui.text(win.x+1,win.y,win.title:sub(1,math.max(1,win.w-9)),colors.white,titleBg)
-    ui.text(win.x+win.w-7,win.y,"[_]",colors.lightGray,titleBg)
+    ui.text(win.x+1,win.y,win.title:sub(1,math.max(1,win.w-12)),colors.white,titleBg)
+    ui.text(win.x+win.w-11,win.y,"[-]",colors.lightGray,titleBg)
+    ui.text(win.x+win.w-7,win.y,win.max and "[=]" or "[+]",colors.lightGray,titleBg)
     ui.text(win.x+win.w-3,win.y,"[x]",colors.white,colors.red)
 
     local mod=APP[win.app].mod
@@ -139,7 +200,14 @@ function M.run(ctx)
 
   local function render(force)
     draw_desktop()
-    for _,win in ipairs(windows) do draw_window(win,win==active) end
+    if overview then
+      overviewCards=draw_overview()
+    else
+      overviewCards={}
+      for _,win in ipairs(windows) do
+        if not win.minimized then draw_window(win,win==active) end
+      end
+    end
     Canvas.flush(canvas,term.current(),force)
     if ui.cursor and active then
       term.setCursorPos(math.max(1,math.min(W,ui.cursor)),math.max(1,math.min(H,ui.cursor_y)))
@@ -150,7 +218,7 @@ function M.run(ctx)
   local function hit_window(x,y)
     for i=#windows,1,-1 do
       local w=windows[i]
-      if x>=w.x and x<w.x+w.w and y>=w.y and y<w.y+w.h then return w end
+      if not w.minimized and x>=w.x and x<w.x+w.w and y>=w.y and y<w.y+w.h then return w end
     end
   end
 
@@ -177,15 +245,28 @@ function M.run(ctx)
       render(true)
 
     elseif ev=="timer" and a==clockTimer then
+      if fs.exists("var/lib/cclua/desktop-reload") then
+        fs.delete("var/lib/cclua/desktop-reload")
+        return 75
+      end
       clockTimer=os.startTimer(1);render(false)
 
     elseif ev=="key" then
       if a==keys.leftCtrl or a==keys.rightCtrl then ctrl=true end
       if a==keys.leftAlt or a==keys.rightAlt then alt=true end
-      if ctrl and alt and a==keys.t then launch("terminal")
+
+      if a==keys.escape and overview then
+        overview=false
+      elseif ctrl and alt and a==keys.t then
+        overview=false
+        launch("terminal")
       elseif alt and a==keys.tab and #windows>1 then
-        local w=windows[#windows-1];focus(w)
-      elseif active then route_app(active,ev,a,b,c) end
+        for i=#windows-1,1,-1 do
+          if not windows[i].minimized then focus(windows[i]);break end
+        end
+      elseif not overview and active then
+        route_app(active,ev,a,b,c)
+      end
       render(false)
 
     elseif ev=="key_up" then
@@ -193,12 +274,30 @@ function M.run(ctx)
       if a==keys.leftAlt or a==keys.rightAlt then alt=false end
 
     elseif ev=="char" then
-      if active then route_app(active,ev,a,b,c) end
+      if not overview and active then route_app(active,ev,a,b,c) end
       render(false)
 
     elseif ev=="mouse_click" then
       local button,x,y=a,b,c
-      if x<=4 and y>=3 then
+
+      if y==1 and x<=12 then
+        overview=not overview
+      elseif overview then
+        local launched=false
+        for _,card in ipairs(overviewCards) do
+          if x>=card.x1 and x<=card.x2 and y>=card.y1 and y<=card.y2 then
+            overview=false
+            launch(card.name)
+            launched=true
+            break
+          end
+        end
+        if not launched and x<=4 and y>=3 then
+          local idx=math.floor((y-3)/3)+1
+          local name=ORDER[idx]
+          if name then overview=false;launch(name) end
+        end
+      elseif x<=4 and y>=3 then
         local idx=math.floor((y-3)/3)+1
         local name=ORDER[idx]
         if name then launch(name) end
@@ -206,13 +305,19 @@ function M.run(ctx)
         local win=hit_window(x,y)
         if win then
           focus(win)
-          if y==win.y and x>=win.x+win.w-3 then close(win)
-          elseif y==win.y and x>=win.x+win.w-7 then maximize(win)
+          if y==win.y and x>=win.x+win.w-3 then
+            close(win)
+          elseif y==win.y and x>=win.x+win.w-7 then
+            maximize(win)
+          elseif y==win.y and x>=win.x+win.w-11 then
+            minimize(win)
           elseif y==win.y and not win.max then
             drag={win=win,mode="move",dx=x-win.x,dy=y-win.y}
           elseif x==win.x+win.w-1 and y==win.y+win.h-1 and not win.max then
             drag={win=win,mode="resize"}
-          else route_app(win,ev,button,x,y,x,y) end
+          else
+            route_app(win,ev,button,x,y,x,y)
+          end
         else active=nil end
       end
       render(false)
@@ -230,7 +335,7 @@ function M.run(ctx)
       render(false)
 
     elseif ev=="mouse_up" then drag=nil
-    elseif ev=="mouse_scroll" and active then
+    elseif ev=="mouse_scroll" and not overview and active then
       route_app(active,ev,a,b,c,b,c);render(false)
     end
   end
