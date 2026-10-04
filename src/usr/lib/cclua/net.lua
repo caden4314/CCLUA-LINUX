@@ -14,6 +14,19 @@ local sequence=0
 local seen={}
 local seenCount=0
 
+function M.stats_snapshot()
+  return {
+    rx=M.stats.rx or 0,
+    tx=M.stats.tx or 0,
+    tx_failed=M.stats.tx_failed or 0,
+    duplicates=M.stats.duplicates or 0,
+    invalid=M.stats.invalid or 0,
+    last_rx=M.stats.last_rx,
+    last_tx=M.stats.last_tx,
+    last_error=M.stats.last_error,
+  }
+end
+
 local function now()
   return (os.epoch and os.epoch("utc")) or 0
 end
@@ -173,7 +186,7 @@ function M.snapshot(extra)
   local payload={
     schema=2,
     self=M.machine(),
-    stats=M.stats,
+    stats=M.stats_snapshot(),
     peers=out,
     timestamp=now(),
   }

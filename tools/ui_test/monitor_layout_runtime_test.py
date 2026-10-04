@@ -49,8 +49,9 @@ assert(scaleAgain==1.0 and one.getSetScaleCalls()==calls,
 
 local wall=mock_monitor(3,2)
 local s2,w2,h2,f2=layout.fit(wall,{min_width=70,min_height=24,max_scale=3})
-assert(s2>=1.5,("large wall should use readable scale, got %s"):format(s2))
+assert(s2==1.0,("large wall auto scale should cap at 1.0, got %s"):format(s2))
 assert(f2 and w2>=70 and h2>=24)
+assert(w2>=120,"large wall should retain useful high-resolution workspace")
 
 local fixed=mock_monitor(1,1)
 local s3=layout.fit(fixed,{min_width=100,min_height=30,fixed_scale=0.5})

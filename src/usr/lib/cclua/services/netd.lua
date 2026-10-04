@@ -80,7 +80,7 @@ return function(ctx)
       modems=opened,
       modem_count=#opened,
       reopen_count=reopenCount,
-      stats=net.stats,
+      stats=net.stats_snapshot(),
       peer_count=(function() local n=0 for _ in pairs(net.peers or {}) do n=n+1 end return n end)(),
       timestamp=now(),
     }

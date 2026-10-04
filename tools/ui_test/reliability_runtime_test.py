@@ -229,6 +229,14 @@ local duplicate=net.accept(0,{
 assert(duplicate==nil)
 assert(net.stats.duplicates==1)
 
+-- Network snapshots must not reuse the live stats table. CC:Tweaked's
+-- serializeJSON rejects repeated table references inside one document.
+local snapA=net.stats_snapshot()
+local snapB=net.stats_snapshot()
+assert(snapA~=net.stats and snapB~=net.stats and snapA~=snapB)
+snapA.rx=999
+assert(net.stats.rx~=999 and snapB.rx~=999)
+
 -- Wireless exists but cannot be opened: wired must become the fallback.
 peripheral={}
 function peripheral.getNames() return {"wireless","wired"} end

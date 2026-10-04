@@ -47,14 +47,19 @@ function M.fit(mon,opts)
     return scale,w or 0,h or 0,(w and w>=minW and h>=minH) or false
   end
 
-  local maxScale=clamp_scale(opts.max_scale or 5)
+  local requestedMax=clamp_scale(opts.max_scale or 5)
+  local autoCeiling=clamp_scale(opts.auto_max_scale or 1.0)
+  local maxScale=math.min(requestedMax,autoCeiling)
   local minScale=clamp_scale(opts.min_scale or 0.5)
   local baseW=currentW*currentScale
   local baseH=currentH*currentScale
   local target=minScale
 
   -- Predict the largest fitting scale from the current monitor geometry.
-  -- This avoids probing every scale with setTextScale(), which emits
+  -- Auto mode intentionally caps at 1.0 so CCPerf's 2x backing density remains
+  -- useful on large walls instead of blowing dashboards up to 1.5-3.0 text.
+  -- Fixed mode above may still explicitly request a larger scale.
+  -- This also avoids probing every scale with setTextScale(), which emits
   -- monitor_resize and can create a resize/flicker feedback loop.
   for _,scale in ipairs(SCALES) do
     if scale<=maxScale and scale>=minScale then
