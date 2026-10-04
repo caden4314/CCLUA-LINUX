@@ -215,7 +215,7 @@ return function(ctx)
   end
 
   local function sourceManifest(tree,commit)
-    local manifest={schema=1,commit=commit,files={}}
+    local manifest={schema=1,commit=commit,repo_commit=commit,files={}}
     for _,item in ipairs(tree or {}) do
       if item.type=="blob" and type(item.path)=="string" and item.path:sub(1,4)=="src/" then
         local rel=item.path:sub(5)
@@ -223,6 +223,63 @@ return function(ctx)
       end
     end
     return manifest
+  end
+
+  local function desktop_only(rel)
+    local libPrefix="usr/lib/cclua/desktop/"
+    local sharePrefix="usr/share/cclua/desktop/"
+    if rel:sub(1,#libPrefix)==libPrefix then return true end
+    if rel:sub(1,#sharePrefix)==sharePrefix then return true end
+    if rel=="usr/share/cclua/ubuntu-desktop-packages.json" then return true end
+    return rel=="usr/bin/cclua-desktop.lua"
+      or rel=="usr/bin/cclua-files.lua"
+      or rel=="usr/bin/gnome-shell.lua"
+      or rel=="usr/bin/gnome-terminal.lua"
+      or rel=="usr/bin/nautilus.lua"
+  end
+
+  local function desktop_role(role)
+    role=tostring(role or "")
+    return role=="desktop-client" or role:find("desktop",1,true)~=nil
+  end
+
+  local function manifest_id(manifest,role)
+    local keys={}
+    for rel in pairs(manifest.files or {}) do keys[#keys+1]=rel end
+    table.sort(keys)
+
+    -- Two small integer rolling hashes are enough for an image identity while
+    -- staying inside Lua's exact integer range on CC:Tweaked's number model.
+    local h1,h2=104729,130363
+    local function feed(h,mul,s)
+      for i=1,#s do h=(h*mul+s:byte(i))%2147483647 end
+      return h
+    end
+    h1=feed(h1,131,tostring(role or "server"))
+    h2=feed(h2,137,tostring(role or "server"))
+    for _,rel in ipairs(keys) do
+      local meta=manifest.files[rel] or {}
+      local line=rel.."="..tostring(meta.sha or "")..":"..tostring(meta.size or 0).."\n"
+      h1=feed(h1,131,line)
+      h2=feed(h2,137,line)
+    end
+    return ("img-%08x%08x"):format(h1,h2)
+  end
+
+  local function role_manifest(manifest,role)
+    local out={
+      schema=2,
+      role=desktop_role(role) and "desktop" or "server",
+      repo_commit=manifest.repo_commit or manifest.commit,
+      files={}
+    }
+    for rel,meta in pairs(manifest.files or {}) do
+      if desktop_role(role) or not desktop_only(rel) then
+        out.files[rel]=meta
+      end
+    end
+    out.commit=manifest_id(out,out.role)
+    return out
   end
 
   local function readManifest(slot,state)
@@ -478,16 +535,35 @@ return function(ctx)
     runtime.peersDirty=true
   end
 
-  local function managerStatus()
+  local function active_role_manifest(role)
+    local raw=readAll(join(activeRoot(),".manifest.json"))
+    local ok,manifest=pcall(textutils.unserializeJSON,raw or "")
+    if not ok or type(manifest)~="table" or type(manifest.files)~="table" then
+      return nil
+    end
+    return role_manifest(manifest,role)
+  end
+
+  local function managerStatus(role)
     local state=loadState()
+    local roleRequested=role~=nil and tostring(role)~=""
+    local manifest=roleRequested and active_role_manifest(role) or nil
+    local files,bytes=0,0
+    if manifest then
+      for _,meta in pairs(manifest.files or {}) do
+        files=files+1
+        bytes=bytes+(tonumber(meta.size) or 0)
+      end
+    end
     return {
       repo=CFG.owner.."/"..CFG.repo,
       ref=CFG.ref,
-      commit=state.imageCommit or state.commit,
+      role=manifest and manifest.role or (roleRequested and (desktop_role(role) and "desktop" or "server") or machine.role),
+      commit=manifest and manifest.commit or (state.imageCommit or state.commit),
       repoCommit=state.repoCommit,
       activeSlot=state.activeSlot,
-      files=state.files,
-      bytes=state.bytes,
+      files=manifest and files or state.files,
+      bytes=manifest and bytes or state.bytes,
       managerState=runtime.state,
       installedCommit=installedCommit(),
       delta=runtime.delta,
@@ -546,13 +622,12 @@ return function(ctx)
     rememberNode(sender,msg)
 
     if msg.op=="status" then
-      rednet.send(sender,{protocol=CFG.protocol,op="status",ok=true,status=managerStatus()},CFG.protocol)
+      rednet.send(sender,{protocol=CFG.protocol,op="status",ok=true,status=managerStatus(msg.role)},CFG.protocol)
 
     elseif msg.op=="manifest" then
-      local raw=readAll(join(activeRoot(),".manifest.json"))
-      local ok,manifest=pcall(textutils.unserializeJSON,raw or "")
-      if ok and type(manifest)=="table" and type(manifest.files)=="table" then
-        rednet.send(sender,{protocol=CFG.protocol,op="manifest",ok=true,manifest=manifest,status=managerStatus()},CFG.protocol)
+      local manifest=active_role_manifest(msg.role)
+      if manifest then
+        rednet.send(sender,{protocol=CFG.protocol,op="manifest",ok=true,manifest=manifest,status=managerStatus(msg.role)},CFG.protocol)
       else
         rednet.send(sender,{protocol=CFG.protocol,op="manifest",ok=false,error="active image manifest unavailable"},CFG.protocol)
       end

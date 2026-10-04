@@ -232,7 +232,7 @@ return function(ctx)
   end
 
   local function fetch_manifest()
-    local res,err=rpc({op="manifest"},manifestTimeout)
+    local res,err=rpc({op="manifest",hostname=machine.hostname,role=machine.role},manifestTimeout)
     if not res then return nil,err end
     if type(res.manifest)~="table" or type(res.manifest.files)~="table" then
       return nil,"manager returned invalid manifest"
@@ -441,6 +441,66 @@ return function(ctx)
     return true,true
   end
 
+  local function adopt_role_identity(status)
+    local current=local_commit()
+    local repo=tostring(status.repoCommit or status.repo_commit or "")
+    local target=tostring(status.commit or "")
+    if repo=="" or target=="" or target=="unknown" or current~=repo or target==current then
+      return false
+    end
+
+    local targetManifest,err=fetch_manifest()
+    if not targetManifest then return false,err end
+    local old=installed_manifest()
+    if not old or type(old.files)~="table" then return false end
+
+    -- Migration compatibility: if every file required by this role already
+    -- has the exact Git blob identity in the legacy all-src manifest, adopt
+    -- the role image ID without a download or reboot. Legacy extra files are
+    -- harmless and disappear naturally on future clean image rebuilds.
+    local count=0
+    for rel,meta in pairs(targetManifest.files or {}) do
+      local prior=old.files[rel]
+      if not prior or prior.sha~=meta.sha or tonumber(prior.size or 0)~=tonumber(meta.size or 0) then
+        return false
+      end
+      count=count+1
+    end
+
+    local state=load_state()
+    local active=state.activeSlot
+    write_json(INSTALLED_MANIFEST,targetManifest)
+    write_all("/var/lib/cclua/installed-commit",target.."\n")
+    write_json(slot_root(active).."/.manifest.json",targetManifest)
+    write_all(slot_root(active).."/.commit",target.."\n")
+    state.installedCommit=target
+    state.pendingSlot=nil
+    state.pendingCommit=nil
+    state.lastResult="role-identity-migrated"
+    state.roleImage=targetManifest.role
+    save_state(state)
+
+    runtime.targetCommit=target
+    runtime.stageTarget=nil
+    runtime.stageAt=nil
+    runtime.retryAt=nil
+    runtime.stageFailures=0
+    runtime.delta={added=0,changed=0,removed=0,unchanged=count}
+    runtime.progress=0
+    runtime.total=0
+    runtime.lastResult="role identity adopted"
+    write_state("CURRENT",{
+      available_commit=target,
+      repo_commit=repo,
+      role_image=targetManifest.role,
+      identity_migrated=true
+    },true)
+    ctx.kernel.log.write("info","update-agent","adopted role-specific image identity",{
+      repo_commit=repo,image_commit=target,role=targetManifest.role,files=count
+    },ctx.process.pid)
+    return true
+  end
+
   local function consider(status,reason)
     if type(status)~="table" then return end
     lastManager=status
@@ -461,6 +521,15 @@ return function(ctx)
       write_state("CURRENT",{available_commit=runtime.targetCommit})
       return
     end
+
+    local adopted,adoptErr=adopt_role_identity(status)
+    if adopted then return end
+    if adoptErr then
+      ctx.kernel.log.write("warning","update-agent","role image identity migration check failed",{
+        error=tostring(adoptErr),target=runtime.targetCommit
+      },ctx.process.pid)
+    end
+    current=local_commit()
 
     if runtime.state=="DOWNLOADING" or runtime.state=="STAGING" or runtime.state=="VERIFYING" or runtime.state=="ACTIVATING" then
       return
@@ -597,8 +666,12 @@ return function(ctx)
       poll=os.startTimer(pollSeconds+pollJitter)
 
     elseif ev=="rednet_message" and c==protocol and a==managerId and type(b)=="table" and b.protocol==protocol then
-      if b.op=="image_available" and type(b.status)=="table" then
-        manager_success(b.status,"announce")
+      if b.op=="image_available" then
+        -- Broadcasts are role-neutral wakeups. Ask the manager for this
+        -- machine's role-specific image identity before deciding to stage.
+        local mgr,announceErr=request_status()
+        if mgr then manager_success(mgr,"announce")
+        else manager_failure(announceErr) end
       end
 
     elseif ev=="peripheral" or ev=="peripheral_detach" then
