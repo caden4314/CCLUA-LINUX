@@ -12,6 +12,7 @@ local CFG = {
   pollSeconds = 120,
   statusSide = "bottom",
   monitorScale = 0.5,
+  bridgeVersion = "0.2.0-delta",
 }
 
 local runtime = {
@@ -180,7 +181,7 @@ local function draw()
     fill(1,colors.blue)
     text(2,1,"CCLUA NETWORK MANAGER",colors.white,colors.blue)
     fill(2,colors.gray)
-    text(2,2,("LINUX_NETWORK | ID %d | GitHub authority"):format(os.getComputerID()),colors.white,colors.gray)
+    text(2,2,("LINUX_NETWORK | ID %d | bridge %s"):format(os.getComputerID(),CFG.bridgeVersion),colors.white,colors.gray)
 
     text(2,4,"MANAGER STATUS",colors.cyan)
     text(18,4,"["..runtime.state.."]",statusColor(runtime.state))
@@ -499,6 +500,7 @@ function M.status()
   state.root = M.activeRoot()
   state.repo = CFG.owner .. "/" .. CFG.repo
   state.protocol = CFG.protocol
+  state.bridgeVersion = CFG.bridgeVersion
   state.managerState = runtime.state
   state.lastError = runtime.lastError
   return state
