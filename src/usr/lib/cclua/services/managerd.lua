@@ -1,0 +1,529 @@
+return function(ctx)
+  local config=dofile("/usr/lib/cclua/config.lua")
+  local machine=config.machine()
+
+  local CFG={
+    owner=machine.github_owner or "caden4314",
+    repo=machine.github_repo or "CCLUA-LINUX",
+    ref=machine.github_ref or machine.channel_ref or "main",
+    root="/var/lib/cclua/github",
+    protocol="cclua-manager-v1",
+    pollSeconds=tonumber(machine.github_poll_seconds) or 120,
+  }
+
+  local runtime={
+    state="BOOTING",
+    progress=0,total=0,
+    currentAction=nil,currentFile=nil,
+    lastError=nil,lastCheck=nil,
+    delta={added=0,changed=0,removed=0,unchanged=0},
+    downloadedBytes=0,
+    nodes={},
+  }
+
+  local function join(a,b)
+    if a:sub(-1)=="/" then return a..b end
+    return a.."/"..b
+  end
+
+  local function ensureDir(path)
+    if path=="" or fs.exists(path) then return end
+    local parent=fs.getDir(path)
+    if parent~="" and not fs.exists(parent) then ensureDir(parent) end
+    fs.makeDir(path)
+  end
+
+  local function writeAll(path,data)
+    path=tostring(path):gsub("^/","")
+    ensureDir(fs.getDir(path))
+    local h,err=fs.open(path,"w")
+    if not h then return nil,err or "open failed" end
+    h.write(data)
+    h.close()
+    return true
+  end
+
+  local function readAll(path)
+    path=tostring(path):gsub("^/","")
+    if not fs.exists(path) then return nil end
+    local h=fs.open(path,"r")
+    if not h then return nil end
+    local data=h.readAll()
+    h.close()
+    return data
+  end
+
+  local function readText(path)
+    local v=readAll(path)
+    return v and v:gsub("%s+$","") or nil
+  end
+
+  local function loadState()
+    local raw=readAll(join(CFG.root,"state.json"))
+    if not raw then return {activeSlot="A"} end
+    local ok,state=pcall(textutils.unserializeJSON,raw)
+    if not ok or type(state)~="table" then return {activeSlot="A"} end
+    state.activeSlot=state.activeSlot=="B" and "B" or "A"
+    state.imageCommit=state.imageCommit or state.commit
+    state.repoCommit=state.repoCommit or state.commit
+    return state
+  end
+
+  local function saveState(state)
+    ensureDir(CFG.root:gsub("^/",""))
+    return writeAll(join(CFG.root,"state.json"),textutils.serializeJSON(state))
+  end
+
+  local function activeRoot(state)
+    state=state or loadState()
+    return join(CFG.root,state.activeSlot or "A")
+  end
+
+  local function installedCommit()
+    return readText("/var/lib/cclua/installed-commit") or machine.image_commit or "unknown"
+  end
+
+  local function runtimeSnapshot()
+    local state=loadState()
+    return {
+      schema=1,
+      state=runtime.state,
+      progress=runtime.progress,
+      total=runtime.total,
+      current_action=runtime.currentAction,
+      current_file=runtime.currentFile,
+      last_error=runtime.lastError,
+      last_check=runtime.lastCheck,
+      downloaded_bytes=runtime.downloadedBytes,
+      delta=runtime.delta,
+      repo=CFG.owner.."/"..CFG.repo,
+      ref=CFG.ref,
+      installed_commit=installedCommit(),
+      image_commit=state.imageCommit or state.commit,
+      repo_commit=state.repoCommit,
+      active_slot=state.activeSlot,
+      files=state.files,
+      bytes=state.bytes,
+      node_count=(function() local n=0 for _ in pairs(runtime.nodes) do n=n+1 end return n end)(),
+      timestamp=os.epoch and os.epoch("utc") or 0,
+    }
+  end
+
+  local function writeRuntime()
+    config.write_json("/var/lib/cclua/manager-state.json",runtimeSnapshot())
+  end
+
+  local function writeUpdateState(stateName,extra)
+    local state=loadState()
+    local payload={
+      schema=1,
+      state=stateName,
+      current_commit=installedCommit(),
+      available_commit=state.imageCommit or state.commit,
+      repo_commit=state.repoCommit,
+      active_slot=state.activeSlot,
+      progress=runtime.progress,
+      total=runtime.total,
+      current_action=runtime.currentAction,
+      current_file=runtime.currentFile,
+      delta=runtime.delta,
+      manager_state=runtime.state,
+      timestamp=os.epoch and os.epoch("utc") or 0,
+    }
+    for k,v in pairs(extra or {}) do payload[k]=v end
+    config.write_json("/var/lib/cclua/update-state.json",payload)
+  end
+
+  local function setRuntime(stateName,err)
+    runtime.state=stateName
+    runtime.lastError=err
+    writeRuntime()
+    writeUpdateState(stateName,{error=err})
+  end
+
+  local function request(url)
+    local h,err=http.get(url,{
+      ["User-Agent"]="CCLUA-LINUX/"..tostring(os.getComputerID()),
+      ["Accept"]="application/vnd.github+json",
+      ["X-GitHub-Api-Version"]="2022-11-28",
+    })
+    if not h then return nil,err or "HTTP request failed" end
+    local code=h.getResponseCode and h.getResponseCode() or 200
+    local body=h.readAll()
+    h.close()
+    if code<200 or code>=300 then
+      return nil,"HTTP "..tostring(code)..": "..tostring(body):sub(1,160)
+    end
+    return body
+  end
+
+  local function requestJson(url)
+    local body,err=request(url)
+    if not body then return nil,err end
+    local ok,data=pcall(textutils.unserializeJSON,body)
+    if not ok or type(data)~="table" then return nil,"invalid JSON" end
+    return data
+  end
+
+  local function repoApi(path)
+    return "https://api.github.com/repos/"..CFG.owner.."/"..CFG.repo.."/"..path
+  end
+
+  local function rawUrl(sha,path)
+    return "https://raw.githubusercontent.com/"..CFG.owner.."/"..CFG.repo.."/"..sha.."/"..path
+  end
+
+  local function currentCommit()
+    local obj,err=requestJson(repoApi("commits/"..textutils.urlEncode(CFG.ref)))
+    if not obj then return nil,err end
+    return obj.sha
+  end
+
+  local function getTree(sha)
+    local obj,err=requestJson(repoApi("git/trees/"..sha.."?recursive=1"))
+    if not obj then return nil,err end
+    if obj.truncated then return nil,"GitHub tree response truncated" end
+    return obj.tree or {}
+  end
+
+  local function sourceManifest(tree,commit)
+    local manifest={schema=1,commit=commit,files={}}
+    for _,item in ipairs(tree or {}) do
+      if item.type=="blob" and type(item.path)=="string" and item.path:sub(1,4)=="src/" then
+        local rel=item.path:sub(5)
+        manifest.files[rel]={sha=item.sha,size=item.size or 0}
+      end
+    end
+    return manifest
+  end
+
+  local function readManifest(slot,state)
+    local raw=readAll(join(slot,".manifest.json"))
+    if raw then
+      local ok,data=pcall(textutils.unserializeJSON,raw)
+      if ok and type(data)=="table" and type(data.files)=="table" then return data end
+    end
+    local prior=state and (state.imageCommit or state.commit)
+    if prior then
+      local tree=getTree(prior)
+      if tree then return sourceManifest(tree,prior) end
+    end
+    return {schema=1,commit=prior,files={}}
+  end
+
+  local function removeTree(path)
+    path=tostring(path):gsub("^/","")
+    if fs.exists(path) then fs.delete(path) end
+  end
+
+  local function calculateDelta(previous,nextManifest)
+    local added,changed,removed,unchanged={},{},{},{}
+    for rel,meta in pairs(nextManifest.files or {}) do
+      local old=previous.files and previous.files[rel] or nil
+      if not old then
+        added[#added+1]=rel
+      elseif old.sha~=meta.sha then
+        changed[#changed+1]=rel
+      else
+        unchanged[#unchanged+1]=rel
+      end
+    end
+    for rel in pairs(previous.files or {}) do
+      if not nextManifest.files[rel] then removed[#removed+1]=rel end
+    end
+    table.sort(added);table.sort(changed);table.sort(removed);table.sort(unchanged)
+    return added,changed,removed,unchanged
+  end
+
+  local function yieldBrief()
+    if ctx.kernel and ctx.kernel.scheduler and ctx.kernel.scheduler.sleep then
+      ctx.kernel.scheduler.sleep(0)
+    else
+      coroutine.yield("wait_event")
+    end
+  end
+
+  local function stageCommit(head,tree,state)
+    local active=activeRoot(state)
+    local inactiveName=state.activeSlot=="A" and "B" or "A"
+    local slot=join(CFG.root,inactiveName)
+    local nextManifest=sourceManifest(tree,head)
+    local previous=readManifest(active,state)
+    local added,changed,removed,unchanged=calculateDelta(previous,nextManifest)
+
+    runtime.delta={
+      added=#added,changed=#changed,removed=#removed,unchanged=#unchanged
+    }
+    runtime.total=#added+#changed+#removed
+    runtime.progress=0
+    runtime.downloadedBytes=0
+
+    if runtime.total==0 then
+      state.repoCommit=head
+      state.lastDelta={
+        added=0,changed=0,removed=0,unchanged=#unchanged,downloadedBytes=0
+      }
+      saveState(state)
+      runtime.currentAction=nil
+      runtime.currentFile=nil
+      setRuntime("CURRENT")
+      return state,false
+    end
+
+    runtime.currentAction="STAGE"
+    runtime.currentFile="copying last-known-good image"
+    setRuntime("STAGING")
+
+    removeTree(slot)
+    ensureDir(CFG.root:gsub("^/",""))
+    if fs.exists(active:gsub("^/","")) then
+      local ok,copyErr=pcall(fs.copy,active:gsub("^/",""),slot:gsub("^/",""))
+      if not ok then return nil,"stage copy failed: "..tostring(copyErr) end
+    else
+      ensureDir(slot:gsub("^/",""))
+    end
+
+    local manifestPath=join(slot,".manifest.json")
+    local commitPath=join(slot,".commit")
+    if fs.exists(manifestPath:gsub("^/","")) then fs.delete(manifestPath:gsub("^/","")) end
+    if fs.exists(commitPath:gsub("^/","")) then fs.delete(commitPath:gsub("^/","")) end
+
+    local function advance(action,rel)
+      runtime.currentAction=action
+      runtime.currentFile=rel
+      runtime.progress=runtime.progress+1
+      writeRuntime()
+      writeUpdateState(action=="REMOVE" and "STAGING" or "DOWNLOADING")
+      yieldBrief()
+    end
+
+    for _,rel in ipairs(removed) do
+      local target=join(slot,rel):gsub("^/","")
+      if fs.exists(target) then fs.delete(target) end
+      advance("REMOVE",rel)
+    end
+
+    local function downloadFile(rel,action)
+      runtime.currentAction=action
+      runtime.currentFile=rel
+      writeRuntime()
+      writeUpdateState("DOWNLOADING")
+      local body,ferr=request(rawUrl(head,"src/"..rel))
+      if not body then return nil,"download src/"..rel..": "..tostring(ferr) end
+      local ok,werr=writeAll(join(slot,rel),body)
+      if not ok then return nil,"write "..rel..": "..tostring(werr) end
+      runtime.downloadedBytes=runtime.downloadedBytes+#body
+      runtime.progress=runtime.progress+1
+      writeRuntime()
+      writeUpdateState("DOWNLOADING")
+      yieldBrief()
+      return true
+    end
+
+    for _,rel in ipairs(changed) do
+      local ok,err=downloadFile(rel,"CHANGE")
+      if not ok then removeTree(slot);return nil,err end
+    end
+    for _,rel in ipairs(added) do
+      local ok,err=downloadFile(rel,"ADD")
+      if not ok then removeTree(slot);return nil,err end
+    end
+
+    runtime.currentAction="VERIFY"
+    runtime.currentFile="manifest and image metadata"
+    setRuntime("VERIFYING")
+
+    local ok,merr=writeAll(manifestPath,textutils.serializeJSON(nextManifest))
+    if not ok then removeTree(slot);return nil,merr end
+    writeAll(commitPath,head.."\n")
+
+    local files,bytes=0,0
+    for _,meta in pairs(nextManifest.files) do
+      files=files+1
+      bytes=bytes+(meta.size or 0)
+    end
+
+    state.activeSlot=inactiveName
+    state.imageCommit=head
+    state.repoCommit=head
+    state.commit=head
+    state.ref=CFG.ref
+    state.files=files
+    state.bytes=bytes
+    state.updatedAt=os.epoch and os.epoch("utc") or 0
+    state.lastDelta={
+      added=#added,changed=#changed,removed=#removed,unchanged=#unchanged,
+      downloadedBytes=runtime.downloadedBytes
+    }
+    local saved,serr=saveState(state)
+    if not saved then return nil,serr end
+
+    runtime.progress=runtime.total
+    runtime.currentAction=nil
+    runtime.currentFile=nil
+    setRuntime("READY")
+    return state,true
+  end
+
+  local function sync(force)
+    runtime.lastCheck=os.date and os.date("%H:%M:%S") or tostring(os.epoch("utc"))
+    runtime.currentAction="CHECK"
+    runtime.currentFile="GitHub HEAD"
+    runtime.progress=0
+    runtime.total=0
+    runtime.lastError=nil
+    setRuntime("CHECKING")
+
+    local head,err=currentCommit()
+    if not head then
+      setRuntime("DEGRADED",err)
+      return nil,err
+    end
+
+    local state=loadState()
+    if not force and state.repoCommit==head and fs.exists(activeRoot(state):gsub("^/","")) then
+      runtime.delta={added=0,changed=0,removed=0,unchanged=state.files or 0}
+      runtime.currentAction=nil
+      runtime.currentFile=nil
+      setRuntime(installedCommit()==(state.imageCommit or state.commit) and "CURRENT" or "READY")
+      return state,false
+    end
+
+    runtime.currentAction="TREE"
+    runtime.currentFile="comparing Git blob SHAs"
+    writeRuntime()
+
+    local tree,terr=getTree(head)
+    if not tree then
+      setRuntime("DEGRADED",terr)
+      return nil,terr
+    end
+
+    local nextState,changedOrErr=stageCommit(head,tree,state)
+    if not nextState then
+      setRuntime("DEGRADED",changedOrErr)
+      return nil,changedOrErr
+    end
+    return nextState,changedOrErr==true
+  end
+
+  local function openModems()
+    local opened={}
+    for _,name in ipairs(peripheral.getNames()) do
+      if peripheral.hasType(name,"modem") then
+        local ok=pcall(rednet.open,name)
+        if ok then opened[#opened+1]=name end
+      end
+    end
+    if #opened>0 then pcall(rednet.host,CFG.protocol,machine.hostname or "LINUX_NETWORK") end
+    return opened
+  end
+
+  local function rememberNode(sender,msg)
+    local n=runtime.nodes[sender] or {}
+    n.id=sender
+    n.last_seen=os.epoch and os.epoch("utc") or 0
+    if type(msg)=="table" then
+      n.hostname=msg.hostname or (msg.status and msg.status.hostname) or n.hostname
+      n.role=msg.role or (msg.status and msg.status.role) or n.role
+      n.status=msg.status or n.status
+    end
+    runtime.nodes[sender]=n
+    local out={}
+    for _,node in pairs(runtime.nodes) do out[#out+1]=node end
+    table.sort(out,function(a,b)return (a.id or 9999)<(b.id or 9999) end)
+    config.write_json("/var/lib/cclua/manager-peers.json",{schema=1,nodes=out})
+  end
+
+  local function managerStatus()
+    local state=loadState()
+    return {
+      repo=CFG.owner.."/"..CFG.repo,
+      ref=CFG.ref,
+      commit=state.imageCommit or state.commit,
+      repoCommit=state.repoCommit,
+      activeSlot=state.activeSlot,
+      files=state.files,
+      bytes=state.bytes,
+      managerState=runtime.state,
+      installedCommit=installedCommit(),
+      delta=runtime.delta,
+      progress=runtime.progress,
+      total=runtime.total,
+      currentAction=runtime.currentAction,
+      currentFile=runtime.currentFile,
+      lastError=runtime.lastError,
+    }
+  end
+
+  local function serve(sender,msg)
+    if type(msg)~="table" or msg.protocol~=CFG.protocol then return end
+    rememberNode(sender,msg)
+
+    if msg.op=="status" then
+      rednet.send(sender,{protocol=CFG.protocol,op="status",ok=true,status=managerStatus()},CFG.protocol)
+    elseif msg.op=="read" and type(msg.path)=="string" then
+      local rel=fs.combine("",msg.path)
+      if rel:sub(1,2)==".." then
+        rednet.send(sender,{protocol=CFG.protocol,op="read",ok=false,error="invalid path"},CFG.protocol)
+        return
+      end
+      local data=readAll(join(activeRoot(),rel))
+      rednet.send(sender,{protocol=CFG.protocol,op="read",ok=data~=nil,path=rel,data=data},CFG.protocol)
+    elseif msg.op=="sync" then
+      local state,changedOrErr=sync(msg.force==true)
+      rednet.send(sender,{
+        protocol=CFG.protocol,op="sync",ok=state~=nil,
+        changed=state and changedOrErr==true or false,
+        error=state and nil or changedOrErr,
+        status=state and managerStatus() or nil
+      },CFG.protocol)
+    end
+  end
+
+  local function maybeActivate(state,changed)
+    if not changed then return end
+    if machine.auto_apply_updates==false then return end
+
+    config.write_json("/var/lib/cclua/boot.json",{
+      schema=1,
+      pending=true,
+      pending_slot=state.activeSlot,
+      pending_commit=state.imageCommit or state.commit,
+      requested_at=os.epoch and os.epoch("utc") or 0,
+    })
+    runtime.currentAction="REBOOT"
+    runtime.currentFile="activating staged Ubuntu Server image"
+    setRuntime("ACTIVATING")
+    ctx.kernel.log.write("info","managerd","staged image ready; rebooting for activation",{
+      commit=state.imageCommit or state.commit,slot=state.activeSlot
+    },ctx.process.pid)
+    ctx.kernel.scheduler.sleep(2)
+    os.reboot()
+  end
+
+  local opened=openModems()
+  ctx.unit.details={protocol=CFG.protocol,modems=opened,repo=CFG.owner.."/"..CFG.repo,ref=CFG.ref}
+  ctx.kernel.log.write("info","managerd","CCLUA network manager online",ctx.unit.details,ctx.process.pid)
+
+  local state,changed=sync(false)
+  if state then maybeActivate(state,changed==true) end
+
+  local poll=os.startTimer(CFG.pollSeconds)
+  while true do
+    local ev,a,b,c=coroutine.yield("wait_event")
+    if ev=="timer" and a==poll then
+      local nextState,didChange=sync(false)
+      if nextState then maybeActivate(nextState,didChange==true) end
+      poll=os.startTimer(CFG.pollSeconds)
+    elseif ev=="rednet_message" and c==CFG.protocol then
+      serve(a,b)
+    elseif ev=="cclua_manager_sync" then
+      local nextState,didChange=sync(a==true)
+      if nextState then maybeActivate(nextState,didChange==true) end
+    elseif ev=="peripheral" or ev=="peripheral_detach" then
+      opened=openModems()
+      ctx.unit.details.modems=opened
+    end
+  end
+end
