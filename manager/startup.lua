@@ -161,6 +161,11 @@ end
 print("CCLUA-LINUX Ubuntu Server bootloader")
 print("Computer ID "..tostring(os.getComputerID()))
 
+-- One-time cleanup from the pre-Ubuntu standalone manager runtime.
+for _,legacy in ipairs({"github_bridge.lua","github_bridge.lua.old","github_bridge.lua.new"}) do
+  if fs.exists(legacy) then pcall(fs.delete,legacy) end
+end
+
 local state=readJson(STATE,{})
 local slot=state.activeSlot=="B" and "B" or "A"
 local commit=state.imageCommit or state.commit or slotCommit(slot)
