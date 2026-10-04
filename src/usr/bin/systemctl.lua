@@ -1,15 +1,40 @@
 return {main=function(ctx,args)
   local cmd=args[1] or "list-units"
 
-  if cmd=="list-units" then
+  if cmd=="list-units" or cmd=="--failed" then
+    local failedOnly=cmd=="--failed" or args[2]=="--failed"
     print("UNIT                             LOAD   ACTIVE      SUB")
+    local shown=0
     for _,u in ipairs(ctx.kernel.services:list()) do
-      if u.state=="active" or (not u.reference and u.state~="inactive") then
+      local visible
+      if failedOnly then
+        visible=u.state=="failed"
+      else
+        visible=u.state=="active" or (not u.reference and u.state~="inactive")
+      end
+      if visible then
         local sub=(u.state=="active" and "running") or u.state
         print(("%-32s loaded %-11s %s"):format(u.name,u.state,sub))
+        shown=shown+1
       end
     end
+    if failedOnly then
+      print("")
+      print(("%d loaded units listed."):format(shown))
+    end
     return 0
+  elseif cmd=="is-system-running" then
+    local failed=0
+    local starting=0
+    for _,u in ipairs(ctx.kernel.services:list()) do
+      if not u.reference or u.exec then
+        if u.state=="failed" then failed=failed+1 end
+        if u.state=="activating" then starting=starting+1 end
+      end
+    end
+    if failed>0 then print("degraded");return 1 end
+    if starting>0 or os.clock()<4 then print("starting");return 1 end
+    print("running");return 0
   elseif cmd=="list-unit-files" then
     print("UNIT FILE                        STATE       PRESET")
     for _,u in ipairs(ctx.kernel.services:list()) do
