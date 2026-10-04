@@ -79,6 +79,13 @@ return function(ctx)
     return join(CFG.root,state.activeSlot or "A")
   end
 
+  local function cacheUsable(state)
+    local root=activeRoot(state):gsub("^/","")
+    return fs.exists(fs.combine(root,"kernel/init.lua"))
+      and fs.exists(fs.combine(root,"usr/lib/cclua/services/managerd.lua"))
+      and fs.exists(fs.combine(root,".manifest.json"))
+  end
+
   local function installedCommit()
     return readText("/var/lib/cclua/installed-commit") or machine.image_commit or "unknown"
   end
@@ -243,12 +250,12 @@ return function(ctx)
     end
   end
 
-  local function stageCommit(head,tree,state)
+  local function stageCommit(head,tree,state,rebuild)
     local active=activeRoot(state)
     local inactiveName=state.activeSlot=="A" and "B" or "A"
     local slot=join(CFG.root,inactiveName)
     local nextManifest=sourceManifest(tree,head)
-    local previous=readManifest(active,state)
+    local previous=rebuild and {schema=1,commit=nil,files={}} or readManifest(active,state)
     local added,changed,removed,unchanged=calculateDelta(previous,nextManifest)
 
     runtime.delta={
@@ -270,13 +277,13 @@ return function(ctx)
       return state,false
     end
 
-    runtime.currentAction="STAGE"
-    runtime.currentFile="copying last-known-good image"
+    runtime.currentAction=rebuild and "REBUILD" or "STAGE"
+    runtime.currentFile=rebuild and "rebuilding manager image cache" or "copying last-known-good image"
     setRuntime("STAGING")
 
     removeTree(slot)
     ensureDir(CFG.root:gsub("^/",""))
-    if fs.exists(active:gsub("^/","")) then
+    if not rebuild and fs.exists(active:gsub("^/","")) then
       local ok,copyErr=pcall(fs.copy,active:gsub("^/",""),slot:gsub("^/",""))
       if not ok then return nil,"stage copy failed: "..tostring(copyErr) end
     else
@@ -381,7 +388,8 @@ return function(ctx)
     end
 
     local state=loadState()
-    if not force and state.repoCommit==head and fs.exists(activeRoot(state):gsub("^/","")) then
+    local usable=cacheUsable(state)
+    if not force and state.repoCommit==head and usable then
       runtime.delta={added=0,changed=0,removed=0,unchanged=state.files or 0}
       runtime.currentAction=nil
       runtime.currentFile=nil
@@ -399,7 +407,7 @@ return function(ctx)
       return nil,terr
     end
 
-    local nextState,changedOrErr=stageCommit(head,tree,state)
+    local nextState,changedOrErr=stageCommit(head,tree,state,not usable)
     if not nextState then
       setRuntime("DEGRADED",changedOrErr)
       return nil,changedOrErr
@@ -483,6 +491,11 @@ return function(ctx)
 
   local function maybeActivate(state,changed)
     if not changed then return end
+    local image=state.imageCommit or state.commit
+    if installedCommit()==image then
+      setRuntime("CURRENT")
+      return
+    end
     if machine.auto_apply_updates==false then return end
 
     config.write_json("/var/lib/cclua/boot.json",{
