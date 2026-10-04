@@ -189,7 +189,8 @@ return function(ctx)
   local function currentCommit()
     -- Use GitHub's lightweight Atom feed for frequent development checks so
     -- we do not consume the REST API rate limit every few seconds.
-    local feedUrl="https://github.com/"..CFG.owner.."/"..CFG.repo.."/commits/"..textutils.urlEncode(CFG.ref)..".atom"
+    local bucket=math.floor(((os.epoch and os.epoch("utc")) or 0)/5000)
+    local feedUrl="https://github.com/"..CFG.owner.."/"..CFG.repo.."/commits/"..textutils.urlEncode(CFG.ref)..".atom?cclua="..tostring(bucket)
     local feed=request(feedUrl)
     if feed then
       local sha=feed:match("Grit::Commit/([0-9a-fA-F]+)</id>")
@@ -653,7 +654,6 @@ return function(ctx)
 
   local poll=os.startTimer(CFG.pollSeconds)
   local announce=os.startTimer(CFG.announceSeconds)
-  local activation=os.startTimer(0.5)
   while true do
     local ev,a,b,c=coroutine.yield("wait_event")
     if ev=="timer" and a==poll then
@@ -670,9 +670,6 @@ return function(ctx)
     elseif ev=="timer" and a==announce then
       announceImage(runtime.pendingRebootCommit and "activation-pending" or "heartbeat")
       announce=os.startTimer(CFG.announceSeconds)
-    elseif ev=="timer" and a==activation then
-      checkManagerActivation()
-      activation=os.startTimer(0.5)
     elseif ev=="rednet_message" and c==CFG.protocol then
       serve(a,b)
     elseif ev=="cclua_manager_sync" then
@@ -682,5 +679,10 @@ return function(ctx)
       opened=openModems()
       ctx.unit.details.modems=opened
     end
+
+    -- Coordination must not depend on a dedicated timer event. Any manager
+    -- event (node heartbeat, transfer request, poll, peripheral change) can
+    -- advance activation, while the announce timer guarantees regular events.
+    if runtime.pendingRebootCommit then checkManagerActivation() end
   end
 end
