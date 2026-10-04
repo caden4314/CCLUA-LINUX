@@ -9,6 +9,9 @@ return function(ctx)
     if preferred and peripheral.getType(preferred)=="monitor" then
       monitorName=preferred
       monitor=peripheral.wrap(preferred)
+    elseif preferred and machine.monitor_strict==true then
+      monitorName=nil
+      monitor=nil
     else
       monitorName=nil
       monitor=peripheral.find("monitor",function(name)

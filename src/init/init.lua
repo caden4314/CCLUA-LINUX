@@ -87,6 +87,13 @@ local function register_services()
       enabled=true,
       exec=load_service("/usr/lib/cclua/services/apphostd.lua")
     }
+  elseif machine.role=="fleet-monitor" then
+    k.services:register{
+      name="cclua-server-room-monitor.service",
+      description="CCLUA Server Room fleet dashboard",
+      enabled=true,
+      exec=load_service("/usr/lib/cclua/services/server-room-monitor.lua")
+    }
   end
 
   if machine.dashboard_enabled~=false then

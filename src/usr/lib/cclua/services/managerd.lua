@@ -8,6 +8,7 @@ return function(ctx)
     ref=machine.github_ref or machine.channel_ref or "main",
     root="/var/lib/cclua/github",
     protocol="cclua-manager-v1",
+    fleetProtocol="cclua-fleet-v1",
     pollSeconds=tonumber(machine.github_poll_seconds) or 5,
     announceSeconds=tonumber(machine.update_announce_seconds) or 2,
   }
@@ -484,6 +485,25 @@ return function(ctx)
     }
   end
 
+  local function fleetSnapshot()
+    local nodes={}
+    for _,node in pairs(runtime.nodes) do
+      nodes[#nodes+1]=node
+    end
+    table.sort(nodes,function(a,b)
+      local ah=tostring(a.hostname or "")
+      local bh=tostring(b.hostname or "")
+      if ah~=bh then return ah<bh end
+      return (a.id or 9999)<(b.id or 9999)
+    end)
+    return {
+      schema=1,
+      manager=managerStatus(),
+      nodes=nodes,
+      timestamp=os.epoch and os.epoch("utc") or 0
+    }
+  end
+
   local function announceImage(reason)
     local status=managerStatus()
     rednet.broadcast({
@@ -560,6 +580,18 @@ return function(ctx)
         error=state and nil or changedOrErr,
         status=state and managerStatus() or nil
       },CFG.protocol)
+    end
+  end
+
+  local function serveFleet(sender,msg)
+    if type(msg)~="table" or msg.protocol~=CFG.fleetProtocol then return end
+    if msg.op=="fleet_status" then
+      rednet.send(sender,{
+        protocol=CFG.fleetProtocol,
+        op="fleet_status",
+        ok=true,
+        snapshot=fleetSnapshot()
+      },CFG.fleetProtocol)
     end
   end
 
@@ -672,6 +704,8 @@ return function(ctx)
       announce=os.startTimer(CFG.announceSeconds)
     elseif ev=="rednet_message" and c==CFG.protocol then
       serve(a,b)
+    elseif ev=="rednet_message" and c==CFG.fleetProtocol then
+      serveFleet(a,b)
     elseif ev=="cclua_manager_sync" then
       local nextState,didChange=sync(a==true)
       if nextState then maybeActivate(nextState,didChange==true) end
