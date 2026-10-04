@@ -761,6 +761,17 @@ return function(ctx)
   local function nodesReadyFor(commit)
     local now=os.epoch and os.epoch("utc") or 0
     local online,ready=0,0
+    local expectedByRole={}
+
+    local function expected_for(node)
+      local role=tostring(node.role or (node.status and node.status.role) or "")
+      if expectedByRole[role]~=nil then return expectedByRole[role] end
+      local status=managerStatus(role)
+      local expected=tostring(status and status.commit or commit or "")
+      expectedByRole[role]=expected
+      return expected
+    end
+
     for _,node in pairs(runtime.nodes) do
       local age=now-(node.last_seen or 0)
       if age<10000 and node.id~=os.getComputerID() then
@@ -770,8 +781,9 @@ return function(ctx)
         local current=tostring(st.current_commit or upd.current_commit or "")
         local target=tostring(upd.target_commit or upd.available_commit or "")
         local phase=tostring(upd.state or "")
-        local ok=current==commit
-          or (target==commit and (phase=="READY" or phase=="ACTIVATING" or phase=="CURRENT"))
+        local expected=expected_for(node)
+        local ok=current==expected
+          or (target==expected and (phase=="READY" or phase=="ACTIVATING" or phase=="CURRENT"))
         if ok then ready=ready+1 end
       end
     end
