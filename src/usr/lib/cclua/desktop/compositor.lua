@@ -63,9 +63,11 @@ function M.run(ctx)
       if win.app==name then focus(win);return end
     end
     local n=#windows
-    local ww=math.max(30,math.min(W-7,42))
-    local hh=math.max(10,math.min(H-4,14))
-    local x=6+(n%3)*2
+    -- Advanced Computers are only 51x19. Use almost the full workspace
+    -- while preserving the GNOME-style dock and top bar.
+    local ww=math.max(32,W-7)
+    local hh=math.max(11,H-4)
+    local x=6+(n%2)
     local y=3+(n%2)
     if x+ww-1>W then x=math.max(5,W-ww) end
     if y+hh-1>H-1 then y=math.max(2,H-hh) end

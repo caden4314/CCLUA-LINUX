@@ -2,6 +2,8 @@
 build/
 generated/
 extracted/
+artifacts/
+dist/
 *.iso
 *.img
 *.squashfs

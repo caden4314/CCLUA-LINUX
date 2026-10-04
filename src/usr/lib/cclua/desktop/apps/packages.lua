@@ -28,9 +28,14 @@ function M.draw(ctx,st,ui,x,y,w,h)
     local bg=i==st.selected and colors.lightGray or colors.black
     local fg=i==st.selected and colors.black or colors.white
     ui.fill(x,y+i+1,x+w-1,y+i+1,bg,fg)
-    ui.text(x+1,y+i+1,p.name:sub(1,math.max(1,w-18)),fg,bg)
     local ver=tostring(p.version or "?")
-    ui.text(math.max(x+1,x+w-#ver-1),y+i+1,ver:sub(1,w-2),fg,bg)
+    local verWidth=math.min(13,math.max(8,math.floor(w*0.32)))
+    if #ver>verWidth then ver=ver:sub(1,verWidth-1).."~" end
+    local nameWidth=math.max(8,w-verWidth-4)
+    local name=p.name
+    if #name>nameWidth then name=name:sub(1,nameWidth-1).."~" end
+    ui.text(x+1,y+i+1,name,fg,bg)
+    ui.text(x+w-verWidth-1,y+i+1,ver,fg,bg)
   end
 end
 
