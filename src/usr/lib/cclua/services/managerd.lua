@@ -686,6 +686,7 @@ return function(ctx)
 
   local poll=os.startTimer(CFG.pollSeconds)
   local announce=os.startTimer(CFG.announceSeconds)
+  local modemRefreshTimer=nil
   while true do
     local ev,a,b,c=coroutine.yield("wait_event")
     if ev=="timer" and a==poll then
@@ -710,6 +711,10 @@ return function(ctx)
       local nextState,didChange=sync(a==true)
       if nextState then maybeActivate(nextState,didChange==true) end
     elseif ev=="peripheral" or ev=="peripheral_detach" then
+      if modemRefreshTimer and os.cancelTimer then pcall(os.cancelTimer,modemRefreshTimer) end
+      modemRefreshTimer=os.startTimer(0.40)
+    elseif ev=="timer" and modemRefreshTimer and a==modemRefreshTimer then
+      modemRefreshTimer=nil
       opened=openModems()
       ctx.unit.details.modems=opened
     end

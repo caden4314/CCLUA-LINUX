@@ -562,6 +562,7 @@ return function(ctx)
   else manager_failure(err) end
 
   local poll=os.startTimer(pollSeconds+pollJitter)
+  local modemRefreshTimer=nil
 
   while true do
     local ev,a,b,c=coroutine.yield("wait_event")
@@ -577,6 +578,10 @@ return function(ctx)
       end
 
     elseif ev=="peripheral" or ev=="peripheral_detach" then
+      if modemRefreshTimer and os.cancelTimer then pcall(os.cancelTimer,modemRefreshTimer) end
+      modemRefreshTimer=os.startTimer(0.40)
+    elseif ev=="timer" and modemRefreshTimer and a==modemRefreshTimer then
+      modemRefreshTimer=nil
       opened=open_modems()
       ctx.unit.details.modems=opened
     end

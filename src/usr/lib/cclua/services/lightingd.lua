@@ -808,14 +808,49 @@ return function(ctx)
   heartbeat()
 
   local timer=os.startTimer(2)
+  local peripheralRefreshTimer=nil
+  local peripheralEventCount=0
+  local peripheralLastName=nil
+
+  local function schedule_peripheral_refresh(name)
+    peripheralEventCount=peripheralEventCount+1
+    peripheralLastName=name
+    if peripheralRefreshTimer and os.cancelTimer then
+      pcall(os.cancelTimer,peripheralRefreshTimer)
+    end
+    peripheralRefreshTimer=os.startTimer(0.40)
+  end
+
+  local function run_peripheral_refresh()
+    local count=peripheralEventCount
+    local lastName=peripheralLastName
+    peripheralRefreshTimer=nil
+    peripheralEventCount=0
+    peripheralLastName=nil
+
+    discover_relays()
+    discover_monitors()
+    render_all(true)
+    heartbeat()
+
+    ctx.kernel.log.write("info","lightingd","debounced peripheral refresh",{
+      batched_events=count,
+      last_peripheral=lastName,
+      relay_count=#relays
+    },ctx.process.pid)
+  end
+
   while true do
     local ev,a,b,c=coroutine.yield("wait_event")
 
     if ev=="timer" and a==timer then
       reload_settings()
       sync_lever(false)
-      heartbeat()
+      if not peripheralRefreshTimer then heartbeat() end
       timer=os.startTimer(2)
+
+    elseif ev=="timer" and peripheralRefreshTimer and a==peripheralRefreshTimer then
+      run_peripheral_refresh()
 
     elseif ev=="redstone" then
       if sync_lever(false) then heartbeat() end
@@ -836,10 +871,7 @@ return function(ctx)
       heartbeat()
 
     elseif ev=="peripheral" or ev=="peripheral_detach" then
-      discover_relays()
-      discover_monitors()
-      render_all(true)
-      heartbeat()
+      schedule_peripheral_refresh(a)
 
     elseif ev=="monitor_resize" then
       discover_monitors()

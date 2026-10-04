@@ -15,6 +15,7 @@ return function(ctx)
 
   local heartbeat=os.startTimer(1)
   local snapshot=os.startTimer(snapshotSeconds)
+  local modemRefreshTimer=nil
 
   local function status()
     return {
@@ -59,6 +60,11 @@ return function(ctx)
       end
 
     elseif ev=="peripheral" or ev=="peripheral_detach" then
+      if modemRefreshTimer and os.cancelTimer then pcall(os.cancelTimer,modemRefreshTimer) end
+      modemRefreshTimer=os.startTimer(0.40)
+
+    elseif ev=="timer" and modemRefreshTimer and a==modemRefreshTimer then
+      modemRefreshTimer=nil
       opened=net.open_all_modems()
       ctx.unit.details.modems=opened
     end
