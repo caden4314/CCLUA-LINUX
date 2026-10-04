@@ -109,6 +109,9 @@ foreach ($Machine in $Machines) {
         image = "ubuntu-22.04-server"
         ubuntu_reference = "22.04.5"
         channel = "development"
+        status_light_enabled = $true
+        status_light_side = "bottom"
+        monitor_text_scale = 0.5
     }
     $ConfigJson = $Config | ConvertTo-Json -Depth 5
     Write-Utf8NoBom -Path (Join-Path $Disk "etc\cclua\machine.json") -Content ($ConfigJson + [Environment]::NewLine)
