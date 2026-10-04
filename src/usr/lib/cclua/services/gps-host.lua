@@ -135,7 +135,7 @@ return function(ctx)
         s.control_online and colors.lime or colors.yellow,colors.black)
       local upd=s.update or {}
       if h>=14 then line(h-2,("UPDATE %s %s%%"):format(
-        tostring(upd.state or "UNKNOWN"),tostring(upd.percent or 0)),colors.gray,colors.black) end
+        tostring(upd.state or "CHECKING"),tostring(upd.percent or 0)),colors.gray,colors.black) end
       line(h,s.healthy and "GPS HOST ONLINE" or "GPS HOST FAULT",
         s.healthy and colors.lime or colors.red,colors.black)
     end)

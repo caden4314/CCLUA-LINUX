@@ -179,7 +179,7 @@ return function(ctx)
       local upd=s.update or {}
       if h>=5 then
         line(h-3,("Manager ID %d   Update %s %s%%"):format(
-          managerId,tostring(upd.state or "UNKNOWN"),tostring(upd.percent or 0)
+          managerId,tostring(upd.state or "CHECKING"),tostring(upd.percent or 0)
         ),colors.lightGray,colors.black)
         line(h-2,("Image %s"):format(tostring(upd.current_commit or "-"):sub(1,12)),colors.gray,colors.black)
         line(h,"GPS control protocol: "..protocol,colors.gray,colors.black)

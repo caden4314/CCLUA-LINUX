@@ -69,7 +69,7 @@ return function(ctx)
   end
 
   local function status_color(state)
-    state=tostring(state or "UNKNOWN"):upper()
+    state=tostring(state or "BOOTING"):upper()
     if state=="HEALTHY" or state=="CURRENT" then return colors.lime end
     if state=="UPDATING" or state=="BOOTING" or state=="CHECKING" or state=="DOWNLOADING" or state=="STAGING" or state=="VERIFYING" or state=="READY" or state=="ACTIVATING" or state=="AVAILABLE" then return colors.yellow end
     if state=="DEGRADED" or state=="FAILED" or state=="ROLLBACK" then return colors.red end
@@ -115,7 +115,7 @@ return function(ctx)
     text(2,2,("Ubuntu 22.04.5 | ID %d"):format(os.getComputerID()),colors.white,colors.gray)
 
     text(2,4,"SYSTEM",colors.cyan)
-    text(10,4,"["..tostring(status.state or "UNKNOWN").."]",status_color(status.state))
+    text(10,4,"["..tostring(status.state or "BOOTING").."]",status_color(status.state))
     text(2,5,("Up %ds  P %d  S %d/%d"):format(
       math.floor(os.clock()),#ctx.kernel.process.all(),active,total
     ),colors.lightGray)
@@ -183,7 +183,7 @@ return function(ctx)
     draw_header((machine.hostname or "ubuntu-server").." | "..(machine.role or "server"))
 
     text(2,4,"SYSTEM STATUS",colors.cyan)
-    text(16,4,"["..tostring(status.state or "UNKNOWN").."]",status_color(status.state))
+    text(16,4,"["..tostring(status.state or "BOOTING").."]",status_color(status.state))
     text(2,5,("Uptime       %ds"):format(math.floor(os.clock())),colors.lightGray)
     text(2,6,("Processes    %d"):format(#ctx.kernel.process.all()),colors.lightGray)
     text(2,7,("Services     %d/%d active  %d failed"):format(active,total,failed),
@@ -268,7 +268,7 @@ return function(ctx)
 
     draw_header("CCLUA NETWORK SERVER | "..(machine.hostname or "linux-network"))
     text(2,4,"SYSTEM",colors.cyan)
-    text(10,4,"["..tostring(status.state or "UNKNOWN").."]",status_color(status.state))
+    text(10,4,"["..tostring(status.state or "BOOTING").."]",status_color(status.state))
     text(2,5,("Role       %s"):format(machine.role or "network-manager"),colors.lightGray)
     text(2,6,("Installed  %s"):format(tostring(mgr.installed_commit or "-"):sub(1,12)),colors.lightGray)
     text(2,7,("Available  %s"):format(tostring(mgr.image_commit or git.imageCommit or git.commit or "-"):sub(1,12)),colors.lightGray)
@@ -318,7 +318,7 @@ return function(ctx)
           local online=age<10
           local st=peer.status or {}
           local upd=st.update or {}
-          local updState=tostring(upd.state or "UNKNOWN")
+          local updState=tostring(upd.state or "CHECKING")
           local updPct=tonumber(upd.percent or (updState=="CURRENT" and 100 or 0)) or 0
           text(2,y,(online and "[+] " or "[!] ")..
             clipped(peer.hostname or ("node-"..tostring(peer.id)),math.max(10,math.floor(w*0.30))),

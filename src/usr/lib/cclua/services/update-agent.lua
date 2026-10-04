@@ -5,6 +5,7 @@ return function(ctx)
   local protocol="cclua-manager-v1"
   local managerId=tonumber(machine.manager_computer_id) or 0
   local pollSeconds=tonumber(machine.update_poll_seconds) or 3
+  local pollJitter=(os.getComputerID()%7)*0.11
   local autoApply=machine.auto_apply_updates~=false
   local ROOT="/var/lib/cclua/node-update"
   local STATE=ROOT.."/state.json"
@@ -15,6 +16,8 @@ return function(ctx)
     downloadedBytes=0,startedAt=nil
   }
   local lastManager=nil
+  local consecutiveManagerFailures=0
+  local managerFailureThreshold=tonumber(machine.manager_failure_threshold) or 3
 
   local function host(path) return tostring(path):gsub("^/","") end
 
@@ -151,7 +154,7 @@ return function(ctx)
     return {
       hostname=machine.hostname,
       role=machine.role,
-      system_state=health.state,
+      system_state=health.state or "BOOTING",
       current_commit=local_commit(),
       update=update,
       processes=#ctx.kernel.process.all(),
@@ -438,35 +441,61 @@ return function(ctx)
     end
   end
 
+  local function manager_success(status,reason)
+    consecutiveManagerFailures=0
+    runtime.lastError=nil
+    consider(status,reason)
+  end
+
+  local function manager_failure(err)
+    consecutiveManagerFailures=consecutiveManagerFailures+1
+    runtime.lastError=tostring(err or "manager unavailable")
+
+    if consecutiveManagerFailures>=managerFailureThreshold then
+      write_state("OFFLINE",{
+        error=runtime.lastError,
+        manager_failures=consecutiveManagerFailures,
+        manager_failure_threshold=managerFailureThreshold
+      })
+    else
+      local current=local_commit()
+      local previous=config.read_json("/var/lib/cclua/update-state.json",{})
+      local keep=(previous.state=="CURRENT" or (lastManager and current==tostring(lastManager.commit or "")))
+        and "CURRENT" or "CHECKING"
+      write_state(keep,{
+        warning=runtime.lastError,
+        manager_failures=consecutiveManagerFailures,
+        manager_failure_threshold=managerFailureThreshold
+      })
+    end
+  end
+
   local opened=open_modems()
-  ctx.unit.details={protocol=protocol,manager_id=managerId,modems=opened,poll_seconds=pollSeconds,auto_apply=autoApply}
+  ctx.unit.details={
+    protocol=protocol,manager_id=managerId,modems=opened,poll_seconds=pollSeconds,
+    auto_apply=autoApply,manager_failure_threshold=managerFailureThreshold
+  }
   ctx.kernel.log.write("info","update-agent","automatic manager update agent online",ctx.unit.details,ctx.process.pid)
 
   ensure(ROOT)
   write_state("CHECKING")
   local mgr,err=request_status()
-  if mgr then consider(mgr,"startup")
-  else
-    runtime.lastError=err
-    write_state("OFFLINE",{error=err})
-  end
+  if mgr then manager_success(mgr,"startup")
+  else manager_failure(err) end
 
-  local poll=os.startTimer(pollSeconds)
+  local poll=os.startTimer(pollSeconds+pollJitter)
 
   while true do
     local ev,a,b,c=coroutine.yield("wait_event")
     if ev=="timer" and a==poll then
       local mgr,pollErr=request_status()
-      if mgr then consider(mgr,"poll")
-      else
-        runtime.lastError=pollErr
-        write_state("OFFLINE",{error=pollErr})
-      end
-      poll=os.startTimer(pollSeconds)
+      if mgr then manager_success(mgr,"poll")
+      else manager_failure(pollErr) end
+      poll=os.startTimer(pollSeconds+pollJitter)
 
     elseif ev=="rednet_message" and c==protocol and a==managerId and type(b)=="table" and b.protocol==protocol then
       if b.op=="image_available" and type(b.status)=="table" then
-        consider(b.status,"announce")
+        manager_success(b.status,"announce")
       end
 
     elseif ev=="peripheral" or ev=="peripheral_detach" then

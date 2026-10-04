@@ -94,7 +94,7 @@ return function(ctx)
 
         local upd=state.update or {}
         line(h-2,("Controller update: %s %s%%"):format(
-          tostring(upd.state or "UNKNOWN"),tostring(upd.percent or 0)
+          tostring(upd.state or "CHECKING"),tostring(upd.percent or 0)
         ),colors.gray,colors.black)
       end
 

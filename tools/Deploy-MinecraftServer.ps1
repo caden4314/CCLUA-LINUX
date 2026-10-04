@@ -110,7 +110,7 @@ foreach ($Machine in $Machines) {
         ubuntu_reference = "22.04.5"
         channel = "development"
         status_light_enabled = $true
-        status_light_side = "bottom"
+        status_light_side = "top"
         monitor_text_scale = 0.5
     }
     $ConfigJson = $Config | ConvertTo-Json -Depth 5

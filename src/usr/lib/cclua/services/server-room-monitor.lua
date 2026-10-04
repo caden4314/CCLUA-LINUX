@@ -81,7 +81,7 @@ return function(ctx)
 
   local function status_color(state,isOnline)
     if not isOnline then return colors.red end
-    state=tostring(state or "UNKNOWN"):upper()
+    state=tostring(state or "BOOTING"):upper()
     if state=="HEALTHY" or state=="CURRENT" then return colors.lime end
     if state=="UPDATING" or state=="BOOTING" or state=="CHECKING" or
        state=="DOWNLOADING" or state=="STAGING" or state=="VERIFYING" or
@@ -137,8 +137,8 @@ return function(ctx)
       local st=n and n.status or {}
       local upd=st.update or {}
       local isOn=online(n)
-      local state=isOn and tostring(st.system_state or "UNKNOWN") or "OFFLINE"
-      local ustate=isOn and tostring(upd.state or "UNKNOWN") or "-"
+      local state=isOn and tostring(st.system_state or "BOOTING") or "OFFLINE"
+      local ustate=isOn and tostring(upd.state or "CHECKING") or "-"
       local pct=tonumber(upd.percent or (ustate=="CURRENT" and 100 or 0)) or 0
       local age=isOn and string.format("%.1fs",age_seconds(n)) or "--"
       local row=("%-11s %-11s %-10s %3d%%  %4s %3s %5s"):format(
@@ -171,8 +171,8 @@ return function(ctx)
       local st=n and n.status or {}
       local upd=st.update or {}
       local isOn=online(n)
-      local state=isOn and tostring(st.system_state or "UNKNOWN") or "OFFLINE"
-      local ustate=isOn and tostring(upd.state or "UNKNOWN") or "-"
+      local state=isOn and tostring(st.system_state or "BOOTING") or "OFFLINE"
+      local ustate=isOn and tostring(upd.state or "CHECKING") or "-"
       local pct=tonumber(upd.percent or (ustate=="CURRENT" and 100 or 0)) or 0
       local fg=status_color(state,isOn)
       local headerBg=isOn and colors.gray or colors.red
@@ -205,8 +205,8 @@ return function(ctx)
         local isOn=online(n)
         if isOn then onlineCount=onlineCount+1 end
         local st=n and n.status or {}
-        local state=tostring(st.system_state or "UNKNOWN"):upper()
-        local upd=tostring((st.update or {}).state or "UNKNOWN"):upper()
+        local state=tostring(st.system_state or "BOOTING"):upper()
+        local upd=tostring((st.update or {}).state or "CHECKING"):upper()
         if not isOn or state=="DEGRADED" or state=="FAILED" or upd=="FAILED" or upd=="OFFLINE" then
           faults=faults+1
         end
@@ -217,7 +217,7 @@ return function(ctx)
       line(2,("%d/%d ONLINE   %d FAULTS   IMG %s   MGR %s"):format(
         onlineCount,#defs,faults,
         tostring(manager.installedCommit or manager.commit or "-"):sub(1,8),
-        tostring(manager.managerState or "UNKNOWN")
+        tostring(manager.managerState or "CHECKING")
       ),faults>0 and colors.yellow or colors.lime,colors.black)
 
       if w>=70 and h>=26 then

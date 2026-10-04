@@ -8,7 +8,7 @@ end
 
 return {main=function(ctx,args)
   local machine=config.machine()
-  local status=config.read_json("/var/lib/cclua/status.json",{state="UNKNOWN"})
+  local status=config.read_json("/var/lib/cclua/status.json",{state="BOOTING"})
   local update=config.read_json("/var/lib/cclua/update-state.json",{state="IDLE"})
   local net=config.read_json("/var/lib/cclua/network.json",{peers={},stats={}})
 
@@ -25,7 +25,7 @@ return {main=function(ctx,args)
   print("--------------------------")
   print(("Host:        %s (ID %d)"):format(machine.hostname or "cclua-server",os.getComputerID()))
   print(("Role:        %s"):format(machine.role or "server"))
-  print(("State:       %s"):format(status.state or "UNKNOWN"))
+  print(("State:       %s"):format(status.state or "BOOTING"))
   print(("Uptime:      %d seconds"):format(math.floor(os.clock())))
   print(("Services:    %d/%d active, %d failed"):format(active,total,failed))
   print(("Processes:   %d"):format(#ctx.kernel.process.all()))
