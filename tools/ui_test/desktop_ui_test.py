@@ -345,6 +345,11 @@ def main():
         ("14_system_menu","System status menu",[
             ("mouse_click",1,49,1),
         ]),
+        ("15_activities_search","Activities search",[
+            ("mouse_click",1,5,1),
+            *[("char",c) for c in "term"],
+            ("key",257),
+        ]),
     ]
     captures=[run_case(*case) for case in cases]
     sheet=make_contact_sheet(captures)

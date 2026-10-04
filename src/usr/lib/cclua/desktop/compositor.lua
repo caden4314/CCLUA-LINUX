@@ -64,6 +64,7 @@ function M.run(ctx)
   local active=nil
   local drag=nil
   local overview=false
+  local overviewQuery=""
   local overviewCards={}
   local systemMenu=false
   local systemMenuBox=nil
@@ -272,27 +273,46 @@ function M.run(ctx)
     ui.fill(5,2,W,H,colors.black,colors.white)
     ui.center(2,"Applications",colors.white,colors.black,5,W)
 
+    local searchText=overviewQuery=="" and "Type to search..." or overviewQuery
+    local searchFg=overviewQuery=="" and colors.gray or colors.white
+    ui.fill(8,3,W-3,3,colors.gray,colors.white)
+    ui.text(10,3,searchText:sub(1,math.max(1,W-14)),searchFg,colors.gray)
+
+    local filtered={}
+    local q=overviewQuery:lower()
+    for _,name in ipairs(ORDER) do
+      local spec=APP[name]
+      if q=="" or name:lower():find(q,1,true) or spec.title:lower():find(q,1,true) then
+        filtered[#filtered+1]=name
+      end
+    end
+
     local cards={}
     local cardW=math.max(14,math.floor((W-8)/2))
     local cardH=3
-    for i,name in ipairs(ORDER) do
+    for i,name in ipairs(filtered) do
       local spec=APP[name]
       local col=(i-1)%2
       local row=math.floor((i-1)/2)
       local x=6+col*(cardW+1)
-      local y=4+row*(cardH+1)
-      local x2=math.min(W-1,x+cardW-1)
-      ui.fill(x,y,x2,y+cardH-1,colors.gray,colors.white)
-      ui.text(x+1,y,spec.icon,spec.color,colors.gray)
-      ui.center(y+1,spec.title,colors.white,colors.gray,x,x2)
-      local running=app_running(name)
-      if running then
-        ui.center(y+2,running.minimized and "minimized" or "running",colors.lime,colors.gray,x,x2)
+      local y=5+row*(cardH+1)
+      if y+cardH-1<=H-2 then
+        local x2=math.min(W-1,x+cardW-1)
+        ui.fill(x,y,x2,y+cardH-1,colors.gray,colors.white)
+        ui.text(x+1,y,spec.icon,spec.color,colors.gray)
+        ui.center(y+1,spec.title,colors.white,colors.gray,x,x2)
+        local running=app_running(name)
+        if running then
+          ui.center(y+2,running.minimized and "minimized" or "running",colors.lime,colors.gray,x,x2)
+        end
+        cards[#cards+1]={name=name,x1=x,x2=x2,y1=y,y2=y+cardH-1}
       end
-      cards[#cards+1]={name=name,x1=x,x2=x2,y1=y,y2=y+cardH-1}
     end
 
-    ui.text(6,H-1,"Esc closes overview",colors.gray,colors.black)
+    if #cards==0 then
+      ui.center(8,"No applications found",colors.gray,colors.black,5,W)
+    end
+    ui.text(6,H-1,"Enter launch  Esc close  Backspace edit",colors.gray,colors.black)
     return cards
   end
 
@@ -454,10 +474,19 @@ function M.run(ctx)
 
       if a==keys.escape then
         if systemMenu then systemMenu=false
-        elseif overview then overview=false
+        elseif overview then overview=false;overviewQuery=""
         elseif active then active=nil end
+      elseif overview and a==keys.backspace then
+        overviewQuery=overviewQuery:sub(1,-2)
+      elseif overview and a==keys.enter then
+        local first=overviewCards[1]
+        if first then
+          overview=false
+          overviewQuery=""
+          launch(first.name)
+        end
       elseif ctrl and alt and a==keys.t then
-        overview=false;systemMenu=false
+        overview=false;overviewQuery="";systemMenu=false
         launch("terminal")
       elseif ctrl and a==keys.l and active and active.app=="terminal" then
         active.state.lines={}
@@ -478,7 +507,9 @@ function M.run(ctx)
       end
 
     elseif ev=="char" then
-      if not overview and not systemMenu and active then
+      if overview then
+        overviewQuery=overviewQuery..tostring(a)
+      elseif not systemMenu and active then
         route_app(active,ev,a,b,c)
       end
       render(false)
@@ -487,11 +518,18 @@ function M.run(ctx)
       local button,x,y=a,b,c
 
       if y==1 and x<=12 then
-        overview=not overview
+        if overview then
+          overview=false
+          overviewQuery=""
+        else
+          overview=true
+          overviewQuery=""
+        end
         systemMenu=false
       elseif y==1 and x>=W-10 then
         systemMenu=not systemMenu
         overview=false
+        overviewQuery=""
       elseif systemMenu then
         if systemMenuBox
           and x>=systemMenuBox.x1 and x<=systemMenuBox.x2
@@ -511,6 +549,7 @@ function M.run(ctx)
         for _,card in ipairs(overviewCards) do
           if x>=card.x1 and x<=card.x2 and y>=card.y1 and y<=card.y2 then
             overview=false
+            overviewQuery=""
             launch(card.name)
             launched=true
             break
