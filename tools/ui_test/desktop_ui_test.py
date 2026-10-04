@@ -141,7 +141,7 @@ function colors.toBlit(c)
 end
 
 keys={escape=256,backspace=259,tab=258,enter=257,left=263,right=262,down=264,up=265,
-      space=32,a=65,b=66,c=67,f=70,n=78,o=79,p=80,q=81,r=82,s=83,t=84,x=88,
+      space=32,a=65,b=66,c=67,f=70,n=78,o=79,p=80,q=81,r=82,s=83,t=84,u=85,x=88,
       leftCtrl=341,rightCtrl=345,leftAlt=342,rightAlt=346}
 ''')
 
@@ -305,23 +305,24 @@ def main():
             *[("char",c) for c in "help"],
             ("key",257),
         ]),
-        ("02_files","Files",[("mouse_click",1,2,5)]),
-        ("03_editor","Text Editor",[("mouse_click",1,2,7)]),
-        ("04_monitor","System Monitor",[("mouse_click",1,2,9)]),
-        ("05_devices","Devices",[("mouse_click",1,2,11)]),
-        ("06_control","Control Center",[("mouse_click",1,2,13)]),
-        ("07_settings","Settings",[("mouse_click",1,2,15)]),
-        ("08_software_search","Software search",[
-            ("mouse_click",1,2,17),
+        ("02_files","Files",[("mouse_click",1,2,4)]),
+        ("03_editor","Text Editor",[("mouse_click",1,2,5)]),
+        ("04_monitor","System Monitor",[("mouse_click",1,2,6)]),
+        ("05_devices","Devices",[("mouse_click",1,2,7)]),
+        ("06_control","Control Center",[("mouse_click",1,2,8)]),
+        ("07_music","Music",[("mouse_click",1,2,9)]),
+        ("08_settings","Settings",[("mouse_click",1,2,10)]),
+        ("09_software_search","Software search",[
+            ("mouse_click",1,2,11),
             *[("char",c) for c in "gnome"],
         ]),
         ("09_terminal_maximized","Maximized Terminal",[
             ("mouse_click",1,2,3),
             ("mouse_click",1,43,3),
         ]),
-        ("08_multiwindow","Multi-window + Alt-Tab",[
+        ("10_multiwindow","Multi-window + Alt-Tab",[
             ("mouse_click",1,2,3),
-            ("mouse_click",1,2,5),
+            ("mouse_click",1,2,4),
             ("key",342),("key",258),("key_up",342),
         ]),
         ("09_dragged_window","Dragged Terminal",[

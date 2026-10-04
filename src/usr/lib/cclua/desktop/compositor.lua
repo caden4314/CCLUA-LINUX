@@ -6,6 +6,7 @@ local Editor=dofile("/usr/lib/cclua/desktop/apps/editor.lua")
 local Monitor=dofile("/usr/lib/cclua/desktop/apps/monitor.lua")
 local Devices=dofile("/usr/lib/cclua/desktop/apps/devices.lua")
 local Control=dofile("/usr/lib/cclua/desktop/apps/control.lua")
+local Music=dofile("/usr/lib/cclua/desktop/apps/music.lua")
 local System=dofile("/usr/lib/cclua/desktop/apps/system.lua")
 local Packages=dofile("/usr/lib/cclua/desktop/apps/packages.lua")
 
@@ -18,10 +19,11 @@ local APP={
   monitor={title="System Monitor",icon="Mo",color=colors.yellow,mod=Monitor},
   devices={title="Devices",icon="Dv",color=colors.cyan,mod=Devices},
   control={title="Control Center",icon="CC",color=colors.orange,mod=Control},
+  music={title="Music",icon="Mu",color=colors.magenta,mod=Music},
   system={title="Settings",icon="St",color=colors.lightGray,mod=System},
-  packages={title="Software",icon="SW",color=colors.magenta,mod=Packages},
+  packages={title="Software",icon="SW",color=colors.pink,mod=Packages},
 }
-local ORDER={"terminal","files","editor","monitor","devices","control","system","packages"}
+local ORDER={"terminal","files","editor","monitor","devices","control","music","system","packages"}
 local SESSION_PATH="home/caden/.config/cclua-desktop/session.json"
 
 local function tune_palette()
@@ -245,17 +247,15 @@ function M.run(ctx)
     ui.fill(1,2,3,H,colors.black,colors.white)
     local dy=3
     for _,name in ipairs(ORDER) do
+      if dy>H then break end
       local spec=APP[name]
       local running=app_running(name)
       local selected=running and running==active and not running.minimized
       local bg=selected and colors.gray or colors.black
-      ui.fill(1,dy,3,dy+1,bg,colors.white)
+      ui.fill(1,dy,3,dy,bg,colors.white)
       ui.center(dy,spec.icon,spec.color,bg,1,3)
-      if running then
-        ui.center(dy+1,running.minimized and "-" or ".",colors.orange,bg,1,3)
-      end
-      dy=dy+2
-      if dy>H-1 then break end
+      if running then ui.text(1,dy,running.minimized and "-" or ".",colors.orange,bg) end
+      dy=dy+1
     end
   end
 
@@ -291,21 +291,22 @@ function M.run(ctx)
     end
 
     local cards={}
-    local cardW=math.max(14,math.floor((W-7)/2))
-    local cardH=2
+    local cols=3
+    local cardW=math.max(12,math.floor((W-8)/cols))
+    local cardH=3
     for i,name in ipairs(filtered) do
       local spec=APP[name]
-      local col=(i-1)%2
-      local row=math.floor((i-1)/2)
+      local col=(i-1)%cols
+      local row=math.floor((i-1)/cols)
       local x=5+col*(cardW+1)
       local y=5+row*(cardH+1)
       if y+cardH-1<=H-2 then
         local x2=math.min(W-1,x+cardW-1)
         ui.fill(x,y,x2,y+cardH-1,colors.gray,colors.white)
-        ui.text(x+1,y,spec.icon,spec.color,colors.gray)
-        ui.text(x+4,y,spec.title:sub(1,math.max(1,x2-x-4)),colors.white,colors.gray)
+        ui.center(y,spec.icon,spec.color,colors.gray,x,x2)
+        ui.center(y+1,spec.title:sub(1,math.max(1,x2-x)),colors.white,colors.gray,x,x2)
         local running=app_running(name)
-        ui.center(y+1,running and (running.minimized and "minimized" or "running") or "launch",
+        ui.center(y+2,running and (running.minimized and "minimized" or "running") or "launch",
           running and colors.lime or colors.lightGray,colors.gray,x,x2)
         cards[#cards+1]={name=name,x1=x,x2=x2,y1=y,y2=y+cardH-1}
       end
@@ -432,8 +433,7 @@ function M.run(ctx)
 
   local function dock_app_at(y)
     if y<3 then return nil end
-    local idx=math.floor((y-3)/2)+1
-    return ORDER[idx]
+    return ORDER[y-2]
   end
 
   restore_session()
@@ -443,7 +443,7 @@ function M.run(ctx)
   while true do
     local ev,a,b,c=coroutine.yield("wait_event",{
       "mouse_click","mouse_drag","mouse_up","mouse_scroll",
-      "key","key_up","char","term_resize","timer","terminate"
+      "key","key_up","char","paste","term_resize","timer","terminate"
     })
 
     if ev=="terminate" then
@@ -514,6 +514,14 @@ function M.run(ctx)
     elseif ev=="char" then
       if overview then
         overviewQuery=overviewQuery..tostring(a)
+      elseif not systemMenu and active then
+        route_app(active,ev,a,b,c)
+      end
+      render(false)
+
+    elseif ev=="paste" then
+      if overview then
+        overviewQuery=overviewQuery..tostring(a or "")
       elseif not systemMenu and active then
         route_app(active,ev,a,b,c)
       end
