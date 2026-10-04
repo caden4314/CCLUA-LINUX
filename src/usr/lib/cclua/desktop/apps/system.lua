@@ -7,6 +7,14 @@ end
 
 local sections={"About","Network","Updates","Display"}
 
+local function fit(value,width)
+  local s=tostring(value or "")
+  width=math.max(1,tonumber(width) or 1)
+  if #s<=width then return s end
+  if width==1 then return "~" end
+  return s:sub(1,width-1).."~"
+end
+
 local function value_rows(ctx,section)
   local m=config.machine()
   if section==2 then
@@ -22,8 +30,8 @@ local function value_rows(ctx,section)
     local u=config.read_json("/var/lib/cclua/update-state.json",{})
     return {
       {"State",u.state or "UNKNOWN"},
-      {"Image",u.current_commit or "?"},
-      {"Available",u.available_commit or "?"},
+      {"Image",fit(u.current_commit or "?",18)},
+      {"Available",fit(u.available_commit or "?",18)},
       {"Channel",m.channel or "development"},
       {"Auto update",u.auto_apply==false and "Off" or "On"},
       {"Manager",u.manager_state or "?"},
@@ -75,13 +83,15 @@ function M.draw(ctx,st,ui,x,y,w,h)
   local yy=y+3
   for _,r in ipairs(rows) do
     if yy>y+h-2 then break end
-    local labelW=math.min(12,math.max(8,math.floor(contentW*0.38)))
-    ui.text(contentX,yy,r[1]:sub(1,labelW-1),colors.gray,colors.black)
-    ui.text(contentX+labelW,yy,tostring(r[2]):sub(1,math.max(1,contentW-labelW)),colors.white,colors.black)
+    local labelW=math.min(11,math.max(8,math.floor(contentW*0.34)))
+    local valueW=math.max(1,contentW-labelW-1)
+    ui.text(contentX,yy,fit(r[1],labelW-1),colors.gray,colors.black)
+    ui.text(contentX+labelW,yy,fit(r[2],valueW),colors.white,colors.black)
     yy=yy+1
   end
 
-  ui.text(contentX,y+h-1,"Up/Down changes section",colors.gray,colors.black)
+  ui.fill(contentX,y+h-1,x+w-1,y+h-1,colors.gray,colors.white)
+  ui.text(contentX+1,y+h-1,"Up/Down section",colors.lightGray,colors.gray)
 end
 
 function M.event(ctx,st,ev,a,b,c,rx,ry,w,h)

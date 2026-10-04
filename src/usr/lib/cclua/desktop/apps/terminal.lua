@@ -18,7 +18,7 @@ function M.new(ctx)
     cwd=ctx.process.cwd or "/home/caden",
     input="",lines={
       "Ubuntu 22.04.5 LTS",
-      "CCLUA terminal — type 'help' for commands.",
+      "CCLUA terminal - type 'help' for commands.",
       ""
     },
     history={},historyIndex=nil,

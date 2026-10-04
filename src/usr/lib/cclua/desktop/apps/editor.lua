@@ -94,7 +94,7 @@ function M.draw(ctx,st,ui,x,y,w,h,active)
   ui.fill(x,y,x+w-1,y+h-1,colors.black,colors.white)
   local hp=host(st.path)
   local name=hp:match("([^/]+)$") or hp:match("([^\\]+)$") or hp
-  local title=(st.dirty and "* " or "")..name.."  —  Text Editor"
+  local title=(st.dirty and "* " or "")..name.." - Text Editor"
   ui.fill(x,y,x+w-1,y,colors.gray,colors.white)
   ui.text(x+1,y,title:sub(1,math.max(1,w-2)),colors.white,colors.gray)
 

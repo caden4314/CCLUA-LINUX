@@ -23,7 +23,8 @@ function M.draw(ctx,st,ui,x,y,w,h)
   ui.text(x+1,y,"Search: "..st.query,colors.white,colors.gray)
   ui.text(x+1,y+1,"Ubuntu 22.04.5 Desktop packages",colors.lightGray,colors.gray)
   local list=results(st);st._results=list
-  for i=1,math.min(h-2,#list) do
+  local body=math.max(1,h-3)
+  for i=1,math.min(body,#list) do
     local p=list[i]
     local bg=i==st.selected and colors.lightGray or colors.black
     local fg=i==st.selected and colors.black or colors.white
@@ -37,6 +38,12 @@ function M.draw(ctx,st,ui,x,y,w,h)
     ui.text(x+1,y+i+1,name,fg,bg)
     ui.text(x+w-verWidth-1,y+i+1,ver,fg,bg)
   end
+
+  ui.fill(x,y+h-1,x+w-1,y+h-1,colors.gray,colors.white)
+  local selected=list[st.selected]
+  local footer=("%d matches"):format(#list)
+  if selected then footer=footer.." | "..selected.name end
+  ui.text(x+1,y+h-1,footer:sub(1,math.max(1,w-2)),colors.lightGray,colors.gray)
 end
 
 function M.event(ctx,st,ev,a)

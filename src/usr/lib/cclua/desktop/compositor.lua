@@ -151,12 +151,14 @@ function M.run(ctx)
     end
 
     local n=#windows
-    local ww=math.max(32,W-8)
-    local hh=math.max(10,H-4)
-    local x=6+(n%3)
-    local y=3+(n%2)
-    if x+ww-1>W then x=math.max(5,W-ww) end
-    if y+hh-1>H-1 then y=math.max(2,H-hh) end
+    -- The Advanced Computer is only 51x19. Keep the dock visible, but give
+    -- applications almost the entire remaining workspace.
+    local ww=math.max(34,W-5)
+    local hh=math.max(11,H-3)
+    local x=4+(n%2)
+    local y=2+(n%2)
+    if x+ww-1>W then x=math.max(4,W-ww+1) end
+    if y+hh-1>H then y=math.max(2,H-hh+1) end
 
     local state=spec.mod.new(ctx,opts or {})
     local win={
@@ -178,7 +180,7 @@ function M.run(ctx)
       win.max=false
     else
       win.restore={x=win.x,y=win.y,w=win.w,h=win.h}
-      win.x=5;win.y=2;win.w=W-4;win.h=H-1
+      win.x=4;win.y=2;win.w=W-3;win.h=H-1
       win.max=true
     end
     save_session()
@@ -197,14 +199,14 @@ function M.run(ctx)
         if APP[item.app] then
           local win=launch(item.app,item.state,true)
           if win then
-            win.x=math.max(5,math.min(W-10,tonumber(item.x) or win.x))
+            win.x=math.max(4,math.min(W-10,tonumber(item.x) or win.x))
             win.y=math.max(2,math.min(H-5,tonumber(item.y) or win.y))
             win.w=math.max(24,math.min(W-win.x+1,tonumber(item.w) or win.w))
             win.h=math.max(8,math.min(H-win.y+1,tonumber(item.h) or win.h))
             win.minimized=item.minimized==true
             if item.max==true then
               win.restore={x=win.x,y=win.y,w=win.w,h=win.h}
-              win.x=5;win.y=2;win.w=W-4;win.h=H-1;win.max=true
+              win.x=4;win.y=2;win.w=W-3;win.h=H-1;win.max=true
             end
           end
         end
@@ -220,37 +222,34 @@ function M.run(ctx)
 
   local function draw_wallpaper()
     canvas:reset(colors.purple,colors.white)
-    ui.fill(5,2,W,H,colors.purple,colors.white)
+    ui.fill(4,2,W,H,colors.purple,colors.white)
 
     -- Simple low-resolution interpretation of Ubuntu's aubergine wallpaper:
     -- a dark field with two diagonal magenta planes.
     for yy=2,H do
-      local start1=math.max(5,W-9-math.floor((yy-2)*0.55))
-      local start2=math.max(5,W-3-math.floor((yy-2)*0.28))
+      local start1=math.max(4,W-9-math.floor((yy-2)*0.55))
+      local start2=math.max(4,W-3-math.floor((yy-2)*0.28))
       ui.fill(start1,yy,W,yy,colors.magenta,colors.white)
       ui.fill(start2,yy,W,yy,colors.purple,colors.white)
     end
 
-    ui.text(7,4,"Ubuntu 22.04 LTS",colors.lightGray,colors.purple)
-    ui.text(7,5,"CCLUA Desktop",colors.orange,colors.purple)
-    ui.text(7,H-1,"Activities  |  Ctrl+Alt+T Terminal",colors.lightGray,colors.purple)
+    ui.text(6,4,"Ubuntu 22.04 LTS",colors.lightGray,colors.purple)
+    ui.text(6,5,"CCLUA Desktop",colors.orange,colors.purple)
   end
 
   local function draw_dock()
-    ui.fill(1,2,4,H,colors.black,colors.white)
+    ui.fill(1,2,3,H,colors.black,colors.white)
     local dy=3
     for _,name in ipairs(ORDER) do
       local spec=APP[name]
       local running=app_running(name)
       local selected=running and running==active and not running.minimized
       local bg=selected and colors.gray or colors.black
-      ui.fill(1,dy,4,dy+1,bg,colors.white)
-      ui.center(dy,spec.icon,spec.color,bg,1,4)
+      ui.fill(1,dy,3,dy+1,bg,colors.white)
+      ui.center(dy,spec.icon,spec.color,bg,1,3)
       if running then
-        ui.text(1,dy+1,running.minimized and "-" or ".",colors.orange,bg)
+        ui.center(dy+1,running.minimized and "-" or ".",colors.orange,bg,1,3)
       end
-      local hint=spec.title:sub(1,3)
-      ui.text(2,dy+1,hint,colors.gray,bg)
       dy=dy+2
       if dy>H-1 then break end
     end
@@ -270,13 +269,13 @@ function M.run(ctx)
   end
 
   local function draw_overview()
-    ui.fill(5,2,W,H,colors.black,colors.white)
-    ui.center(2,"Applications",colors.white,colors.black,5,W)
+    ui.fill(4,2,W,H,colors.black,colors.white)
+    ui.center(2,"Applications",colors.white,colors.black,4,W)
 
     local searchText=overviewQuery=="" and "Type to search..." or overviewQuery
     local searchFg=overviewQuery=="" and colors.gray or colors.white
-    ui.fill(8,3,W-3,3,colors.gray,colors.white)
-    ui.text(10,3,searchText:sub(1,math.max(1,W-14)),searchFg,colors.gray)
+    ui.fill(6,3,W-3,3,colors.gray,colors.white)
+    ui.text(8,3,searchText:sub(1,math.max(1,W-12)),searchFg,colors.gray)
 
     local filtered={}
     local q=overviewQuery:lower()
@@ -288,13 +287,13 @@ function M.run(ctx)
     end
 
     local cards={}
-    local cardW=math.max(14,math.floor((W-8)/2))
+    local cardW=math.max(14,math.floor((W-7)/2))
     local cardH=3
     for i,name in ipairs(filtered) do
       local spec=APP[name]
       local col=(i-1)%2
       local row=math.floor((i-1)/2)
-      local x=6+col*(cardW+1)
+      local x=5+col*(cardW+1)
       local y=5+row*(cardH+1)
       if y+cardH-1<=H-2 then
         local x2=math.min(W-1,x+cardW-1)
@@ -310,9 +309,9 @@ function M.run(ctx)
     end
 
     if #cards==0 then
-      ui.center(8,"No applications found",colors.gray,colors.black,5,W)
+      ui.center(8,"No applications found",colors.gray,colors.black,4,W)
     end
-    ui.text(6,H-1,"Enter launch  Esc close  Backspace edit",colors.gray,colors.black)
+    ui.text(5,H-1,"Enter launch  Esc close  Backspace edit",colors.gray,colors.black)
     return cards
   end
 
@@ -351,12 +350,15 @@ function M.run(ctx)
 
   local function draw_window(win,isActive)
     local titleBg=isActive and colors.gray or colors.black
-    local border=isActive and colors.lightGray or colors.gray
+    local border=isActive and colors.gray or colors.black
     ui.fill(win.x,win.y,win.x+win.w-1,win.y+win.h-1,border,colors.white)
     ui.fill(win.x+1,win.y+1,win.x+win.w-2,win.y+win.h-2,colors.black,colors.white)
     ui.fill(win.x,win.y,win.x+win.w-1,win.y,titleBg,colors.white)
 
-    ui.text(win.x+1,win.y,win.title:sub(1,math.max(1,win.w-12)),colors.white,titleBg)
+    local titleRight=win.x+win.w-13
+    if titleRight>win.x then
+      ui.center(win.y,win.title:sub(1,math.max(1,win.w-14)),colors.white,titleBg,win.x+1,titleRight)
+    end
     ui.text(win.x+win.w-11,win.y,"[-]",colors.lightGray,titleBg)
     ui.text(win.x+win.w-7,win.y,win.max and "[=]" or "[+]",colors.lightGray,titleBg)
     ui.text(win.x+win.w-3,win.y,"[x]",colors.white,colors.red)
@@ -450,9 +452,9 @@ function M.run(ctx)
       canvas=Canvas.new(W,H)
       for _,win in ipairs(windows) do
         if win.max then
-          win.x=5;win.y=2;win.w=W-4;win.h=H-1
+          win.x=4;win.y=2;win.w=W-3;win.h=H-1
         else
-          win.x=math.max(5,math.min(W-win.w+1,win.x))
+          win.x=math.max(4,math.min(W-win.w+1,win.x))
           win.y=math.max(2,math.min(H-win.h+1,win.y))
         end
       end
@@ -555,12 +557,12 @@ function M.run(ctx)
             break
           end
         end
-        if not launched and x<=4 then
+        if not launched and x<=3 then
           local name=dock_app_at(y)
           if name then overview=false;launch(name) end
         end
 
-      elseif x<=4 then
+      elseif x<=3 then
         local name=dock_app_at(y)
         if name then launch(name) end
 
@@ -591,7 +593,7 @@ function M.run(ctx)
       local x,y=b,c
       local win=drag.win
       if drag.mode=="move" then
-        win.x=math.max(5,math.min(W-win.w+1,x-drag.dx))
+        win.x=math.max(4,math.min(W-win.w+1,x-drag.dx))
         win.y=math.max(2,math.min(H-win.h+1,y-drag.dy))
       else
         win.w=math.max(24,math.min(W-win.x+1,x-win.x+1))
