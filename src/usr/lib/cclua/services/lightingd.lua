@@ -19,6 +19,7 @@ return function(ctx)
   local lightMonitorWidth=0
   local lightMonitorHeight=0
   local expected_state
+  local room_summary
 
   local function pause(ms)
     local wake=(os.epoch and os.epoch("utc") or 0)+(tonumber(ms) or 0)
@@ -355,7 +356,7 @@ return function(ctx)
     return expected,missing
   end
 
-  local function room_summary()
+  room_summary=function()
     local out={}
     for _,room in ipairs(room_entries()) do
       local present,on,missing=0,0,{}
