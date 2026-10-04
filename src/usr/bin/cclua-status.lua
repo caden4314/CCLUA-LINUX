@@ -37,6 +37,7 @@ return {main=function(ctx,args)
     update.state or update.phase or "IDLE",
     tostring(update.percent or ((update.state=="CURRENT") and 100 or 0))
   ))
+  print(("Auto update: %s"):format(update.auto_apply==false and "disabled" or "enabled"))
   print(("Installed:   %s"):format(short(update.current_commit or update.commit or update.build or update.version)))
   print(("Available:   %s"):format(short(update.target_commit or update.available_commit or update.manager_commit)))
   print(("Manager:     %s"):format(update.manager_state or (update.manager_id and ("ID "..tostring(update.manager_id))) or "-"))
