@@ -99,8 +99,79 @@ return function(ctx)
     ),colors.white,colors.gray)
   end
 
+  local function draw_server_compact()
+    local w,h=size()
+    monitor.setBackgroundColor(colors.black)
+    monitor.clear()
+
+    local status=read("/var/lib/cclua/status.json",{state="BOOTING"})
+    local update=read("/var/lib/cclua/update-state.json",{})
+    local net=read("/var/lib/cclua/network.json",{peers={},stats={}})
+    local active,failed,total=service_counts()
+
+    fill(1,colors.blue)
+    text(2,1,clipped((machine.hostname or "server").." | "..(machine.role or "server"),w-2),colors.white,colors.blue)
+    fill(2,colors.gray)
+    text(2,2,("Ubuntu 22.04.5 | ID %d"):format(os.getComputerID()),colors.white,colors.gray)
+
+    text(2,4,"SYSTEM",colors.cyan)
+    text(10,4,"["..tostring(status.state or "UNKNOWN").."]",status_color(status.state))
+    text(2,5,("Up %ds  P %d  S %d/%d"):format(
+      math.floor(os.clock()),#ctx.kernel.process.all(),active,total
+    ),colors.lightGray)
+    local fault=tonumber(status.error_code or 0) or 0
+    text(2,6,("Periph %d  Fault %d"):format(count(ctx.kernel.device.devices),fault),
+      fault>0 and colors.red or colors.lightGray)
+
+    text(2,8,"NETWORK",colors.cyan)
+    text(2,9,clipped(machine.address or "-",w-2),colors.lightGray)
+    text(2,10,("Mgr %s"):format(machine.manager or "-"),colors.lightGray)
+    text(2,11,("Peers %d  RX/TX %s/%s"):format(
+      #(net.peers or {}),(net.stats or {}).rx or 0,(net.stats or {}).tx or 0
+    ),colors.lightGray)
+
+    local phase=tostring(update.state or update.phase or "IDLE")
+    local pct=tonumber(update.percent or (phase=="CURRENT" and 100 or 0)) or 0
+    local current=tostring(update.current_commit or "-"):sub(1,8)
+    local target=tostring(update.target_commit or update.available_commit or "-"):sub(1,8)
+
+    text(2,13,"UPDATE",colors.cyan)
+    text(10,13,phase,status_color(phase))
+    text(2,14,("%3d%%  %s"):format(pct,current),colors.lightGray)
+    text(2,15,("-> %s"):format(target),colors.lightGray)
+    if update.current_action and h>=16 then
+      text(2,16,clipped(tostring(update.current_action).." "..tostring(update.current_file or ""),w-2),colors.yellow)
+    end
+
+    if h>=18 then
+      text(2,18,"CORE SERVICES",colors.cyan)
+      local core={
+        {"cclua-statusd.service","status"},
+        {"cclua-update-agent.service","update"},
+        {"systemd-networkd.service","network"},
+        {"peripherald.service","periph"},
+      }
+      local y=19
+      for _,entry in ipairs(core) do
+        if y>h-1 then break end
+        local u=ctx.kernel.services:get(entry[1])
+        local st=u and u.state or "missing"
+        local mark=st=="active" and "[+]" or (st=="failed" and "[!]" or "[-]")
+        local col=st=="active" and colors.lime or (st=="failed" and colors.red or colors.gray)
+        text(2,y,("%s %-8s %s"):format(mark,entry[2],st),col)
+        y=y+1
+      end
+    end
+
+    text(2,h,clipped("CCLUA | "..tostring(monitorName or "?"),w-2),colors.gray)
+  end
+
   local function draw_server()
     local w,h=size()
+    if w<46 or h<23 then
+      draw_server_compact()
+      return
+    end
     monitor.setBackgroundColor(colors.black)
     monitor.clear()
 
@@ -268,7 +339,11 @@ return function(ctx)
   if not monitor then
     ctx.kernel.log.write("warning","dashboard","no monitor attached; waiting for hotplug",nil,ctx.process.pid)
   else
-    ctx.kernel.log.write("info","dashboard","monitor dashboard online",{monitor=monitorName},ctx.process.pid)
+    local w,h=monitor.getSize()
+    ctx.kernel.log.write("info","dashboard","monitor dashboard online",{
+      monitor=monitorName,width=w,height=h,
+      layout=(w<46 or h<23) and "compact" or "full"
+    },ctx.process.pid)
   end
 
   local timer=os.startTimer(0.2)
