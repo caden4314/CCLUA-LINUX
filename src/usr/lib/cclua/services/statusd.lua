@@ -116,7 +116,7 @@ return function(ctx)
   local timer=os.startTimer(0.15)
 
   while true do
-    local ev,a=coroutine.yield("wait_event")
+    local ev,a=coroutine.yield("wait_event","timer")
     if ev=="timer" and a==timer then
       tick=tick+1
       if tick%20==1 then refresh_light_config() end

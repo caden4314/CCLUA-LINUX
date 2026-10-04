@@ -481,7 +481,7 @@ return function(ctx)
 
   local timer=os.startTimer(5)
   while true do
-    local ev,a,b,c=coroutine.yield("wait_event")
+    local ev,a,b,c=coroutine.yield("wait_event",{"timer","rednet_message","peripheral","terminate"})
     if ev=="timer" and a==timer then
       heartbeat()
       timer=os.startTimer(5)

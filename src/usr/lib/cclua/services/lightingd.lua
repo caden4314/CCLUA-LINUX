@@ -841,7 +841,7 @@ return function(ctx)
   end
 
   while true do
-    local ev,a,b,c=coroutine.yield("wait_event")
+    local ev,a,b,c=coroutine.yield("wait_event",{"timer","redstone","rednet_message","monitor_touch","cclua_lighting_room_animation","peripheral","peripheral_detach","monitor_resize","terminate"})
 
     if ev=="timer" and a==timer then
       reload_settings()

@@ -6,5 +6,8 @@ return function(ctx)
     search_domain="cclua"
   }
   ctx.kernel.log.write("info","resolved","resolver online",ctx.unit.details,ctx.process.pid)
-  while true do coroutine.yield("wait_event") end
+  while true do
+    local ev=coroutine.yield("wait_event","terminate")
+    if ev=="terminate" then return 0 end
+  end
 end

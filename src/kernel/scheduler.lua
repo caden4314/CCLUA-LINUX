@@ -36,11 +36,21 @@ function M.new(kernel)
   end
   return true
  end
+ local function matches_filter(filter,name)
+  if filter==nil then return true end
+  if type(filter)=="string" then return filter==name end
+  if type(filter)=="table" then
+   if filter[name]==true then return true end
+   for _,v in ipairs(filter) do if v==name then return true end end
+   return false
+  end
+  return false
+ end
  function s:dispatch(ev)
   local name=ev and ev[1]; local now=(os.epoch and os.epoch("utc")) or 0
   for _,p in ipairs(kernel.process.all()) do
    if p.state=="sleeping" and p.wake_at and now>=p.wake_at then self:wake(p.pid) end
-   if p.state=="waiting" and (p.event_filter==nil or p.event_filter==name) then p.state="runnable"; p.event_filter=nil; self.runnable[#self.runnable+1]=p.pid end
+   if p.state=="waiting" and matches_filter(p.event_filter,name) then p.state="runnable"; p.event_filter=nil; self.runnable[#self.runnable+1]=p.pid end
   end
   local q=self.runnable; self.runnable={}; local seen={}
   for _,pid in ipairs(q) do

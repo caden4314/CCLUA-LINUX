@@ -29,7 +29,7 @@ return function(ctx)
   local lastPeripheral=nil
 
   while true do
-    local ev,name=coroutine.yield("wait_event")
+    local ev,name=coroutine.yield("wait_event",{"peripheral","peripheral_detach","timer","terminate"})
 
     if ev=="peripheral" or ev=="peripheral_detach" then
       pendingCount=pendingCount+1

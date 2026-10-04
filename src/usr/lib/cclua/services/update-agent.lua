@@ -184,7 +184,7 @@ return function(ctx)
     if not ok then return nil,"manager send failed" end
     local timer=os.startTimer(timeout or 3)
     while true do
-      local ev,a,b,c=coroutine.yield("wait_event")
+      local ev,a,b,c=coroutine.yield("wait_event",{"rednet_message","timer"})
       if ev=="rednet_message" and a==managerId and c==protocol and type(b)=="table" and b.protocol==protocol then
         if b.op==msg.op then
           if b.ok==false then return nil,b.error or "manager request failed" end
@@ -565,7 +565,7 @@ return function(ctx)
   local modemRefreshTimer=nil
 
   while true do
-    local ev,a,b,c=coroutine.yield("wait_event")
+    local ev,a,b,c=coroutine.yield("wait_event",{"timer","rednet_message","peripheral","peripheral_detach","terminate"})
     if ev=="timer" and a==poll then
       local mgr,pollErr=request_status()
       if mgr then manager_success(mgr,"poll")

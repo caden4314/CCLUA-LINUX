@@ -260,7 +260,7 @@ return function(ctx)
   local refresh=os.startTimer(1)
 
   while true do
-    local ev,a,b,c=coroutine.yield("wait_event")
+    local ev,a,b,c=coroutine.yield("wait_event",{"timer","rednet_message","peripheral","peripheral_detach","monitor_resize","terminate"})
     if ev=="timer" and a==poll then
       request_snapshot()
       poll=os.startTimer(pollSeconds)

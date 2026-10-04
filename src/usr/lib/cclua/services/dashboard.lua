@@ -348,7 +348,7 @@ return function(ctx)
 
   local timer=os.startTimer(0.2)
   while true do
-    local ev,a=coroutine.yield("wait_event")
+    local ev,a=coroutine.yield("wait_event",{"timer","monitor_resize","peripheral","peripheral_detach"})
     if ev=="timer" and a==timer then
       if monitor then
         local ok,err=pcall(function()

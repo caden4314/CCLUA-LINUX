@@ -688,7 +688,7 @@ return function(ctx)
   local announce=os.startTimer(CFG.announceSeconds)
   local modemRefreshTimer=nil
   while true do
-    local ev,a,b,c=coroutine.yield("wait_event")
+    local ev,a,b,c=coroutine.yield("wait_event",{"timer","rednet_message","cclua_manager_sync","peripheral","peripheral_detach","terminate"})
     if ev=="timer" and a==poll then
       if runtime.pendingRebootCommit then
         announceImage("activation-pending")

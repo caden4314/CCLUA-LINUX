@@ -197,7 +197,7 @@ return function(ctx)
 
   local timer=os.startTimer(2)
   while true do
-    local ev,a,b,c,d,e=coroutine.yield("wait_event")
+    local ev,a,b,c,d,e=coroutine.yield("wait_event",{"timer","modem_message","rednet_message","peripheral","peripheral_detach","monitor_resize","terminate"})
     if ev=="timer" and a==timer then
       if not modem then choose_modem() end
       send_control_status()

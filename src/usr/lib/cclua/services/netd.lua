@@ -37,7 +37,7 @@ return function(ctx)
   end
 
   while true do
-    local ev,a,b,c=coroutine.yield("wait_event")
+    local ev,a,b,c=coroutine.yield("wait_event",{"timer","rednet_message","peripheral","peripheral_detach","terminate"})
 
     if ev=="timer" and a==heartbeat then
       net.broadcast("heartbeat",{status=status()})
