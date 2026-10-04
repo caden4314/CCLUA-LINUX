@@ -7,6 +7,7 @@ return function(ctx)
   local managerId=tonumber(machine.manager_computer_id) or 0
   local expectedHosts=type(machine.gps_expected_hosts)=="table" and machine.gps_expected_hosts or {}
   local hosts={}
+  local clients={}
   local monitor=nil
   local monitorName=nil
   local cache={}
@@ -79,8 +80,34 @@ return function(ctx)
     return out
   end
 
+  local function client_rows()
+    local out={}
+    local t=now()
+    for id,client in pairs(clients) do
+      local age=math.max(0,(t-(client.last_seen or 0))/1000)
+      if age<30 then
+        out[#out+1]={
+          id=tonumber(id) or id,
+          label=client.label or ("gps-client-"..tostring(id)),
+          kind=client.kind or "client",
+          x=client.x,y=client.y,z=client.z,
+          fix=client.fix==true,
+          age=age,
+          online=age<8,
+          fixes=tonumber(client.fixes) or 0,
+          misses=tonumber(client.misses) or 0
+        }
+      end
+    end
+    table.sort(out,function(a,b)
+      return tostring(a.label)<tostring(b.label)
+    end)
+    return out
+  end
+
   local function state()
     local hs=host_rows()
+    local cs=client_rows()
     local online=0
     local firstY=nil
     local verticalDiversity=false
@@ -110,6 +137,12 @@ return function(ctx)
       expected_host_count=#expectedHosts,
       hosts_online=online,
       hosts=hs,
+      clients=cs,
+      clients_online=(function()
+        local n=0
+        for _,client in ipairs(cs) do if client.online then n=n+1 end end
+        return n
+      end)(),
       minimum_hosts=4,
       manager_id=managerId,
       update=update,
@@ -166,13 +199,32 @@ return function(ctx)
         line(y,"HOSTS",colors.cyan,colors.black)
         y=y+1
         for _,host in ipairs(s.hosts) do
-          if y>h-4 then break end
+          if y>h-6 then break end
           local coord=(host.x and host.y and host.z) and
             (" %.0f %.0f %.0f"):format(host.x,host.y,host.z) or " no-coord"
           line(y,("%s ID%d%s req %d"):format(
             host.online and "[+]" or "[!]",host.id,coord,host.requests_served or 0),
             (host.online and host.healthy) and colors.lime or colors.red,colors.black)
           y=y+1
+        end
+      end
+
+      if y<=h-5 then
+        line(y,"MOBILE CLIENTS",colors.cyan,colors.black)
+        y=y+1
+        if #(s.clients or {})==0 then
+          line(y,"No GPS clients online.",colors.gray,colors.black)
+        else
+          for _,client in ipairs(s.clients or {}) do
+            if y>h-4 then break end
+            local coord=(client.x and client.y and client.z) and
+              (" %.1f %.1f %.1f"):format(client.x,client.y,client.z) or " no-fix"
+            line(y,("%s %s%s"):format(
+              (client.online and client.fix) and "[+]" or "[!]",
+              client.label or ("ID"..tostring(client.id)),coord),
+              (client.online and client.fix) and colors.lime or colors.orange,colors.black)
+            y=y+1
+          end
         end
       end
 
@@ -238,6 +290,18 @@ return function(ctx)
           last_seen=now()
         }
         rednet.send(a,{protocol=protocol,op="host_status",ok=true},protocol)
+        render()
+      elseif b.op=="client_status" then
+        clients[a]={
+          label=b.label or b.hostname,
+          kind=b.kind or "client",
+          x=tonumber(b.x),y=tonumber(b.y),z=tonumber(b.z),
+          fix=b.fix==true,
+          fixes=tonumber(b.fixes) or 0,
+          misses=tonumber(b.misses) or 0,
+          last_seen=now()
+        }
+        rednet.send(a,{protocol=protocol,op="client_status",ok=true},protocol)
         render()
       elseif b.op=="status" then
         rednet.send(a,{protocol=protocol,op="status",ok=true,state=state()},protocol)

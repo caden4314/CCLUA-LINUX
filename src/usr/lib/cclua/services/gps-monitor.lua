@@ -83,12 +83,31 @@ return function(ctx)
           line(y,"No hosts enrolled",colors.gray,colors.black)
         else
           for _,host in ipairs(state.hosts or {}) do
-            if y>h-4 then break end
+            if y>h-7 then break end
             local coords=(host.x and host.y and host.z) and
               (" @ %.0f,%.0f,%.0f"):format(host.x,host.y,host.z) or ""
             line(y,("%s %-18s%s"):format(host.online and "[+]" or "[!]",host.label or ("ID"..host.id),coords),
               host.online and colors.lime or colors.red,colors.black)
             y=y+1
+          end
+        end
+
+        if y<=h-5 then
+          line(y,"MOBILE CLIENTS",colors.cyan,colors.black)
+          y=y+1
+          if #(state.clients or {})==0 then
+            line(y,"No clients online",colors.gray,colors.black)
+          else
+            for _,client in ipairs(state.clients or {}) do
+              if y>h-4 then break end
+              local coords=(client.x and client.y and client.z) and
+                (" @ %.1f,%.1f,%.1f"):format(client.x,client.y,client.z) or " @ no-fix"
+              line(y,("%s %-18s%s"):format(
+                (client.online and client.fix) and "[+]" or "[!]",
+                client.label or ("ID"..tostring(client.id)),coords),
+                (client.online and client.fix) and colors.lime or colors.orange,colors.black)
+              y=y+1
+            end
           end
         end
 

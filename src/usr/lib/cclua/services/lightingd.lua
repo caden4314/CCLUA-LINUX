@@ -11,6 +11,7 @@ return function(ctx)
   local settings=config.read_json("/etc/cclua/lighting.json",{})
   local sides={"top","bottom","left","right","front","back"}
   local relays={}
+  local relayOnCache={}
   local roomDesired={}
   local monitors={}
   local lastError=nil
@@ -99,26 +100,50 @@ return function(ctx)
     return peripheral.hasType(name,"redstone_relay")
   end
 
-  local function relay_is_on(name)
+  local function read_relay_on(name)
     local relay=peripheral.wrap(name)
     if not relay or type(relay.getOutput)~="function" then return false end
+
+    -- CCLUA always drives every output side of a relay together. Reading one
+    -- side is therefore enough to determine the logical relay state, and avoids
+    -- six synchronous peripheral calls per relay on every health scan.
+    local ok,v=pcall(relay.getOutput,"top")
+    if ok then return v==true end
+
+    -- Fallback for an unusual/older relay implementation.
     for _,side in ipairs(sides) do
-      local ok,v=pcall(relay.getOutput,side)
-      if ok and v==true then return true end
+      ok,v=pcall(relay.getOutput,side)
+      if ok then return v==true end
     end
     return false
   end
 
-  local function relay_state(name)
-    local relay=peripheral.wrap(name)
-    local outputs={}
-    if relay and type(relay.getOutput)=="function" then
-      for _,side in ipairs(sides) do
-        local ok,v=pcall(relay.getOutput,side)
-        if ok then outputs[side]=v==true end
-      end
+  local function refresh_relay_cache()
+    local present={}
+    for _,name in ipairs(relays) do
+      present[name]=true
+      relayOnCache[name]=read_relay_on(name)
     end
-    return {name=name,id=relay_id(name),outputs=outputs}
+    for name in pairs(relayOnCache) do
+      if not present[name] then relayOnCache[name]=nil end
+    end
+  end
+
+  local function relay_is_on(name)
+    local cached=relayOnCache[name]
+    if cached~=nil then return cached end
+    local v=read_relay_on(name)
+    relayOnCache[name]=v
+    return v
+  end
+
+  local function relay_state(name)
+    local on=relay_is_on(name)
+    -- Preserve the existing state-file shape for cclua-lightctl and older
+    -- consumers while treating the six outputs as one logical lamp channel.
+    local outputs={}
+    for _,side in ipairs(sides) do outputs[side]=on end
+    return {name=name,id=relay_id(name),on=on,outputs=outputs}
   end
 
   local function set_relay(name,value,side)
@@ -131,11 +156,15 @@ return function(ctx)
     if side then
       local ok,err=pcall(relay.setOutput,side,value==true)
       if not ok then return nil,tostring(err) end
+      -- A per-side write is rare/debug-only. Invalidate the aggregate cache so
+      -- the next status scan samples hardware again.
+      relayOnCache[name]=nil
     else
       for _,s in ipairs(sides) do
         local ok,err=pcall(relay.setOutput,s,value==true)
         if not ok then return nil,tostring(err) end
       end
+      relayOnCache[name]=value==true
     end
     return true
   end
@@ -550,6 +579,7 @@ return function(ctx)
   local function snapshot()
     reload_settings()
     discover_relays()
+    refresh_relay_cache()
     discover_monitors()
 
     local items={}
@@ -640,6 +670,7 @@ return function(ctx)
     discover_relays()
     if #group==0 then return nil,"no relays to animate" end
 
+    refresh_relay_cache()
     local restore={}
     for _,name in ipairs(group) do
       if relay_present(name) then restore[name]=relay_is_on(name) end
