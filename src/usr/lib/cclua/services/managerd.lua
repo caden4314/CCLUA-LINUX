@@ -238,9 +238,18 @@ return function(ctx)
       or rel=="usr/bin/nautilus.lua"
   end
 
+  local function manager_only(rel)
+    return rel=="usr/lib/cclua/services/managerd.lua"
+  end
+
   local function desktop_role(role)
     role=tostring(role or "")
     return role=="desktop-client" or role:find("desktop",1,true)~=nil
+  end
+
+  local function manager_role(role)
+    role=tostring(role or "")
+    return role=="manager" or role=="network-manager" or role=="linux-network"
   end
 
   local function manifest_id(manifest,role)
@@ -267,16 +276,23 @@ return function(ctx)
   end
 
   local function role_manifest(manifest,role)
+    local kind=manager_role(role) and "manager" or (desktop_role(role) and "desktop" or "server")
     local out={
       schema=2,
-      role=desktop_role(role) and "desktop" or "server",
+      role=kind,
       repo_commit=manifest.repo_commit or manifest.commit,
       files={}
     }
     for rel,meta in pairs(manifest.files or {}) do
-      if desktop_role(role) or not desktop_only(rel) then
-        out.files[rel]=meta
+      local include=false
+      if kind=="manager" then
+        include=not desktop_only(rel)
+      elseif kind=="desktop" then
+        include=not manager_only(rel)
+      else
+        include=not desktop_only(rel) and not manager_only(rel)
       end
+      if include then out.files[rel]=meta end
     end
     out.commit=manifest_id(out,out.role)
     return out
@@ -529,11 +545,19 @@ return function(ctx)
     local out={}
     for _,node in pairs(runtime.nodes) do out[#out+1]=node end
     table.sort(out,function(a,b)return (a.id or 9999)<(b.id or 9999) end)
-    config.write_json("/var/lib/cclua/manager-peers.json",{
+
+    local ok,err=config.write_json("/var/lib/cclua/manager-peers.json",{
       schema=1,
       timestamp=os.epoch and os.epoch("utc") or 0,
       nodes=out
     })
+    if not ok then
+      ctx.kernel.log.write("warning","managerd","peer snapshot write failed",{
+        error=tostring(err),nodes=#out
+      },ctx.process.pid)
+      return false
+    end
+
     runtime.peersDirty=false
     return true
   end
@@ -793,8 +817,9 @@ return function(ctx)
   end
 
   local poll=os.startTimer(CFG.pollSeconds)
-  local announce=os.startTimer(CFG.announceSeconds)
-  local peerFlush=os.startTimer(2)
+  local now0=os.epoch and os.epoch("utc") or 0
+  local nextAnnounce=now0+math.floor(CFG.announceSeconds*1000)
+  local nextPeerFlush=now0+2000
   local modemRefreshTimer=nil
   while true do
     local ev,a,b,c=coroutine.yield("wait_event",{"timer","rednet_message","cclua_manager_sync","peripheral","peripheral_detach","terminate"})
@@ -809,12 +834,6 @@ return function(ctx)
         end
       end
       poll=os.startTimer(CFG.pollSeconds)
-    elseif ev=="timer" and a==announce then
-      announceImage(runtime.pendingRebootCommit and "activation-pending" or "heartbeat")
-      announce=os.startTimer(CFG.announceSeconds)
-    elseif ev=="timer" and a==peerFlush then
-      flushPeers()
-      peerFlush=os.startTimer(2)
     elseif ev=="rednet_message" and c==CFG.protocol then
       serve(a,b)
     elseif ev=="rednet_message" and c==CFG.fleetProtocol then
@@ -831,9 +850,25 @@ return function(ctx)
       ctx.unit.details.modems=opened
     end
 
+    -- Housekeeping uses wall-clock deadlines instead of dedicated timers.
+    -- Native APIs such as http.get() temporarily narrow this process' event
+    -- filter and can consume unrelated timer events before managerd sees them.
+    local now=os.epoch and os.epoch("utc") or 0
+
+    if now>=nextPeerFlush then
+      local wrote=true
+      if runtime.peersDirty then wrote=flushPeers() end
+      nextPeerFlush=now+(wrote==false and 1000 or 2000)
+    end
+
+    if now>=nextAnnounce then
+      announceImage(runtime.pendingRebootCommit and "activation-pending" or "heartbeat")
+      nextAnnounce=now+math.floor(CFG.announceSeconds*1000)
+    end
+
     -- Coordination must not depend on a dedicated timer event. Any manager
     -- event (node heartbeat, transfer request, poll, peripheral change) can
-    -- advance activation, while the announce timer guarantees regular events.
+    -- advance activation.
     if runtime.pendingRebootCommit then checkManagerActivation() end
   end
 end
