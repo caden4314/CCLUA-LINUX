@@ -344,6 +344,7 @@ return function(ctx)
   local function discover_monitors()
     reload_settings()
     local mapping=settings.monitor_rooms or {}
+    local masterName=tostring(settings.master_monitor or "")
     local wanted={}
     local available={}
     local assigned={}
@@ -353,19 +354,23 @@ return function(ctx)
       if peripheral.getType(name)=="monitor" then available[name]=true end
     end
 
-    local function attach(name,roomName)
+    local function attach(name,roomName,kind)
       local mon=peripheral.wrap(name)
       if not mon then return end
-      pcall(mon.setTextScale,tonumber(settings.monitor_scale) or 0.5)
+      local scale=(kind=="master" and tonumber(settings.master_monitor_scale))
+        or tonumber(settings.monitor_scale) or 0.5
+      pcall(mon.setTextScale,scale)
       pcall(mon.setCursorBlink,false)
       local ok,w,h=pcall(mon.getSize)
       if not ok then return end
 
       local old=monitors[name]
-      local changed=not old or old.w~=w or old.h~=h or old.room~=roomName
+      kind=kind or "room"
+      local changed=not old or old.w~=w or old.h~=h or old.room~=roomName or old.kind~=kind
       local item=old or {name=name,cache={},zones={}}
       item.mon=mon
       item.room=roomName
+      item.kind=kind
       item.w=w
       item.h=h
 
@@ -383,9 +388,13 @@ return function(ctx)
 
     for name,roomName in pairs(mapping) do
       if find_room(roomName) then
-        if available[name] then attach(name,roomName)
+        if available[name] then attach(name,roomName,"room")
         else missing[#missing+1]={name=name,room=roomName} end
       end
+    end
+
+    if masterName~="" and available[masterName] then
+      attach(masterName,"__MASTER__","master")
     end
 
     -- If exactly one configured panel disappeared and exactly one new monitor
@@ -394,7 +403,7 @@ return function(ctx)
     if settings.monitor_auto_rebind~=false and #missing==1 then
       local unassigned={}
       for name in pairs(available) do
-        if not assigned[name] and not mapping[name] then unassigned[#unassigned+1]=name end
+        if not assigned[name] and not mapping[name] and name~=masterName then unassigned[#unassigned+1]=name end
       end
       table.sort(unassigned)
 
@@ -421,7 +430,114 @@ return function(ctx)
     return monitors
   end
 
+  local function render_master_monitor(item,force)
+    local mon=item.mon
+    if not mon or peripheral.getType(item.name)~="monitor" then return false end
+
+    local ok,w,h=pcall(mon.getSize)
+    if not ok then return false end
+    if w~=item.w or h~=item.h then
+      item.w=w;item.h=h;item.cache={};item.zones={}
+      pcall(mon.clear)
+      force=true
+    end
+
+    local rows={}
+    for y=1,h do rows[y]=new_row(w,colors.white,colors.black) end
+    item.zones={}
+
+    local summaries=room_summary()
+    local expected,missing=expected_state()
+    local allOn=true
+    local allOff=true
+    local healthy=#missing==0
+    local onCount=0
+    local presentCount=0
+    for _,s in ipairs(summaries) do
+      presentCount=presentCount+(s.present or 0)
+      onCount=onCount+(s.on or 0)
+      if s.state~="ON" then allOn=false end
+      if s.state~="OFF" then allOff=false end
+      if not s.healthy then healthy=false end
+    end
+    local allState=allOn and "ON" or (allOff and "OFF" or "MIXED")
+    local allColor=allOn and colors.lime or (allOff and colors.lightGray or colors.orange)
+
+    row_fill(rows[1],1,w,colors.blue,colors.white)
+    row_center(rows[1],"LIGHTING MASTER",colors.white,colors.blue)
+    row_center(rows[2],("%d ROOMS  %d/%d RELAYS"):format(#summaries,presentCount,#expected),
+      healthy and colors.lime or colors.red,colors.black)
+    row_center(rows[3],"ALL LIGHTS: "..allState,allColor,colors.black)
+
+    local split=math.floor((w-1)/2)
+    local allY1,allY2=4,6
+    if h<20 then allY2=5 end
+    for y=allY1,math.min(allY2,h) do
+      row_fill(rows[y],1,split,allOff and colors.gray or colors.lightGray,
+        allOff and colors.white or colors.black)
+      row_fill(rows[y],split+2,w,allOn and colors.green or colors.lightGray,
+        allOn and colors.white or colors.black)
+    end
+    local allMid=math.floor((allY1+math.min(allY2,h))/2)
+    row_center(rows[allMid],"ALL OFF",allOff and colors.white or colors.black,
+      allOff and colors.gray or colors.lightGray,1,split)
+    row_center(rows[allMid],"ALL ON",allOn and colors.white or colors.black,
+      allOn and colors.green or colors.lightGray,split+2,w)
+    item.zones[#item.zones+1]={action="set_all",value=false,x1=1,x2=split,y1=allY1,y2=allY2}
+    item.zones[#item.zones+1]={action="set_all",value=true,x1=split+2,x2=w,y1=allY1,y2=allY2}
+
+    local y=8
+    for _,s in ipairs(summaries) do
+      if y+2>h-1 then break end
+      local short=((settings.room_short_names or {})[s.name]) or s.name
+      local stateColor=s.state=="ON" and colors.lime
+        or (s.state=="OFF" and colors.lightGray or colors.orange)
+      if not s.healthy then stateColor=colors.red end
+
+      row_put(rows[y],1,short:sub(1,math.max(1,w-10)),colors.cyan,colors.black)
+      local status=("%s %d/%d"):format(s.state,s.present or 0,s.relay_count or 0)
+      row_put(rows[y],math.max(1,w-#status+1),status,stateColor,colors.black)
+
+      local offBg=s.state=="OFF" and colors.gray or colors.lightGray
+      local offFg=s.state=="OFF" and colors.white or colors.black
+      local onBg=s.state=="ON" and colors.green or colors.lightGray
+      local onFg=s.state=="ON" and colors.white or colors.black
+      for by=y+1,y+2 do
+        row_fill(rows[by],1,split,offBg,offFg)
+        row_fill(rows[by],split+2,w,onBg,onFg)
+      end
+      row_center(rows[y+1],"OFF",offFg,offBg,1,split)
+      row_center(rows[y+1],"ON",onFg,onBg,split+2,w)
+      item.zones[#item.zones+1]={
+        action="set_room",room=s.name,value=false,
+        x1=1,x2=split,y1=y+1,y2=y+2
+      }
+      item.zones[#item.zones+1]={
+        action="set_room",room=s.name,value=true,
+        x1=split+2,x2=w,y1=y+1,y2=y+2
+      }
+      y=y+3
+    end
+
+    if h>=1 then
+      local footer=lastError and "FAULT - CHECK RELAYS" or "MASTER TOUCH CONTROL"
+      row_center(rows[h],footer,lastError and colors.red or colors.gray,colors.black)
+    end
+
+    for ry=1,h do
+      local text,fg,bg=serialize_row(rows[ry])
+      local key=text.."|"..fg.."|"..bg
+      if force or item.cache[ry]~=key then
+        mon.setCursorPos(1,ry)
+        mon.blit(text,fg,bg)
+        item.cache[ry]=key
+      end
+    end
+    return true
+  end
+
   local function render_monitor(item,force)
+    if item.kind=="master" then return render_master_monitor(item,force) end
     local mon=item.mon
     if not mon or peripheral.getType(item.name)~="monitor" then return false end
 
@@ -560,7 +676,21 @@ return function(ctx)
 
     for _,zone in ipairs(item.zones or {}) do
       if x>=zone.x1 and x<=zone.x2 and y>=zone.y1 and y<=zone.y2 then
-        if zone.action=="set" then
+        if zone.action=="set_all" then
+          local ok,err=set_all(zone.value,"touch-master:"..name)
+          ctx.kernel.log.write(ok and "info" or "error","lightingd","master touch all set",{
+            monitor=name,value=zone.value,x=x,y=y,error=err
+          },ctx.process.pid)
+          render_all(false)
+          return true
+        elseif zone.action=="set_room" then
+          local ok,err=set_room(zone.room,zone.value,"touch-master:"..name)
+          ctx.kernel.log.write(ok and "info" or "error","lightingd","master touch room set",{
+            monitor=name,room=zone.room,value=zone.value,x=x,y=y,error=err
+          },ctx.process.pid)
+          render_all(false)
+          return true
+        elseif zone.action=="set" then
           local ok,err=set_room(item.room,zone.value,"touch:"..name)
           ctx.kernel.log.write(ok and "info" or "error","lightingd","touch room set",{
             monitor=name,room=item.room,value=zone.value,x=x,y=y,error=err
@@ -590,7 +720,10 @@ return function(ctx)
     local monitorState={}
     for name,item in pairs(monitors) do
       monitorState[#monitorState+1]={
-        name=name,room=item.room,width=item.w,height=item.h
+        name=name,
+        room=item.kind=="master" and "ALL" or item.room,
+        kind=item.kind or "room",
+        width=item.w,height=item.h
       }
     end
     table.sort(monitorState,function(a,b)return a.name<b.name end)
