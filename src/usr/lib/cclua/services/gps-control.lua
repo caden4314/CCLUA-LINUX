@@ -82,7 +82,20 @@ return function(ctx)
   local function state()
     local hs=host_rows()
     local online=0
-    for _,h in ipairs(hs) do if h.online then online=online+1 end end
+    local firstY=nil
+    local verticalDiversity=false
+    for _,h in ipairs(hs) do
+      if h.online then
+        online=online+1
+        if h.y~=nil then
+          if firstY==nil then firstY=h.y
+          elseif math.abs((tonumber(h.y) or 0)-(tonumber(firstY) or 0))>=2 then
+            verticalDiversity=true
+          end
+        end
+      end
+    end
+    local geometryOk=online>=4 and verticalDiversity
     local update=config.read_json("/var/lib/cclua/update-state.json",{})
     local s={
       schema=1,
@@ -90,7 +103,9 @@ return function(ctx)
       computer_id=os.getComputerID(),
       role=machine.role,
       status="ONLINE",
-      gps_ready=online>=4,
+      gps_ready=geometryOk,
+      geometry_ok=geometryOk,
+      vertical_diversity=verticalDiversity,
       host_count=#hs,
       expected_host_count=#expectedHosts,
       hosts_online=online,
@@ -137,8 +152,11 @@ return function(ctx)
       line(4,"GPS HOST NETWORK",colors.cyan,colors.black)
       line(5,("Hosts online: %d / %d required"):format(s.hosts_online,s.minimum_hosts),
         s.gps_ready and colors.lime or colors.yellow,colors.black)
-      line(6,s.gps_ready and "Status: READY FOR GPS FIXES" or "Status: WAITING FOR GPS HOSTS",
-        s.gps_ready and colors.lime or colors.orange,colors.black)
+      local gpsStatus=s.gps_ready and "Status: READY FOR GPS FIXES"
+        or ((s.hosts_online or 0)<(s.minimum_hosts or 4)
+          and "Status: WAITING FOR GPS HOSTS"
+          or "Status: WAITING FOR 3D GEOMETRY")
+      line(6,gpsStatus,s.gps_ready and colors.lime or colors.orange,colors.black)
 
       local y=8
       if #s.hosts==0 then
