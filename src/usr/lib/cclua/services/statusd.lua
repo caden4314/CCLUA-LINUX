@@ -112,7 +112,9 @@ return function(ctx)
 
   local previous=nil
   local previousCode=nil
+  local previousLamp=nil
   local tick=0
+  local cachedState,cachedErrorCode,cachedErrorReason,cachedFailed,cachedUpdate=nil,nil,nil,nil,nil
   local timer=os.startTimer(0.15)
 
   while true do
@@ -121,9 +123,19 @@ return function(ctx)
       tick=tick+1
       if tick%20==1 then refresh_light_config() end
 
-      local state,errorCode,errorReason,failed,update=classify()
+      -- Health classification reads several state files. Sample those about
+      -- once per second instead of on every 150 ms lamp-animation tick.
+      if cachedState==nil or tick%7==1 then
+        cachedState,cachedErrorCode,cachedErrorReason,cachedFailed,cachedUpdate=classify()
+      end
+      local state,errorCode,errorReason,failed,update=
+        cachedState,cachedErrorCode,cachedErrorReason,cachedFailed,cachedUpdate
+
       local output=lamp(errorCode,tick)
-      pcall(redstone.setOutput,side,output)
+      if output~=previousLamp then
+        pcall(redstone.setOutput,side,output)
+        previousLamp=output
+      end
 
       if state~=previous or errorCode~=previousCode or tick%20==0 then
         local payload={

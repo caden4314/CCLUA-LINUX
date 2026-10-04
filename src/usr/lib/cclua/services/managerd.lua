@@ -9,8 +9,10 @@ return function(ctx)
     root="/var/lib/cclua/github",
     protocol="cclua-manager-v1",
     fleetProtocol="cclua-fleet-v1",
-    pollSeconds=tonumber(machine.github_poll_seconds) or 5,
-    announceSeconds=tonumber(machine.update_announce_seconds) or 2,
+    pollSeconds=math.max(10,tonumber(machine.github_poll_seconds) or 10),
+    -- Change notifications are sent immediately. This is only the idle
+    -- heartbeat/recovery broadcast, so keep it deliberately low-frequency.
+    announceSeconds=math.max(15,tonumber(machine.update_announce_seconds) or 20),
   }
 
   local runtime={
@@ -21,6 +23,7 @@ return function(ctx)
     delta={added=0,changed=0,removed=0,unchanged=0},
     downloadedBytes=0,
     nodes={},
+    peersDirty=false,
     pendingRebootCommit=nil,
     rebootEarliest=nil,
     rebootDeadline=nil,
@@ -445,6 +448,20 @@ return function(ctx)
     return opened
   end
 
+  local function flushPeers()
+    if not runtime.peersDirty then return false end
+    local out={}
+    for _,node in pairs(runtime.nodes) do out[#out+1]=node end
+    table.sort(out,function(a,b)return (a.id or 9999)<(b.id or 9999) end)
+    config.write_json("/var/lib/cclua/manager-peers.json",{
+      schema=1,
+      timestamp=os.epoch and os.epoch("utc") or 0,
+      nodes=out
+    })
+    runtime.peersDirty=false
+    return true
+  end
+
   local function rememberNode(sender,msg)
     local n=runtime.nodes[sender] or {}
     n.id=sender
@@ -458,10 +475,7 @@ return function(ctx)
       end
     end
     runtime.nodes[sender]=n
-    local out={}
-    for _,node in pairs(runtime.nodes) do out[#out+1]=node end
-    table.sort(out,function(a,b)return (a.id or 9999)<(b.id or 9999) end)
-    config.write_json("/var/lib/cclua/manager-peers.json",{schema=1,nodes=out})
+    runtime.peersDirty=true
   end
 
   local function managerStatus()
@@ -686,6 +700,7 @@ return function(ctx)
 
   local poll=os.startTimer(CFG.pollSeconds)
   local announce=os.startTimer(CFG.announceSeconds)
+  local peerFlush=os.startTimer(2)
   local modemRefreshTimer=nil
   while true do
     local ev,a,b,c=coroutine.yield("wait_event",{"timer","rednet_message","cclua_manager_sync","peripheral","peripheral_detach","terminate"})
@@ -703,6 +718,9 @@ return function(ctx)
     elseif ev=="timer" and a==announce then
       announceImage(runtime.pendingRebootCommit and "activation-pending" or "heartbeat")
       announce=os.startTimer(CFG.announceSeconds)
+    elseif ev=="timer" and a==peerFlush then
+      flushPeers()
+      peerFlush=os.startTimer(2)
     elseif ev=="rednet_message" and c==CFG.protocol then
       serve(a,b)
     elseif ev=="rednet_message" and c==CFG.fleetProtocol then

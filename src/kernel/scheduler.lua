@@ -59,6 +59,9 @@ function M.new(kernel)
  end
  function s:run()
   self.running=true
+  local wakeTimer=nil
+  local wakeDeadline=nil
+
   while self.running do
    self:dispatch({})
    while #self.runnable>0 do self:dispatch({}) end
@@ -71,14 +74,31 @@ function M.new(kernel)
     end
    end
 
+   -- Maintain one CC timer for the nearest sleeper. Previously a new timer
+   -- was created after every unrelated event, leaking duplicate timers and
+   -- causing delayed event storms on busy computers.
    if soonest and os.startTimer then
-    local delay=math.max(0.05,(soonest-now)/1000)
-    os.startTimer(delay)
+    if wakeTimer==nil or wakeDeadline~=soonest then
+     if wakeTimer and os.cancelTimer then pcall(os.cancelTimer,wakeTimer) end
+     local delay=math.max(0.05,(soonest-now)/1000)
+     wakeTimer=os.startTimer(delay)
+     wakeDeadline=soonest
+    end
+   elseif wakeTimer then
+    if os.cancelTimer then pcall(os.cancelTimer,wakeTimer) end
+    wakeTimer=nil
+    wakeDeadline=nil
    end
 
    local ev={os.pullEventRaw()}
+   if ev[1]=="timer" and wakeTimer and ev[2]==wakeTimer then
+    wakeTimer=nil
+    wakeDeadline=nil
+   end
    self:dispatch(ev)
   end
+
+  if wakeTimer and os.cancelTimer then pcall(os.cancelTimer,wakeTimer) end
  end
  function s:stop() self.running=false end
  return s

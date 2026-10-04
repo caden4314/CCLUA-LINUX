@@ -39,8 +39,9 @@ return {main=function(ctx,args)
     local timer=os.startTimer(1)
     local got=false
     while not got do
-      local ev,a,b,c=coroutine.yield("wait_event")
+      local ev,a,b,c=coroutine.yield("wait_event",{"rednet_message","timer"})
       if ev=="rednet_message" and a==id and c==net.protocol and type(b)=="table" and b.kind=="pong" and b.payload and b.payload.nonce==nonce then
+        if os.cancelTimer then pcall(os.cancelTimer,timer) end
         local ms=os.epoch("utc")-start
         print(("reply from computer %d: seq=%d time=%dms"):format(id,seq,ms))
         okcount=okcount+1;got=true

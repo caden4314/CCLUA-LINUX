@@ -4,8 +4,11 @@ return function(ctx)
   local machine=config.machine()
   local protocol="cclua-manager-v1"
   local managerId=tonumber(machine.manager_computer_id) or 0
-  local pollSeconds=tonumber(machine.update_poll_seconds) or 3
-  local pollJitter=(os.getComputerID()%7)*0.11
+  -- Manager broadcasts image changes immediately, so polling is only a
+  -- recovery/health path. Keep a sane lower bound to avoid a constant fleet-
+  -- wide status storm when many computers are online.
+  local pollSeconds=math.max(10,tonumber(machine.update_poll_seconds) or 12)
+  local pollJitter=(os.getComputerID()%11)*0.37
   local autoApply=machine.auto_apply_updates~=false
   local stageSpreadSeconds=tonumber(machine.update_stage_spread_seconds) or 18
   local statusTimeout=tonumber(machine.update_status_timeout_seconds) or 5
@@ -24,6 +27,8 @@ return function(ctx)
   local lastManager=nil
   local consecutiveManagerFailures=0
   local managerFailureThreshold=tonumber(machine.manager_failure_threshold) or 3
+  local lastStatePublishAt=0
+  local lastPublishedState=nil
 
   local function now_ms() return os.epoch and os.epoch("utc") or 0 end
   local function host(path) return tostring(path):gsub("^/","") end
@@ -129,9 +134,22 @@ return function(ctx)
     return p
   end
 
-  local function write_state(state,extra)
+  local function write_state(state,extra,force)
     runtime.state=state
     if state~="FAILED" and state~="OFFLINE" then runtime.lastError=nil end
+
+    local now=now_ms()
+    local interval=5000
+    if state=="DOWNLOADING" or state=="STAGING" then interval=1000
+    elseif state=="VERIFYING" then interval=500
+    elseif state=="AVAILABLE" or state=="CHECKING" or state=="CURRENT" then interval=5000
+    elseif state=="READY" or state=="ACTIVATING" or state=="FAILED" or state=="OFFLINE" then interval=0
+    end
+
+    local transitioned=lastPublishedState~=state
+    local due=(now-lastStatePublishAt)>=interval
+    if not force and not transitioned and not due then return false end
+
     local p=payload(extra)
     config.write_json("/var/lib/cclua/update-state.json",p)
     config.write_json("/var/log/cclua/update-health.json",p)
@@ -149,6 +167,9 @@ return function(ctx)
         update=p,
       }
     },protocol)
+    lastStatePublishAt=now
+    lastPublishedState=state
+    return true
   end
 
   local function open_modems()
@@ -187,6 +208,7 @@ return function(ctx)
       local ev,a,b,c=coroutine.yield("wait_event",{"rednet_message","timer"})
       if ev=="rednet_message" and a==managerId and c==protocol and type(b)=="table" and b.protocol==protocol then
         if b.op==msg.op then
+          if os.cancelTimer then pcall(os.cancelTimer,timer) end
           if b.ok==false then return nil,b.error or "manager request failed" end
           return b
         end
@@ -250,7 +272,9 @@ return function(ctx)
       runtime.downloadedBytes=runtime.downloadedBytes+#res.data
       runtime.currentAction="DOWNLOAD"
       runtime.currentFile=rel
-      config.write_json("/var/lib/cclua/update-state.json",payload())
+      -- Progress is kept in memory and published through write_state's
+      -- throttling. Do not synchronously rewrite JSON for every 12 KB chunk.
+      write_state("DOWNLOADING")
       if res.eof then break end
       if #res.data==0 then return nil,"zero-length non-final chunk" end
     end
