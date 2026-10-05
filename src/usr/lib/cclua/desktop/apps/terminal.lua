@@ -1,7 +1,8 @@
 local M={}
 local config=dofile("/usr/lib/cclua/config.lua")
+local Jobs=dofile("/usr/lib/cclua/jobs.lua")
 
-local BUILTINS={"cd","pwd","clear","history","help"}
+local BUILTINS={"cd","pwd","clear","history","help","jobs","fg","bg"}
 
 local function push(st,line,fg,bg)
   st.lines[#st.lines+1]={
@@ -40,6 +41,7 @@ function M.new(ctx)
     history={},historyIndex=nil,historyDraft="",
     viewOffset=0,lastStatus=0,
     ctrl=false,shift=false,
+    jobs=nil,foreground=nil,termW=80,termH=24,
   }
 end
 
@@ -84,64 +86,67 @@ local function words(line)
   flush()
   return out
 end
-local function capture(st)
-  local t={x=1,y=1,w=160,h=80,fg=colors.white,bg=colors.black}
-  local pending=""
-
-  local function flush_line(line)
-    push(st,line,t.fg,t.bg)
-    t.x=1;t.y=t.y+1
-  end
-
-  function t.write(s)
-    s=tostring(s or "")
-    pending=pending..s
-    while true do
-      local p=pending:find("\n",1,true)
-      if not p then break end
-      flush_line(pending:sub(1,p-1))
-      pending=pending:sub(p+1)
-    end
-    if pending~="" then
-      local last=st.lines[#st.lines]
-      if #st.lines==0 or type(last)~="table" or last.text~=pending then
-        push(st,pending,t.fg,t.bg)
-      end
-      pending=""
-    end
-  end
-
-  function t.blit(s,fg,bg)
-    -- Commands which rely on blit still get readable output. The Desktop
-    -- line store is one colour per row, so use the current terminal colours.
-    t.write(s)
-  end
-  function t.clear() st.lines={};st.viewOffset=0 end
-  function t.clearLine() end
-  function t.getCursorPos() return t.x,t.y end
-  function t.setCursorPos(x,y) t.x=x;t.y=y end
-  function t.setCursorBlink() end
-  function t.isColor() return true end
-  t.isColour=t.isColor
-  function t.getSize() return t.w,t.h end
-  function t.scroll() end
-  function t.setTextColor(c) t.fg=c end
-  t.setTextColour=t.setTextColor
-  function t.getTextColor() return t.fg end
-  t.getTextColour=t.getTextColor
-  function t.setBackgroundColor(c) t.bg=c end
-  t.setBackgroundColour=t.setBackgroundColor
-  function t.getBackgroundColor() return t.bg end
-  t.getBackgroundColour=t.getBackgroundColor
-  return t
-end
-
 local function add_history(st,line)
   if line=="" then return end
   if st.history[#st.history]~=line then st.history[#st.history+1]=line end
   while #st.history>200 do table.remove(st.history,1) end
   st.historyIndex=nil
   st.historyDraft=""
+end
+
+local function push_blit(st,row)
+  if not row then return end
+  st.lines[#st.lines+1]={
+    text=tostring(row.ch or ""),
+    blit_fg=tostring(row.fg or ""),
+    blit_bg=tostring(row.bg or ""),
+  }
+  while #st.lines>1000 do table.remove(st.lines,1) end
+end
+
+local function ensure_jobs(ctx,st)
+  if st.jobs then return st.jobs end
+  st.jobs=Jobs.new(ctx,{
+    cols=math.max(1,st.termW or 80),
+    rows=math.max(1,(st.termH or 24)-1),
+    notify=function()
+      if os.queueEvent then os.queueEvent("cclua_pty_output",ctx.process.pid) end
+    end,
+  })
+  return st.jobs
+end
+
+local function archive_job(st,job,final)
+  if not job or not job.pty then return end
+  for _,row in ipairs(job.pty:take_scrollback()) do push_blit(st,row) end
+  if final and not job.archived then
+    local snap=job.pty:snapshot()
+    local last=0
+    for y=1,#snap.screen do
+      if tostring(snap.screen[y].ch or ""):match("%S") then last=y end
+    end
+    for y=1,last do push_blit(st,snap.screen[y]) end
+    job.archived=true
+  end
+end
+
+local function refresh_jobs(st)
+  if not st.jobs then return end
+  st.jobs:refresh()
+  for _,job in ipairs(st.jobs.jobs) do
+    archive_job(st,job,false)
+    if st.foreground~=job and job.pty then job.pty:ack() end
+    if job.done and not job.archived then
+      archive_job(st,job,true)
+      if st.foreground==job then
+        st.foreground=nil
+        st.lastStatus=job.exit_code or 1
+      elseif not job.announced then
+        push(st,("[%d]+ Done (%d) %s"):format(job.id,job.exit_code or 0,job.command),colors.gray)
+        job.announced=true
+      end
+    end
+  end
 end
 
 local function run_command(ctx,st,line)
@@ -177,47 +182,64 @@ local function run_command(ctx,st,line)
     return 0
   end
   if argv[1]=="help" then
-    push(st,"Shell: cd pwd clear history help",colors.cyan)
+    push(st,"Shell: cd pwd clear history help jobs fg bg",colors.cyan)
     push(st,"System: cclua fastfetch systemctl journalctl top ps ip ping",colors.lightGray)
     push(st,"Packages: apt dpkg  |  Legacy detail: cclua-status",colors.lightGray)
-    push(st,"Editing: Left/Right Home/End  Ctrl+A/E/U/K/W/C/R  Tab complete",colors.lightGray)
+    push(st,"Jobs: append & for background  |  Ctrl+C interrupt  |  Ctrl+Z stop",colors.lightGray)
+    push(st,"Editing: Left/Right Home/End  Ctrl+A/E/U/K/W/R  Tab complete",colors.lightGray)
     push(st,"Scrollback: PageUp/PageDown or mouse wheel",colors.lightGray)
     st.lastStatus=0
     return 0
   end
 
-  local path=ctx.kernel.exec.resolve(argv[1])
-  if not path then
-    push(st,argv[1]..": command not found",colors.red)
-    push(st,"Try 'help' for common commands.",colors.gray)
-    st.lastStatus=127
-    return 127
+  local jobs=ensure_jobs(ctx,st)
+  refresh_jobs(st)
+
+  if argv[1]=="jobs" then
+    for _,job in ipairs(jobs:list(true)) do
+      local marker=job.foreground and "+" or "-"
+      push(st,("[%d]%s %-8s %s"):format(job.id,marker,job.state,job.command),colors.lightGray)
+    end
+    st.lastStatus=0
+    return 0
   end
-  local mod,err=ctx.kernel.exec.load(path)
-  if not mod then
+
+  if argv[1]=="fg" then
+    local job,err=jobs:foreground_job(argv[2])
+    if not job then push(st,"fg: "..tostring(err),colors.red);st.lastStatus=1;return 1 end
+    st.foreground=job
+    st.lastStatus=0
+    return 0
+  end
+
+  if argv[1]=="bg" then
+    local job=jobs:get(argv[2])
+    if not job then
+      for i=#jobs.jobs,1,-1 do if jobs.jobs[i].state=="stopped" then job=jobs.jobs[i];break end end
+    end
+    local resumed,err=jobs:background_job(job)
+    if not resumed then push(st,"bg: "..tostring(err),colors.red);st.lastStatus=1;return 1 end
+    push(st,("[%d]+ %s &"):format(resumed.id,resumed.command),colors.gray)
+    st.lastStatus=0
+    return 0
+  end
+
+  local background=argv[#argv]=="&"
+  if background then table.remove(argv,#argv) end
+  local job,err,code=jobs:spawn(argv,{cwd=st.cwd,background=background})
+  if not job then
     push(st,argv[1]..": "..tostring(err),colors.red)
-    st.lastStatus=126
-    return 126
+    st.lastStatus=code or 1
+    return st.lastStatus
   end
 
-  local args={}
-  for i=2,#argv do args[#args+1]=argv[i] end
-  local old=term.current()
-  local cap=capture(st)
-  term.redirect(cap)
-  local oldcwd=ctx.process.cwd
-  ctx.process.cwd=st.cwd
-  local ok,res=pcall(mod.main,ctx,args)
-  ctx.process.cwd=oldcwd
-  term.redirect(old)
-
-  if not ok then
-    push(st,"Error: "..tostring(res),colors.red)
-    st.lastStatus=1
-    return 1
+  if background then
+    push(st,("[%d] %d"):format(job.id,job.pid),colors.gray)
+    st.lastStatus=0
+  else
+    st.foreground=job
   end
-  st.lastStatus=type(res)=="number" and res or 0
-  return st.lastStatus
+  return 0
 end
 local function set_input(st,value)
   st.input=tostring(value or "")
@@ -342,10 +364,56 @@ local function reverse_search(st)
   end
   return false
 end
+local function blit_color(ch)
+  local n=tonumber(tostring(ch or "0"),16) or 0
+  return 2^n
+end
+
+local function draw_blit_row(ui,x,y,row,maxWidth)
+  local text=tostring(row and (row.ch or row.text) or ""):sub(1,maxWidth)
+  local fgs=tostring(row and (row.fg or row.blit_fg) or "")
+  local bgs=tostring(row and (row.bg or row.blit_bg) or "")
+  if fgs=="" or bgs=="" then
+    ui.text(x,y,text,colors.lightGray,colors.black)
+    return
+  end
+  local i=1
+  while i<=#text do
+    local fg=fgs:sub(i,i)
+    local bg=bgs:sub(i,i)
+    local j=i+1
+    while j<=#text and fgs:sub(j,j)==fg and bgs:sub(j,j)==bg do j=j+1 end
+    ui.text(x+i-1,y,text:sub(i,j-1),blit_color(fg),blit_color(bg))
+    i=j
+  end
+end
+
 function M.draw(ctx,st,ui,x,y,w,h,active)
   ui.fill(x,y,x+w-1,y+h-1,colors.black,colors.white)
-
+  st.termW=w
+  st.termH=h
   local body=math.max(1,h-1)
+  local contentWidth=math.max(1,w-2)
+
+  if st.jobs then st.jobs:resize(contentWidth,body) end
+  refresh_jobs(st)
+
+  local fgjob=st.foreground
+  if fgjob and not fgjob.done and fgjob.state~="stopped" then
+    local snap=fgjob.pty:snapshot()
+    for row=1,math.min(body,#snap.screen) do
+      draw_blit_row(ui,x+1,y+row-1,snap.screen[row],contentWidth)
+    end
+    local status=(" [%d] %s  Ctrl+C interrupt  Ctrl+Z stop "):format(fgjob.id,fgjob.command)
+    ui.text(x+1,y+h-1,status:sub(1,contentWidth),colors.black,colors.lightGray)
+    if active and snap.cursor_blink then
+      ui.cursor=x+math.max(1,math.min(contentWidth,snap.cursor_x))
+      ui.cursor_y=y+math.max(0,math.min(body-1,snap.cursor_y-1))
+    end
+    fgjob.pty:ack()
+    return
+  end
+
   local last=math.max(0,#st.lines-(st.viewOffset or 0))
   local first=math.max(1,last-body+1)
   local row=0
@@ -353,10 +421,14 @@ function M.draw(ctx,st,ui,x,y,w,h,active)
     row=row+1
     if row>body then break end
     local entry=st.lines[i]
-    local text=type(entry)=="table" and entry.text or tostring(entry or "")
-    local fg=type(entry)=="table" and entry.fg or colors.lightGray
-    local bg=type(entry)=="table" and entry.bg or colors.black
-    ui.text(x+1,y+row-1,text:sub(1,math.max(1,w-2)),fg,bg)
+    if type(entry)=="table" and entry.blit_fg then
+      draw_blit_row(ui,x+1,y+row-1,entry,contentWidth)
+    else
+      local text=type(entry)=="table" and entry.text or tostring(entry or "")
+      local fg=type(entry)=="table" and entry.fg or colors.lightGray
+      local bg=type(entry)=="table" and entry.bg or colors.black
+      ui.text(x+1,y+row-1,text:sub(1,contentWidth),fg,bg)
+    end
   end
 
   if (st.viewOffset or 0)>0 and body>0 then
@@ -371,10 +443,7 @@ function M.draw(ctx,st,ui,x,y,w,h,active)
   local path=short_path(st.cwd,maxPath)
   local symbol=st.lastStatus==0 and "$ " or "! "
   local fixed=user.."@"..host..":"..path..symbol
-
-  if #fixed>w-10 then
-    fixed=symbol
-  end
+  if #fixed>w-10 then fixed=symbol end
 
   local inputWidth=math.max(1,w-2-#fixed)
   local cursorZero=math.max(0,st.inputPos-1)
@@ -400,11 +469,38 @@ function M.draw(ctx,st,ui,x,y,w,h,active)
 end
 
 function M.event(ctx,st,ev,a,b,c)
-  if ev=="key_up" then
+  refresh_jobs(st)
+
+  if ev=="key" then
+    if a==keys.leftCtrl or a==keys.rightCtrl then st.ctrl=true end
+    if a==keys.leftShift or a==keys.rightShift then st.shift=true end
+  elseif ev=="key_up" then
     if a==keys.leftCtrl or a==keys.rightCtrl then st.ctrl=false end
     if a==keys.leftShift or a==keys.rightShift then st.shift=false end
-    return false
   end
+
+  local fgjob=st.foreground
+  if fgjob and not fgjob.done and fgjob.state~="stopped" then
+    local jobs=ensure_jobs(ctx,st)
+    if ev=="key" and st.ctrl and a==keys.c then
+      fgjob.pty:write_stream("stdout","^C\n")
+      jobs:signal(fgjob,"INT")
+      st.lastStatus=130
+      return true
+    elseif ev=="key" and st.ctrl and a==keys.z then
+      fgjob.pty:write_stream("stdout","^Z\n")
+      jobs:stop(fgjob)
+      st.foreground=nil
+      push(st,("[%d]+ Stopped %s"):format(fgjob.id,fgjob.command),colors.yellow)
+      return true
+    elseif ev=="char" or ev=="paste" or ev=="key" or ev=="key_up"
+        or ev=="mouse_click" or ev=="mouse_drag" or ev=="mouse_up" or ev=="mouse_scroll" then
+      jobs:send(fgjob,{ev,a,b,c})
+      return true
+    end
+  end
+
+  if ev=="key_up" then return false end
 
   if ev=="char" then
     insert_input(st,tostring(a or ""))
@@ -422,8 +518,8 @@ function M.event(ctx,st,ev,a,b,c)
 
   if ev~="key" then return false end
 
-  if a==keys.leftCtrl or a==keys.rightCtrl then st.ctrl=true;return true end
-  if a==keys.leftShift or a==keys.rightShift then st.shift=true;return true end
+  if a==keys.leftCtrl or a==keys.rightCtrl then return true end
+  if a==keys.leftShift or a==keys.rightShift then return true end
 
   if st.ctrl then
     if a==keys.a then st.inputPos=1;return true

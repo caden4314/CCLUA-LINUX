@@ -193,12 +193,13 @@ local function run_external(ctx,args)
     ppid=ctx.process.pid,name=args[1],uid=ctx.process.uid,gid=ctx.process.gid,
     groups=ctx.process.groups,cwd=ctx.process.cwd,environment=ctx.process.environment,
     capabilities=ctx.process.capabilities,argv=args,session_id=ctx.process.session_id,
-    process_group=ctx.process.process_group
+    process_group=ctx.process.process_group,pty=ctx.process.pty,terminal=ctx.process.terminal,
+    stdin=ctx.process.stdin,stdout=ctx.process.stdout,stderr=ctx.process.stderr
   }
   if not child then print("bash: spawn failed: "..tostring(cerr));return 1 end
 
   ctx.kernel.scheduler:add(child,function()
-    local cctx={kernel=ctx.kernel,process=child}
+    local cctx={kernel=ctx.kernel,process=child,pty=child.pty}
     local sub={};for i=2,#args do sub[#sub+1]=args[i] end
     local ok,res=pcall(mod.main,cctx,sub)
     if not ok then error(res,0) end

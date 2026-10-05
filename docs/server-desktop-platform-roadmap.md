@@ -23,26 +23,36 @@ Next API modules:
 - api/notifications.lua
 ## Phase 2 — terminal jobs and PTY-like sessions
 
-The current desktop Terminal captures command output synchronously. This is good for short commands but prevents a true interactive Unix application model.
+Status: foundation implemented.
 
-Add a virtual terminal/job abstraction with:
-- child process lifecycle and process groups
-- stdin/stdout/stderr streams
-- foreground/background jobs
-- terminal resize events
-- signals / Ctrl+C / Ctrl+Z semantics
-- alternate-screen support
-- cursor/colour/blit state
-- scrollback owned by the terminal emulator rather than the child
+The Desktop Terminal now runs external commands as scheduled kernel jobs instead of
+capturing them synchronously in the compositor. The shared job/PTY path currently
+provides:
 
-Once this exists, port or improve:
-- nano-style editor
-- htop/top interactive mode
-- less and man pager
-- ssh/scp/sftp client sessions
-- watch
+- child lifecycle, process groups, foreground/background jobs, and `jobs` / `fg` / `bg`
+- PTY-scoped stdin/event delivery so focused keyboard and mouse input does not leak to other jobs
+- stdout/stderr terminal streams with per-cell ComputerCraft blit colour state
+- terminal resizing and targeted `term_resize` delivery
+- Ctrl+C / SIGINT and Ctrl+Z / SIGSTOP with SIGCONT resume semantics
+- alternate-screen, cursor, cursor-blink, palette, and colour state
+- Terminal-owned scrollback when PTY rows leave the child viewport
+- explicit cancellation plus optional job deadlines/timeouts
+- PTY inheritance for nested commands launched through the shared exec/shell paths
+- immediate compositor wake-up on PTY output and process exit
+
+First interactive ports on this foundation:
+- `top`: live alternate-screen process/service view with refresh and sorting
+- `less`: interactive pager with navigation and search
+- `watch`: repeated command execution with inherited PTY output
+
+Remaining Phase 2 work:
+- shell pipelines, redirections, and first-class pipe/file-descriptor objects
+- user-installed signal handlers and fuller POSIX terminal modes
+- improved nano-style editor and man/help database
+- SSH/SCP/SFTP client sessions
 - interactive apt/package operations
-- tmux-like session persistence later
+- richer htop-style process controls
+- tmux-like persistent sessions
 
 ## Phase 3 — desktop application registry
 

@@ -32,7 +32,12 @@ function M.run(ctx,argv,opts)
     capabilities=opts.capabilities or (uid==0 and ctx.kernel.capabilities.root() or ctx.process.capabilities),
     argv=argv,
     session_id=opts.session_id or ctx.process.session_id,
-    process_group=opts.process_group or ctx.process.process_group
+    process_group=opts.process_group or ctx.process.process_group,
+    pty=opts.pty or ctx.process.pty,
+    terminal=opts.terminal or ctx.process.terminal,
+    stdin=opts.stdin or ctx.process.stdin,
+    stdout=opts.stdout or ctx.process.stdout,
+    stderr=opts.stderr or ctx.process.stderr
   }
   if not child then
     print("exec: spawn failed: "..tostring(cerr))
@@ -40,7 +45,7 @@ function M.run(ctx,argv,opts)
   end
 
   ctx.kernel.scheduler:add(child,function()
-    local cctx={kernel=ctx.kernel,process=child}
+    local cctx={kernel=ctx.kernel,process=child,pty=child.pty}
     local args={}
     for i=2,#argv do args[#args+1]=argv[i] end
     local ok,res=pcall(mod.main,cctx,args)

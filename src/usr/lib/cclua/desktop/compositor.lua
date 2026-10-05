@@ -523,7 +523,8 @@ function M.run(ctx)
   while true do
     local ev,a,b,c=coroutine.yield("wait_event",{
       "mouse_click","mouse_drag","mouse_up","mouse_scroll",
-      "key","key_up","char","paste","term_resize","timer","terminate"
+      "key","key_up","char","paste","term_resize","timer","terminate",
+      "cclua_pty_output","cclua_process_exit"
     })
 
     if ev=="terminate" then
@@ -543,6 +544,9 @@ function M.run(ctx)
       end
       save_session()
       render(true)
+
+    elseif ev=="cclua_pty_output" or ev=="cclua_process_exit" then
+      render(false)
 
     elseif ev=="timer" and a==clockTimer then
       if fs.exists("var/lib/cclua/desktop-reload") then
