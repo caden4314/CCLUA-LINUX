@@ -253,7 +253,14 @@ return function(ctx)
     local north=wrap_monitor(transportName)
     local south=wrap_monitor(controlName)
     local mw,mh=nil,nil
-    if main then mw,mh=main.getSize() end
+    local mainScale=nil
+    if main then
+      mw,mh=main.getSize()
+      if main.getTextScale then
+        local okScale,value=pcall(main.getTextScale)
+        if okScale then mainScale=tonumber(value) end
+      end
+    end
     local tw,th=nil,nil
     if north then tw,th=north.getSize() end
     local cw,ch=nil,nil
@@ -266,6 +273,7 @@ return function(ctx)
     local speakers=#room_speakers()
     state.hardware={
       main_monitor=mainName,main_present=main~=nil,main_size=main and {mw,mh} or nil,
+      main_text_scale=mainScale,
       transport_monitor=transportName,transport_present=north~=nil,transport_size=north and {tw,th} or nil,
       control_monitor=controlName,control_present=south~=nil,control_size=south and {cw,ch} or nil,
       speakers_present=speakers,speakers_expected=22,

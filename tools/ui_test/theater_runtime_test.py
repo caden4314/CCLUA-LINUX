@@ -314,6 +314,7 @@ assert(saved_state.hardware.control_present==true)
 assert(saved_state.hardware.main_size[1]==222 and saved_state.hardware.main_size[2]==73,
   ("expected 222x73 theater wall, got %dx%d"):format(
     saved_state.hardware.main_size[1],saved_state.hardware.main_size[2]))
+assert(saved_state.hardware.main_text_scale==1.5)
 assert(saved_state.hardware.speaker_output_volume==3.0)
 assert(count_lights()==55)
 
