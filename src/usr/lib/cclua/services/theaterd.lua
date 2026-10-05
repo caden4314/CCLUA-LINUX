@@ -1382,32 +1382,38 @@ return function(ctx)
                   packet,#audioRaw,seg.audio_bytes),0)
               end
               local audio=pcm_decode(audioRaw,s.volume)
-              local pending={}
-              for _,sp in ipairs(speakers) do pending[#pending+1]=sp end
-              while s.active and #pending>0 do
-                local remaining={}
-                for i=1,#pending do
-                  local sp=pending[i]
-                  local okPlay,accepted=pcall(sp.obj.playAudio,audio,speakerOutputVolume)
-                  if not okPlay then
-                    failedCount=failedCount+1
-                    ctx.kernel.log.write("warning","theaterd","speaker playback failed",
-                      {speaker=sp.name,error=tostring(accepted)},proc.pid)
-                  elseif accepted then
-                    acceptedCount=acceptedCount+1
-                  else
-                    remaining[#remaining+1]=sp
-                  end
-                end
-                pending=remaining
-                if #pending>0 then
-                  local ev=coroutine.yield("wait_event",{"speaker_audio_empty","terminate"})
-                  if ev=="terminate" then return 0 end
+              -- Audio and video share this packet's media timestamp, but
+              -- video must never block behind an individual OpenAL speaker.
+              -- Submit the entire 22-speaker epoch once. If any source is
+              -- backpressured, drop that source's late epoch and let the next
+              -- 50 ms packet recover it; waiting for speaker_audio_empty here
+              -- used to freeze the corresponding video frame indefinitely.
+              local acceptedThisEpoch=0
+              local rejectedThisEpoch=0
+              for _,sp in ipairs(speakers) do
+                local okPlay,accepted=pcall(sp.obj.playAudio,audio,speakerOutputVolume)
+                if not okPlay then
+                  failedCount=failedCount+1
+                  rejectedThisEpoch=rejectedThisEpoch+1
+                  ctx.kernel.log.write("warning","theaterd","speaker playback failed",
+                    {speaker=sp.name,error=tostring(accepted)},proc.pid)
+                elseif accepted then
+                  acceptedCount=acceptedCount+1
+                  acceptedThisEpoch=acceptedThisEpoch+1
+                else
+                  rejectedThisEpoch=rejectedThisEpoch+1
                 end
               end
-              s.speaker_submit_ok=acceptedCount
-              s.speaker_submit_failed=failedCount
+              s.speaker_submit_ok=acceptedThisEpoch
+              s.speaker_submit_failed=rejectedThisEpoch
+              s.speaker_submit_total=#speakers
+              s.audio_epoch=packet
+              s.audio_target_ms=target
+              s.audio_late_ms=late
 
+              -- Audio is the media clock. Present only a frame that is still
+              -- close to its matching PCM epoch; late frames are discarded
+              -- instead of being shown after their sound has already played.
               if late<120 then
                 local video=seg.raw:sub(packetOffset,packetOffset+seg.frame_bytes-1)
                 if seg.color_mode=="rgb24" and s.rgb24 then
