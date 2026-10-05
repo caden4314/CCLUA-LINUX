@@ -132,6 +132,20 @@ result=post.run(ctx,{animate=false,monitors=false})
 assert(result.fatal==false)
 assert(result.state=="PASSED",result.state)
 assert(result.fail==0)
+
+local normalFree=fs.getFreeSpace
+fs.getFreeSpace=function(_) return 1024 end
+local low=post.run(ctx,{animate=false,monitors=false})
+assert(low.fatal==true and low.state=="FAILED")
+local found=false
+for _,check in ipairs(low.checks) do
+  if check.id=="filesystem" then
+    found=true
+    assert(check.detail:find("disk space critically low",1,true))
+  end
+end
+assert(found)
+fs.getFreeSpace=normalFree
 ''')
 
 # Service supervisor: transient failures recover; burst failures stop.

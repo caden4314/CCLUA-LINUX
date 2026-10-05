@@ -248,10 +248,16 @@ local function checks_for(ctx,machine)
   add("filesystem","Filesystem read/write",true,function()
     local dir="var/lib/cclua"
     if not fs.exists(dir) then fs.makeDir(dir) end
+    local free=fs.getFreeSpace and fs.getFreeSpace("/") or nil
+    if type(free)=="number" and free<65536 then
+      return false,("disk space critically low: %d bytes free"):format(free)
+    end
     local path=dir.."/.post-write-test"
     local token=("post-%d-%d"):format(os.getComputerID(),now())
     local h=fs.open(path,"w")
-    if not h then return false,"cannot open /var/lib/cclua for write" end
+    if not h then
+      return false,"cannot open /var/lib/cclua for write"..(free and ("; free "..tostring(free)) or "")
+    end
     h.write(token);h.close()
     h=fs.open(path,"r")
     if not h then return false,"cannot reopen POST test file" end
