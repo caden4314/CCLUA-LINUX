@@ -13,8 +13,13 @@ colors={white=1,orange=2,magenta=4,lightBlue=8,yellow=16,lime=32,pink=64,
 
 mock_now=1000000
 mock_timer=0
+last_refresh_timer=nil
 os.epoch=function(_) return mock_now end
-os.startTimer=function(_) mock_timer=mock_timer+1 return mock_timer end
+os.startTimer=function(delay)
+  mock_timer=mock_timer+1
+  if tonumber(delay)==0.25 then last_refresh_timer=mock_timer end
+  return mock_timer
+end
 os.queueEvent=function(...) end
 
 saved_state={}
@@ -25,7 +30,7 @@ mock_machine={
   theater_transport_monitor="left",
   theater_control_monitor="right",
   theater_booth_speaker="bottom",
-  theater_video_fps=12,theater_video_cols=144,theater_video_rows=54,
+  theater_video_fps=20,theater_video_cols=0,theater_video_rows=0,
 }
 mock_config={
   machine=function() return mock_machine end,
@@ -48,20 +53,53 @@ mock_layout={
 
 textutils={}
 function textutils.unserializeJSON(raw)
-  if raw=="CATALOG" then return {movies={}} end
+  if raw=="CATALOG" then
+    return {movies={{
+      id="movie1",title="Test Feature",duration=120,
+      audio_url="/v1/movies/movie1/audio.pcm",
+      video_url="/v1/movies/movie1/video.blit",
+    }}}
+  end
   return {}
 end
 
+http_requests={}
 http={}
 function http.get(url,headers,binary)
-  if tostring(url):find("/catalog",1,true) then
+  url=tostring(url)
+  http_requests[#http_requests+1]=url
+  if url:find("/catalog",1,true) then
     return {
       getResponseCode=function() return 200 end,
       readAll=function() return "CATALOG" end,
       close=function() end,
     }
   end
-  return nil,"unexpected URL in theater runtime test"
+  if url:find("/audio.pcm",1,true) then
+    local sent=false
+    return {
+      getResponseCode=function() return 200 end,
+      read=function(n)
+        if sent then return nil end
+        sent=true
+        return string.rep(string.char(0),math.min(1024,tonumber(n) or 1024))
+      end,
+      close=function() end,
+    }
+  end
+  if url:find("/video.blit",1,true) then
+    local sent=false
+    return {
+      getResponseCode=function() return 200 end,
+      read=function(n)
+        if sent then return nil end
+        sent=true
+        return string.rep(" ",tonumber(n) or 1)
+      end,
+      close=function() end,
+    }
+  end
+  return nil,"unexpected URL in theater runtime test: "..url
 end
 
 relay_state={}
@@ -131,13 +169,42 @@ function dofile(path)
   return fn()
 end
 
+processes={}
+next_pid=100
+child_order={}
+
+local process_api={}
+function process_api.get(pid) return processes[pid] end
+function process_api.create(spec)
+  next_pid=next_pid+1
+  local p={
+    pid=next_pid,ppid=spec.ppid,name=spec.name,
+    uid=spec.uid,gid=spec.gid,groups=spec.groups,cwd=spec.cwd,
+    capabilities=spec.capabilities,argv=spec.argv,
+    state="created",cpu_resumes=0,
+  }
+  processes[p.pid]=p
+  child_order[#child_order+1]=p.pid
+  return p
+end
+function process_api.exit(p,code,state)
+  p.state=state or "exited";p.exit_code=code or 0
+end
+
+local scheduler_api={}
+function scheduler_api:add(p,fn)
+  p.coroutine=coroutine.create(fn)
+  p.state="runnable"
+  return p
+end
+
 ctx={
   process={pid=50,uid=0,gid=0,groups={},cwd="/",capabilities={}},
   unit={},
   kernel={
     log={write=function(...) end},
-    process={get=function(_) return nil end,exit=function(...) end,create=function(_) return nil,"not used" end},
-    scheduler={add=function(...) end},
+    process=process_api,
+    scheduler=scheduler_api,
   },
 }
 
@@ -155,10 +222,42 @@ function drive(ev,a,b,c)
   return kind,value
 end
 
+function run_children_once()
+  for _,pid in ipairs(child_order) do
+    local p=processes[pid]
+    if p and p.coroutine and p.state~="exited" and p.state~="killed" and p.state~="crashed" then
+      if p.state=="sleeping" and (p.wake_at or math.huge)<=mock_now then p.state="runnable" end
+      if p.state=="runnable" then
+        p.cpu_resumes=p.cpu_resumes+1
+        local ok,req,arg=coroutine.resume(p.coroutine)
+        assert(ok,tostring(req))
+        if coroutine.status(p.coroutine)=="dead" then
+          p.state="exited";p.exit_code=tonumber(req) or 0
+        elseif req=="sleep" then
+          p.state="sleeping";p.wake_at=tonumber(arg) or mock_now
+        elseif req=="wait_event" then
+          p.state="waiting";p.event_filter=arg
+        else
+          p.state="runnable"
+        end
+      end
+    end
+  end
+end
+
 function count_lights()
   local n=0
   for _,v in pairs(relay_state) do if v then n=n+1 end end
   return n
+end
+
+function assert_lit_exact(expected,label)
+  local wanted={}
+  for _,id in ipairs(expected) do wanted[id]=true end
+  for id,v in pairs(relay_state) do
+    assert(v==(wanted[id]==true),
+      ("%s relay %d expected %s got %s"):format(label,id,tostring(wanted[id]==true),tostring(v)))
+  end
 end
 
 function settle_brightness(target)
@@ -185,6 +284,18 @@ assert(saved_state.scene=="feature")
 assert(saved_state.lighting_transition==true)
 settle_brightness(9)
 assert(count_lights()==5,("feature fixture count %d"):format(count_lights()))
+assert_lit_exact({124,119,128,82,118},"feature")
+
+kind=drive("cclua_theater_command","scene",{scene="trailers"})
+assert(kind=="wait_event")
+assert(saved_state.scene=="trailers")
+assert(saved_state.lighting_transition==true)
+settle_brightness(30)
+assert(count_lights()==17,("trailers fixture count %d"):format(count_lights()))
+assert_lit_exact({
+  124,119,128,82,118,120,127,81,117,
+  80,115,79,116,78,114,77,113
+},"trailers")
 
 kind=drive("cclua_theater_command","scene",{scene="preshow"})
 assert(kind=="wait_event")
@@ -198,13 +309,47 @@ assert(kind=="wait_event")
 assert(saved_state.scene=="custom")
 assert(saved_state.lighting_transition==true)
 settle_brightness(50)
-assert(count_lights()==28,("50 percent fixture count %d"):format(count_lights()))
+assert(count_lights()==27,("50 percent fixture count %d"):format(count_lights()))
+
+-- Playback workers must synchronize through their shared session state without
+-- depending on custom queueEvent delivery. Maximum-quality mode should use the
+-- entire 167x55 monitor at 20 FPS.
+kind=drive("cclua_theater_command","play",{id="movie1"})
+assert(kind=="wait_event")
+assert(saved_state.state=="BUFFERING")
+assert(#child_order==2,"expected audio and video workers")
+run_children_once()
+assert(processes[child_order[1]].state=="sleeping")
+assert(processes[child_order[2]].state=="sleeping")
+assert(last_refresh_timer~=nil)
+kind=drive("timer",last_refresh_timer)
+assert(kind=="wait_event")
+assert(saved_state.state=="PLAYING","playback did not leave BUFFERING")
+assert(saved_state.streams.audio.ready==true)
+assert(saved_state.streams.video.ready==true)
+assert(saved_state.streams.video.cols==167)
+assert(saved_state.streams.video.rows==55)
+
+local sawAudio,sawVideo=false,false
+for _,url in ipairs(http_requests) do
+  if url:find("/audio.pcm",1,true) then sawAudio=true end
+  if url:find("/video.blit",1,true) then
+    sawVideo=true
+    assert(url:find("cols=167",1,true))
+    assert(url:find("rows=55",1,true))
+    assert(url:find("fps=20.000",1,true))
+  end
+end
+assert(sawAudio and sawVideo,"audio/video bridge requests were not issued")
 
 print("THEATER_RUNTIME_OK")
 print("MONITORS_3_OF_3_PASS")
 print("SPEAKERS_22_OF_22_PASS")
 print("RELAYS_55_OF_55_PASS")
-print("FEATURE_5_FIXTURES_PASS")
+print("FEATURE_5_GUIDE_FIXTURES_PASS")
+print("TRAILERS_17_SYMMETRIC_FIXTURES_PASS")
 print("PRESHOW_33_FIXTURES_PASS")
-print("DIMMER_50_PERCENT_28_FIXTURES_PASS")
+print("DIMMER_50_PERCENT_27_SYMMETRIC_FIXTURES_PASS")
+print("PLAYBACK_SHARED_SYNC_PASS")
+print("FULL_WALL_167X55_20FPS_REQUEST_PASS")
 ''')

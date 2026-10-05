@@ -10,9 +10,9 @@ return function(ctx)
   local transportName=tostring(machine.theater_transport_monitor or "left")
   local controlName=tostring(machine.theater_control_monitor or "right")
   local boothSpeaker=tostring(machine.theater_booth_speaker or "bottom")
-  local fps=math.max(2,math.min(20,tonumber(machine.theater_video_fps) or 12))
-  local targetCols=math.max(32,math.min(160,tonumber(machine.theater_video_cols) or 144))
-  local targetRows=math.max(12,math.min(60,tonumber(machine.theater_video_rows) or 54))
+  local fps=math.max(2,math.min(20,tonumber(machine.theater_video_fps) or 20))
+  local targetCols=tonumber(machine.theater_video_cols) or 0
+  local targetRows=tonumber(machine.theater_video_rows) or 0
 
   local scenes={
     house={label="HOUSE",level=100},
@@ -43,17 +43,37 @@ return function(ctx)
     end
   end
 
-  -- Stable spatial dither order. Intermediate brightness levels light an
-  -- evenly distributed subset of the 55 binary lamps, avoiding PWM flicker.
-  table.sort(fixtures,function(a,b)
-    local ar=((a.xi-1)*37+(a.zi-1)*23)%59
-    local br=((b.xi-1)*37+(b.zi-1)*23)%59
-    if ar==br then
-      if a.zi==b.zi then return a.xi<b.xi end
-      return a.zi<b.zi
+  -- The theater is a 5 x 11 ceiling grid. Keep a coordinate lookup and
+  -- dim it in symmetric cinema zones instead of pseudo-random spatial dither.
+  -- z-index 1 is nearest the screen, z-index 11 is nearest the booth/rear.
+  local fixtureByGrid={}
+  for _,f in ipairs(fixtures) do fixtureByGrid[f.xi..":"..f.zi]=f end
+
+  local fixtureGroups={}
+  local function group(...)
+    local g={}
+    for _,key in ipairs({...}) do
+      local f=fixtureByGrid[key]
+      if f then g[#g+1]=f end
     end
-    return ar<br
-  end)
+    if #g>0 then fixtureGroups[#fixtureGroups+1]=g end
+  end
+
+  -- Five low-level guide fixtures: rear center plus two mirrored edge pairs.
+  group("3:11")
+  group("1:11","5:11")
+  group("1:9","5:9")
+
+  -- Complete the outer aisle/perimeter pair-by-pair, rear toward screen.
+  for _,zi in ipairs({10,8,7,6,5,4,3,2,1}) do
+    group("1:"..zi,"5:"..zi)
+  end
+
+  -- Add the inner mirrored columns from rear toward the screen.
+  for zi=11,1,-1 do group("2:"..zi,"4:"..zi) end
+
+  -- Fill the remaining centerline last, rear toward the screen.
+  for zi=10,1,-1 do group("3:"..zi) end
 
   local state=config.read_json(STATE_PATH,{}) or {}
   state.schema=2
@@ -210,9 +230,34 @@ return function(ctx)
 
   local function target_fixture_set(level)
     level=clamp(level,0,100)
-    local count=math.floor((#fixtures*level/100)+0.5)
+    local target=#fixtures*level/100
+    local cumulative=0
+    local bestGroups=0
+    local bestDiff=math.abs(target)
+
+    -- Only stop at complete symmetric group boundaries. This means a custom
+    -- slider may land one fixture above/below its mathematical target, but a
+    -- mirrored pair is never split just to hit an exact integer count.
+    for i,g in ipairs(fixtureGroups) do
+      cumulative=cumulative+#g
+      local diff=math.abs(cumulative-target)
+      if diff<=bestDiff then
+        bestDiff=diff
+        bestGroups=i
+      end
+    end
+
+    if level>=100 then bestGroups=#fixtureGroups end
+    if level<=0 then bestGroups=0 end
+
     local wanted={}
-    for i=1,count do wanted[fixtures[i].id]=true end
+    local count=0
+    for i=1,bestGroups do
+      for _,f in ipairs(fixtureGroups[i]) do
+        wanted[f.id]=true
+        count=count+1
+      end
+    end
     return wanted,count
   end
 
@@ -529,15 +574,29 @@ return function(ctx)
   local function wait_sync(s,kind)
     if not s.active then return false end
     s[kind.."_ready"]=true
-    if os.queueEvent then os.queueEvent("cclua_theater_stream_ready",s.token,kind) end
-    while s.active and not s.go do
-      local ev,token=coroutine.yield("wait_event",{"cclua_theater_sync","terminate"})
-      if ev=="terminate" then return false end
-      if ev=="cclua_theater_sync" and token==s.token then break end
+    s[kind.."_stage"]="ready"
+    s[kind.."_ready_at"]=now_ms()
+
+    -- The audio/video workers share the same session table. Use that as the
+    -- synchronization barrier instead of depending on custom queued events,
+    -- which may be consumed by another coroutine while native HTTP APIs yield.
+    local waitStarted=now_ms()
+    while s.active and not (s.audio_ready and s.video_ready) do
+      if now_ms()-waitStarted>15000 then
+        error(kind.." stream sync timed out waiting for peer",0)
+      end
+      coroutine.yield("sleep",now_ms()+25)
     end
     if not s.active then return false end
-    local target=tonumber(s.start_epoch) or now_ms()
-    if now_ms()<target then coroutine.yield("sleep",target) end
+
+    if not s.start_epoch then
+      s.start_epoch=now_ms()+250
+      s.go=true
+    end
+    while s.active and now_ms()<(s.start_epoch or 0) do
+      coroutine.yield("sleep",math.min(s.start_epoch,now_ms()+25))
+    end
+    s[kind.."_stage"]="playing"
     return s.active
   end
 
@@ -557,6 +616,7 @@ return function(ctx)
 
     ctx.kernel.scheduler:add(proc,function()
       local ok,runErr=pcall(function()
+        s.audio_stage="connecting"
         local url=ORIGIN..tostring(movie.audio_url or "")..
           "?start="..("%.3f"):format(s.start_position or 0)
         local h,httpErr=http.get(url,{
@@ -611,9 +671,12 @@ return function(ctx)
     local mon=wrap_monitor(mainName)
     if not mon then return nil,"main theater monitor missing" end
     local mw,mh=mon.getSize()
-    local rows=math.min(targetRows,mh,math.floor(mw*3/8))
-    local cols=math.min(targetCols,mw,math.floor(rows*8/3))
-    rows=math.floor(cols*3/8)
+    -- Maximum quality mode uses every logical cell exposed by the wall. FFmpeg
+    -- preserves the source aspect ratio and letterboxes inside this canvas.
+    local cols=(targetCols and targetCols>0) and math.min(targetCols,mw) or mw
+    local rows=(targetRows and targetRows>0) and math.min(targetRows,mh) or mh
+    cols=math.max(1,math.floor(cols))
+    rows=math.max(1,math.floor(rows))
     if cols<32 or rows<12 then return nil,"main monitor is too small" end
     s.video_cols=cols;s.video_rows=rows
 
@@ -629,6 +692,7 @@ return function(ctx)
 
     ctx.kernel.scheduler:add(proc,function()
       local ok,runErr=pcall(function()
+        s.video_stage="connecting"
         local url=ORIGIN..tostring(movie.video_url or "")..
           ("?start=%.3f&cols=%d&rows=%d&fps=%.3f"):format(
             s.start_position or 0,cols,rows,fps)
@@ -875,10 +939,28 @@ return function(ctx)
       step_light_animation()
 
     elseif ev=="timer" and a==refreshTimer then
-      if session and session.active and session.go then
-        state.position=current_position()
-        state.dropped_frames=session.dropped_frames or 0
-        if state.duration and state.position>state.duration then state.position=state.duration end
+      if session and session.active then
+        local ap=session.audio_pid and ctx.kernel.process.get(session.audio_pid) or nil
+        local vp=session.video_pid and ctx.kernel.process.get(session.video_pid) or nil
+        state.streams={
+          audio={
+            pid=session.audio_pid,state=ap and ap.state or "missing",
+            stage=session.audio_stage or "spawned",ready=session.audio_ready==true,
+          },
+          video={
+            pid=session.video_pid,state=vp and vp.state or "missing",
+            stage=session.video_stage or "spawned",ready=session.video_ready==true,
+            cols=session.video_cols,rows=session.video_rows,
+          },
+        }
+        if session.go then
+          if state.state=="BUFFERING" then state.state="PLAYING" end
+          state.position=current_position()
+          state.dropped_frames=session.dropped_frames or 0
+          if state.duration and state.position>state.duration then state.position=state.duration end
+        end
+      else
+        state.streams=nil
       end
       hardware_snapshot()
       save_state()

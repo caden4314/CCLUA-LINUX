@@ -40,6 +40,13 @@ PALETTE = np.array([
     (127,102,76),(87,166,78),(204,76,76),(17,17,17),
 ], dtype=np.int32)
 HEX = b"0123456789abcdef"
+HEX_ARRAY = np.frombuffer(HEX, dtype=np.uint8)
+PALETTE_IDS = np.arange(16, dtype=np.uint8)
+BIT_WEIGHTS = np.array([1,2,4,8,16], dtype=np.uint8)
+PALETTE_DIST = np.sum(
+    (PALETTE[:, None, :] - PALETTE[None, :, :]) ** 2,
+    axis=2,
+).astype(np.int32)
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -150,37 +157,66 @@ def encode_texel(values: list[int]) -> tuple[int,int,int]:
         fg, bg = b, a
     return char, fg, bg
 def encode_frame(rgb: bytes, cols: int, rows: int) -> bytes:
+    """Encode one RGB frame into CC:Tweaked 2x3 blit cells.
+
+    This is fully vectorized across the monitor grid. The previous Python
+    per-cell loop could only just sustain ~20 FPS at the full theater wall.
+    """
     width, height = cols*2, rows*3
     arr = np.frombuffer(rgb, dtype=np.uint8)
     if arr.size != width*height*3:
         raise ValueError(f"bad raw frame size {arr.size}, expected {width*height*3}")
     arr = arr.reshape(height, width, 3).astype(np.int32)
 
-    # Nearest fixed CC palette colour for each physical subpixel.
+    # Quantize each physical subpixel to the nearest fixed CC palette colour.
     diff = arr[:, :, None, :] - PALETTE[None, None, :, :]
     idx = np.argmin(np.sum(diff*diff, axis=3), axis=2).astype(np.uint8)
 
-    frame = bytearray()
-    for cy in range(rows):
-        chars = bytearray(cols)
-        fgs = bytearray(cols)
-        bgs = bytearray(cols)
-        py = cy*3
-        for cx in range(cols):
-            px = cx*2
-            vals = [
-                int(idx[py,px]), int(idx[py,px+1]),
-                int(idx[py+1,px]), int(idx[py+1,px+1]),
-                int(idx[py+2,px]), int(idx[py+2,px+1]),
-            ]
-            ch, fg, bg = encode_texel(vals)
-            chars[cx] = ch
-            fgs[cx] = HEX[fg]
-            bgs[cx] = HEX[bg]
-        frame.extend(chars)
-        frame.extend(fgs)
-        frame.extend(bgs)
-    return bytes(frame)
+    # Gather each 2x3 cell as six palette indices in pixelbox order:
+    # top-left, top-right, middle-left, middle-right, bottom-left, bottom-right.
+    cells = idx.reshape(rows, 3, cols, 2).transpose(0, 2, 1, 3).reshape(rows, cols, 6)
+
+    # Pick the two most frequent colours per cell. Ties prefer the colour which
+    # appeared earliest in the six source pixels, matching the old encoder.
+    counts = np.sum(cells[:, :, :, None] == PALETTE_IDS[None, None, None, :], axis=2)
+    first = np.full((rows, cols, 16), 7, dtype=np.int16)
+    for pos in range(6):
+        mask = cells[:, :, pos][:, :, None] == PALETTE_IDS[None, None, :]
+        first = np.minimum(first, np.where(mask, pos, 7))
+    score = counts.astype(np.int16) * 8 + (7 - first)
+    a = np.argmax(score, axis=2).astype(np.uint8)
+
+    score_b = score.copy()
+    np.put_along_axis(score_b, a[:, :, None], -1, axis=2)
+    b = np.argmax(score_b, axis=2).astype(np.uint8)
+    unique = np.sum(counts > 0, axis=2)
+    b = np.where(unique > 1, b, a).astype(np.uint8)
+
+    # Any third colour in a cell is assigned to whichever of the chosen pair is
+    # perceptually nearer in the CC palette.
+    aa = np.broadcast_to(a[:, :, None], cells.shape)
+    bb = np.broadcast_to(b[:, :, None], cells.shape)
+    da = PALETTE_DIST[cells, aa]
+    db = PALETTE_DIST[cells, bb]
+    bits = da <= db
+
+    sixth = bits[:, :, 5]
+    char = 128 + np.sum(
+        (bits[:, :, :5] != sixth[:, :, None]).astype(np.uint8)
+        * BIT_WEIGHTS[None, None, :],
+        axis=2,
+    )
+    same = a == b
+    char = np.where(same, 32, char).astype(np.uint8)
+
+    fg = np.where(sixth, b, a).astype(np.uint8)
+    bg = np.where(sixth, a, b).astype(np.uint8)
+
+    out = np.empty((rows, cols*3), dtype=np.uint8)
+    out[:, :cols] = char
+    out[:, cols:cols*2] = HEX_ARRAY[fg]
+    out[:, cols*2:] = HEX_ARRAY[bg]
+    return out.tobytes()
 
 @dataclass
 class BridgeConfig:
@@ -247,7 +283,7 @@ class Handler(BaseHTTPRequestHandler):
                 "started_utc": self.bridge.started,
                 "library": str(self.bridge.cfg.library),
                 "catalog_count": len(movies),
-                "video": {"format":"cc-blit-2x3","default_cols":144,"default_rows":54,"default_fps":12},
+                "video": {"format":"cc-blit-2x3","default_cols":167,"default_rows":55,"default_fps":20},
                 "audio": {"format":"pcm_s8","sample_rate":48000,"channels":1},
             })
             return
@@ -275,9 +311,11 @@ class Handler(BaseHTTPRequestHandler):
             self.stream_audio(source, start)
         else:
             try:
-                cols = max(16,min(160,int((q.get("cols") or ["144"])[0])))
-                rows = max(9,min(60,int((q.get("rows") or ["54"])[0])))
-                fps = max(2,min(20,float((q.get("fps") or ["12"])[0])))
+                # Leave enough headroom for current 167x55 theater walls and
+                # 16x9 high-density CCPerf walls (roughly 167x62 at scale 2).
+                cols = max(16,min(256,int((q.get("cols") or ["167"])[0])))
+                rows = max(9,min(128,int((q.get("rows") or ["55"])[0])))
+                fps = max(2,min(20,float((q.get("fps") or ["20"])[0])))
             except Exception:
                 self.json({"ok":False,"error":"invalid video geometry"},400)
                 return
