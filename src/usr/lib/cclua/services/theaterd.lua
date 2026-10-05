@@ -13,6 +13,8 @@ return function(ctx)
   local fps=math.max(2,math.min(20,tonumber(machine.theater_video_fps) or 20))
   local targetCols=tonumber(machine.theater_video_cols) or 0
   local targetRows=tonumber(machine.theater_video_rows) or 0
+  local segmentSeconds=math.max(1,math.min(4,tonumber(machine.theater_segment_seconds) or 2))
+  local segmentPrefetch=math.max(1,math.min(3,tonumber(machine.theater_segment_prefetch) or 2))
 
   local scenes={
     house={label="HOUSE",level=100},
@@ -961,6 +963,293 @@ return function(ctx)
     end)
     return true
   end
+  local function segment_header(headers,name)
+    local wanted=tostring(name):lower()
+    for k,v in pairs(headers or {}) do
+      if tostring(k):lower()==wanted then return tostring(v) end
+    end
+    return nil
+  end
+
+  local function request_segment(s,index)
+    if not s or not s.active then return nil,"session stopped" end
+    index=math.max(0,math.floor(tonumber(index) or 0))
+    if s.segments[index] or s.segment_requested[index] then return true end
+    if s.segment_inflight then return false,"segment request already in flight" end
+
+    local start=(s.start_position or 0)+index*s.segment_seconds
+    local duration=tonumber(s.movie and s.movie.duration)
+    if duration and start>=duration-0.01 then
+      s.segment_eof=index
+      return false,"end of movie"
+    end
+
+    local url=ORIGIN.."/v1/movies/"..tostring(s.movie.id).."/av.segment"..
+      ("?start=%.3f&seconds=%.3f&cols=%d&rows=%d&fps=%.3f&session=%d&seq=%d"):format(
+        start,s.segment_seconds,s.video_cols,s.video_rows,fps,s.token,index)
+
+    local ok,err=http.request{
+      url=url,
+      method="GET",
+      headers={
+        ["Accept"]="application/octet-stream",
+        ["User-Agent"]="CCLUA-Theater/0.3",
+      },
+      binary=true,
+      timeout=20,
+    }
+    if not ok then
+      return nil,tostring(err or "segment request failed")
+    end
+
+    s.segment_requested[index]=true
+    s.segment_inflight={url=url,index=index,start=start,requested_at=now_ms()}
+    s.av_stage=index==0 and "buffering first segment" or ("prefetch segment "..index)
+    return true
+  end
+
+  local function ensure_segment_prefetch(s)
+    if not s or not s.active or s.segment_inflight then return end
+    local first=math.max(0,tonumber(s.play_index) or 0)
+    local limit=first+segmentPrefetch
+    for index=first,limit do
+      if not s.segments[index] and not s.segment_requested[index]
+        and not s.segment_consumed[index]
+        and (not s.segment_eof or index<s.segment_eof) then
+        local ok,err=request_segment(s,index)
+        if not ok and err~="end of movie" and err~="segment request already in flight" then
+          s.av_last_error=err
+        end
+        return
+      end
+    end
+  end
+
+  local function accept_segment_response(s,url,h)
+    local req=s and s.segment_inflight
+    if not req or req.url~=url then
+      if h and h.close then pcall(h.close) end
+      return false
+    end
+    s.segment_inflight=nil
+
+    local code=h.getResponseCode and h.getResponseCode() or 200
+    local headers=h.getResponseHeaders and h.getResponseHeaders() or {}
+    if tonumber(code)~=200 then
+      if h.close then pcall(h.close) end
+      s.segment_requested[req.index]=nil
+      s.segment_retries[req.index]=(s.segment_retries[req.index] or 0)+1
+      if s.segment_retries[req.index]<=3 then
+        ensure_segment_prefetch(s)
+      else
+        if os.queueEvent then
+          os.queueEvent("cclua_theater_stream_error",s.token,"av",
+            "segment HTTP "..tostring(code))
+        end
+      end
+      return false
+    end
+
+    local format=segment_header(headers,"X-CCLUA-Format")
+    local cols=tonumber(segment_header(headers,"X-CCLUA-Cols")) or s.video_cols
+    local rows=tonumber(segment_header(headers,"X-CCLUA-Rows")) or s.video_rows
+    local gotFps=tonumber(segment_header(headers,"X-CCLUA-FPS")) or fps
+    local frameBytes=tonumber(segment_header(headers,"X-CCLUA-Frame-Bytes"))
+      or (s.video_cols*s.video_rows*3)
+    local audioBytes=tonumber(segment_header(headers,"X-CCLUA-Audio-Bytes"))
+      or math.floor(48000/fps+0.5)
+    local sampleRate=tonumber(segment_header(headers,"X-CCLUA-Sample-Rate")) or 48000
+    local packets=tonumber(segment_header(headers,"X-CCLUA-Packets")) or 0
+    local raw=h.readAll() or ""
+    if h.close then pcall(h.close) end
+
+    local packetBytes=frameBytes+audioBytes
+    if format~="av-segment-v1" then
+      error("unsupported theater segment format: "..tostring(format),0)
+    end
+    if cols~=s.video_cols or rows~=s.video_rows then
+      error(("segment geometry mismatch: bridge=%dx%d client=%dx%d"):format(
+        cols,rows,s.video_cols,s.video_rows),0)
+    end
+    if math.abs(gotFps-fps)>0.01 or sampleRate~=48000 then
+      error("segment timing geometry mismatch",0)
+    end
+    if frameBytes~=s.video_cols*s.video_rows*3 or audioBytes<1 then
+      error("segment packet geometry mismatch",0)
+    end
+    if packets<1 then
+      error("empty theater segment",0)
+    end
+    if #raw~=packets*packetBytes then
+      error(("segment length mismatch: got %d expected %d"):format(
+        #raw,packets*packetBytes),0)
+    end
+
+    s.segment_requested[req.index]=nil
+    s.segment_retries[req.index]=nil
+    s.segments[req.index]={
+      raw=raw,index=req.index,start=req.start,
+      packets=packets,frame_bytes=frameBytes,audio_bytes=audioBytes,
+      packet_bytes=packetBytes,duration=packets/gotFps,
+      received_at=now_ms(),request_ms=now_ms()-(req.requested_at or now_ms()),
+    }
+    s.audio_bytes=audioBytes
+    s.av_ready=true
+    s.av_stage=req.index==0 and "ready" or ("buffered segment "..req.index)
+    ensure_segment_prefetch(s)
+    return true
+  end
+
+  local function fail_segment_response(s,url,err,h)
+    if h and h.close then pcall(h.close) end
+    local req=s and s.segment_inflight
+    if not req or req.url~=url then return false end
+    s.segment_inflight=nil
+    s.segment_requested[req.index]=nil
+    s.segment_retries[req.index]=(s.segment_retries[req.index] or 0)+1
+    s.av_last_error=tostring(err or "segment request failed")
+    if s.segment_retries[req.index]<=3 then
+      ensure_segment_prefetch(s)
+    elseif os.queueEvent then
+      os.queueEvent("cclua_theater_stream_error",s.token,"av",s.av_last_error)
+    end
+    return true
+  end
+
+  local function spawn_segment_player(s,movie)
+    local mon=wrap_monitor(mainName)
+    if not mon then return nil,"main theater monitor missing" end
+    local speakers=room_speakers()
+    if #speakers==0 then return nil,"no theater speakers present" end
+
+    local mw,mh=mon.getSize()
+    local cols=(targetCols and targetCols>0) and math.min(targetCols,mw) or mw
+    local rows=(targetRows and targetRows>0) and math.min(targetRows,mh) or mh
+    cols=math.max(1,math.floor(cols))
+    rows=math.max(1,math.floor(rows))
+    if cols<32 or rows<12 then return nil,"main monitor is too small" end
+    s.video_cols=cols
+    s.video_rows=rows
+
+    local parent=ctx.process
+    local proc,err=ctx.kernel.process.create{
+      ppid=parent.pid,name="cclua-theater-segment-player",
+      uid=parent.uid,gid=parent.gid,groups=parent.groups,
+      cwd=parent.cwd,capabilities=parent.capabilities,
+      argv={"theater-segment-player",tostring(movie.id)},
+    }
+    if not proc then return nil,err end
+    s.av_pid=proc.pid
+
+    ctx.kernel.scheduler:add(proc,function()
+      local ok,runErr=pcall(function()
+        mon.setBackgroundColor(colors.black)
+        mon.setTextColor(colors.white)
+        mon.clear()
+        local ox=math.floor((mw-cols)/2)+1
+        local oy=math.floor((mh-rows)/2)+1
+
+        while s.active do
+          local index=s.play_index or 0
+          local seg=s.segments[index]
+          if not seg then
+            if s.segment_eof and index>=s.segment_eof then break end
+            s.av_stage=index==0 and "buffering first segment"
+              or ("waiting segment "..index)
+            coroutine.yield("sleep",now_ms()+15)
+          else
+            s.segments[index]=nil
+            s.segment_consumed[index]=true
+
+            local audioParts={}
+            local offset=1
+            for _=1,seg.packets do
+              offset=offset+seg.frame_bytes
+              audioParts[#audioParts+1]=seg.raw:sub(offset,offset+seg.audio_bytes-1)
+              offset=offset+seg.audio_bytes
+            end
+            local audio=pcm_decode(table.concat(audioParts))
+
+            if not s.go then
+              s.start_epoch=now_ms()+120
+              s.go=true
+              state.state="PLAYING"
+              state.position=s.start_position or 0
+              save_state()
+            end
+
+            local segmentTarget=(s.start_epoch or now_ms())+
+              ((seg.start-(s.start_position or 0))*1000)
+            if now_ms()<segmentTarget then
+              coroutine.yield("sleep",math.floor(segmentTarget))
+            end
+
+            local pending={}
+            for _,sp in ipairs(speakers) do pending[#pending+1]=sp end
+            while s.active and #pending>0 do
+              for i=#pending,1,-1 do
+                local sp=pending[i]
+                local okPlay,accepted=pcall(sp.obj.playAudio,audio,s.volume)
+                if not okPlay then
+                  ctx.kernel.log.write("warning","theaterd","speaker playback failed",
+                    {speaker=sp.name,error=tostring(accepted)},proc.pid)
+                  table.remove(pending,i)
+                elseif accepted then
+                  table.remove(pending,i)
+                end
+              end
+              if #pending>0 then
+                local ev=coroutine.yield("wait_event",{"speaker_audio_empty","terminate"})
+                if ev=="terminate" then return 0 end
+              end
+            end
+
+            local packetOffset=1
+            for packet=0,seg.packets-1 do
+              if not s.active then break end
+              local target=segmentTarget+(packet/fps)*1000
+              if now_ms()<target then coroutine.yield("sleep",math.floor(target)) end
+              local late=now_ms()-target
+
+              if late<120 then
+                local video=seg.raw:sub(packetOffset,packetOffset+seg.frame_bytes-1)
+                local voff=1
+                for row=0,rows-1 do
+                  local chars=video:sub(voff,voff+cols-1);voff=voff+cols
+                  local fg=video:sub(voff,voff+cols-1);voff=voff+cols
+                  local bg=video:sub(voff,voff+cols-1);voff=voff+cols
+                  mon.setCursorPos(ox,oy+row)
+                  mon.blit(chars,fg,bg)
+                end
+              else
+                s.dropped_frames=(s.dropped_frames or 0)+1
+              end
+              packetOffset=packetOffset+seg.packet_bytes
+            end
+
+            s.play_index=index+1
+            s.av_stage="playing"
+            if os.queueEvent then os.queueEvent("cclua_theater_prefetch",s.token) end
+          end
+        end
+      end)
+
+      if not ok then
+        ctx.kernel.log.write("error","theaterd","segmented A/V playback failed",
+          {error=tostring(runErr)},proc.pid)
+        if os.queueEvent then
+          os.queueEvent("cclua_theater_stream_error",s.token,"av",tostring(runErr))
+        end
+        return 1
+      end
+      if s.active and os.queueEvent then
+        os.queueEvent("cclua_theater_stream_end",s.token,"av")
+      end
+      return 0
+    end)
+    return true
+  end
+
   local function start_movie(movie,position)
     if not movie then return nil,"movie metadata required" end
     stop_session(false)
@@ -971,6 +1260,14 @@ return function(ctx)
       volume=state.volume,
       movie=movie,
       dropped_frames=0,
+      segment_seconds=segmentSeconds,
+      play_index=0,
+      segments={},
+      segment_requested={},
+      segment_consumed={},
+      segment_retries={},
+      segment_inflight=nil,
+      segment_eof=nil,
     }
     session=s
     state.movie_id=movie.id
@@ -981,11 +1278,19 @@ return function(ctx)
     state.error=nil
     lastRenderKey.main=nil
 
-    local avok,averr=spawn_av(s,movie)
+    local avok,averr=spawn_segment_player(s,movie)
     if not avok then
       stop_session(false)
       state.state="ERROR"
       state.error=tostring(averr)
+      save_state();render_all()
+      return nil,state.error
+    end
+    local reqok,reqerr=request_segment(s,0)
+    if not reqok then
+      stop_session(false)
+      state.state="ERROR"
+      state.error=tostring(reqerr or "could not start theater segment")
       save_state();render_all()
       return nil,state.error
     end
@@ -1142,6 +1447,7 @@ return function(ctx)
     local ev,a,b,c=coroutine.yield("wait_event",{
       "timer","cclua_theater_command","cclua_theater_stream_ready",
       "cclua_theater_stream_end","cclua_theater_stream_error",
+      "cclua_theater_prefetch","http_success","http_failure",
       "monitor_touch","monitor_resize","peripheral","peripheral_detach","terminate"
     })
 
@@ -1156,13 +1462,19 @@ return function(ctx)
     elseif ev=="timer" and a==refreshTimer then
       if session and session.active then
         local avp=session.av_pid and ctx.kernel.process.get(session.av_pid) or nil
+        local buffered=0
+        for _ in pairs(session.segments or {}) do buffered=buffered+1 end
         state.streams={
           av={
             pid=session.av_pid,state=avp and avp.state or "missing",
             stage=session.av_stage or "spawned",ready=session.av_ready==true,
-            attempt=session.av_attempt,last_error=session.av_last_error,
+            last_error=session.av_last_error,
             cols=session.video_cols,rows=session.video_rows,
             audio_bytes=session.audio_bytes,
+            play_index=session.play_index or 0,
+            buffered_segments=buffered,
+            inflight_index=session.segment_inflight and session.segment_inflight.index or nil,
+            segment_seconds=session.segment_seconds,
           },
         }
         if session.go then
@@ -1188,6 +1500,30 @@ return function(ctx)
       if not ok and err then
         state.error=tostring(err)
         ctx.kernel.log.write("warning","theaterd","command failed",{op=a,error=err},ctx.process.pid)
+      end
+
+    elseif ev=="cclua_theater_prefetch" and session and a==session.token then
+      ensure_segment_prefetch(session)
+
+    elseif ev=="http_success" then
+      local url=tostring(a or "")
+      if session and session.active and session.segment_inflight
+        and session.segment_inflight.url==url then
+        local ok,err=pcall(accept_segment_response,session,url,b)
+        if not ok then
+          ctx.kernel.log.write("error","theaterd","segment response validation failed",
+            {error=tostring(err),url=url},ctx.process.pid)
+          if os.queueEvent then
+            os.queueEvent("cclua_theater_stream_error",session.token,"av",tostring(err))
+          end
+        end
+      end
+
+    elseif ev=="http_failure" then
+      local url=tostring(a or "")
+      if session and session.active and session.segment_inflight
+        and session.segment_inflight.url==url then
+        fail_segment_response(session,url,b,c)
       end
 
     elseif ev=="cclua_theater_stream_ready" and session and a==session.token then

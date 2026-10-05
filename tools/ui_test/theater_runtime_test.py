@@ -64,7 +64,7 @@ function textutils.unserializeJSON(raw)
 end
 
 http_requests={}
-av_connect_failures=1
+pending_http={}
 http={}
 function http.get(url,headers,binary)
   url=tostring(url)
@@ -76,38 +76,42 @@ function http.get(url,headers,binary)
       close=function() end,
     }
   end
-  if url:find("/av.stream",1,true) then
-    if av_connect_failures>0 then
-      av_connect_failures=av_connect_failures-1
-      return nil,"Could not connect"
-    end
-    local reads=0
-    return {
-      getResponseCode=function() return 200 end,
-      getResponseHeaders=function()
-        return {
-          ["X-CCLUA-Format"]="av-blit-pcm-v1",
-          ["X-CCLUA-Cols"]="167",
-          ["X-CCLUA-Rows"]="55",
-          ["X-CCLUA-FPS"]="20.000",
-          ["X-CCLUA-Frame-Bytes"]=tostring(167*55*3),
-          ["X-CCLUA-Audio-Bytes"]="2400",
-          ["X-CCLUA-Sample-Rate"]="48000",
-        }
-      end,
-      read=function(n)
-        reads=reads+1
-        if reads==1 then return string.rep(" ",tonumber(n) or 1) end
-        if reads==2 then return string.rep(string.char(0),tonumber(n) or 1) end
-        return nil
-      end,
-      close=function() end,
-    }
-  end
-  if url:find("/audio.pcm",1,true) or url:find("/video.blit",1,true) then
-    error("split stream endpoint should not be used by normal theater playback")
-  end
-  return nil,"unexpected URL in theater runtime test: "..url
+  error("synchronous media request should not be used: "..url)
+end
+
+function http.request(opts,post,headers,binary)
+  local url
+  if type(opts)=="table" then url=tostring(opts.url or "")
+  else url=tostring(opts or "") end
+  http_requests[#http_requests+1]=url
+  pending_http[url]=true
+  return true
+end
+
+function make_segment_handle(packets)
+  packets=tonumber(packets) or 2
+  local frameBytes=167*55*3
+  local audioBytes=2400
+  local one=string.rep(" ",frameBytes)..string.rep(string.char(0),audioBytes)
+  local raw=string.rep(one,packets)
+  return {
+    getResponseCode=function() return 200 end,
+    getResponseHeaders=function()
+      return {
+        ["Content-Length"]=tostring(#raw),
+        ["X-CCLUA-Format"]="av-segment-v1",
+        ["X-CCLUA-Cols"]="167",
+        ["X-CCLUA-Rows"]="55",
+        ["X-CCLUA-FPS"]="20.000",
+        ["X-CCLUA-Frame-Bytes"]=tostring(frameBytes),
+        ["X-CCLUA-Audio-Bytes"]=tostring(audioBytes),
+        ["X-CCLUA-Sample-Rate"]="48000",
+        ["X-CCLUA-Packets"]=tostring(packets),
+      }
+    end,
+    readAll=function() return raw end,
+    close=function() end,
+  }
 end
 
 relay_state={}
@@ -319,40 +323,73 @@ assert(saved_state.lighting_transition==true)
 settle_brightness(50)
 assert(count_lights()==27,("50 percent fixture count %d"):format(count_lights()))
 
--- Normal playback uses one multiplexed A/V worker. The first mocked
--- connection fails, retry succeeds, and one complete video+audio packet must
--- arrive before the controller leaves BUFFERING.
+-- Playback uses finite two-second A/V segments. Requests are asynchronous:
+-- the first request may fail/retry without blocking theaterd, and the next
+-- segment is prefetched while the current one is playing.
 kind=drive("cclua_theater_command","play",{id="movie1"})
 assert(kind=="wait_event")
 assert(saved_state.state=="BUFFERING")
-assert(#child_order==1,"expected one multiplexed A/V worker")
-run_children_once()
-assert(processes[child_order[1]].state=="sleeping","first A/V retry should back off")
+assert(#child_order==1,"expected one segmented A/V player")
 
-mock_now=mock_now+250
+local function latest_segment_url(seq)
+  local needle="seq="..tostring(seq)
+  for i=#http_requests,1,-1 do
+    local url=http_requests[i]
+    if url:find("/av.segment",1,true) and url:find(needle,1,true) then return url end
+  end
+end
+
+local firstUrl=latest_segment_url(0)
+assert(firstUrl,"segment 0 request missing")
+assert(firstUrl:find("seconds=2.000",1,true))
+assert(firstUrl:find("cols=167",1,true))
+assert(firstUrl:find("rows=55",1,true))
+assert(firstUrl:find("fps=20.000",1,true))
+
 run_children_once()
-assert(processes[child_order[1]].state=="sleeping","A/V worker should prebuffer then wait for start")
+assert(processes[child_order[1]].state=="sleeping","player should wait for first segment")
+
+kind=drive("http_failure",firstUrl,"Could not connect",nil)
+assert(kind=="wait_event")
+local retryUrl=latest_segment_url(0)
+assert(retryUrl==firstUrl,"segment 0 retry URL changed unexpectedly")
+
+kind=drive("http_success",retryUrl,make_segment_handle(4),nil)
+assert(kind=="wait_event")
+local secondUrl=latest_segment_url(1)
+assert(secondUrl,"segment 1 was not prefetched")
+
+mock_now=mock_now+20
+run_children_once()
+assert(processes[child_order[1]].state=="sleeping","player should wait for synchronized start")
+mock_now=mock_now+125
+run_children_once()
+
 assert(last_refresh_timer~=nil)
 kind=drive("timer",last_refresh_timer)
 assert(kind=="wait_event")
-assert(saved_state.state=="PLAYING","multiplexed playback did not leave BUFFERING")
+assert(saved_state.state=="PLAYING","segmented playback did not leave BUFFERING")
 assert(saved_state.streams.av.ready==true)
 assert(saved_state.streams.av.cols==167)
 assert(saved_state.streams.av.rows==55)
 assert(saved_state.streams.av.audio_bytes==2400)
+assert(saved_state.streams.av.inflight_index==1)
 
-local avRequests=0
+kind=drive("http_success",secondUrl,make_segment_handle(4),nil)
+assert(kind=="wait_event")
+kind=drive("timer",last_refresh_timer)
+assert(kind=="wait_event")
+assert(saved_state.streams.av.buffered_segments>=1,
+  "prefetched segment was not retained ahead of playback")
+
+local segmentRequests=0
 for _,url in ipairs(http_requests) do
-  if url:find("/av.stream",1,true) then
-    avRequests=avRequests+1
-    assert(url:find("cols=167",1,true))
-    assert(url:find("rows=55",1,true))
-    assert(url:find("fps=20.000",1,true))
-  end
+  if url:find("/av.segment",1,true) then segmentRequests=segmentRequests+1 end
+  assert(not url:find("/av.stream",1,true),"open-ended A/V stream must not be used")
   assert(not url:find("/audio.pcm",1,true),"normal playback used split audio endpoint")
   assert(not url:find("/video.blit",1,true),"normal playback used split video endpoint")
 end
-assert(avRequests>=2,"multiplexed stream retry did not issue expected requests")
+assert(segmentRequests>=3,"segment retry/prefetch did not issue expected requests")
 
 print("THEATER_RUNTIME_OK")
 print("MONITORS_3_OF_3_PASS")
@@ -362,7 +399,7 @@ print("FEATURE_5_GUIDE_FIXTURES_PASS")
 print("TRAILERS_17_SYMMETRIC_FIXTURES_PASS")
 print("PRESHOW_33_FIXTURES_PASS")
 print("DIMMER_50_PERCENT_27_SYMMETRIC_FIXTURES_PASS")
-print("PLAYBACK_MUX_PREBUFFER_PASS")
-print("AV_CONNECT_RETRY_PASS")
-print("FULL_WALL_167X55_20FPS_MUX_REQUEST_PASS")
+print("ASYNC_SEGMENT_PREBUFFER_PASS")
+print("SEGMENT_RETRY_AND_PREFETCH_PASS")
+print("FULL_WALL_167X55_20FPS_SEGMENT_REQUEST_PASS")
 ''')

@@ -104,6 +104,21 @@ with tempfile.TemporaryDirectory(prefix="cclua-theater-test-") as td:
         packet=r.read(frame_bytes+audio_bytes)
     assert len(packet)==frame_bytes+2400
 
+    segment_url=origin+f"/v1/movies/{item['id']}/av.segment?start=0&seconds=2&cols={cols}&rows={rows}&fps=20"
+    with urllib.request.urlopen(segment_url,timeout=30) as r:
+        assert r.headers.get("X-CCLUA-Format")=="av-segment-v1"
+        assert int(r.headers.get("X-CCLUA-Cols"))==cols
+        assert int(r.headers.get("X-CCLUA-Rows"))==rows
+        assert float(r.headers.get("X-CCLUA-FPS"))==20.0
+        assert int(r.headers.get("X-CCLUA-Frame-Bytes"))==frame_bytes
+        assert int(r.headers.get("X-CCLUA-Audio-Bytes"))==2400
+        packets=int(r.headers.get("X-CCLUA-Packets"))
+        content_length=int(r.headers.get("Content-Length"))
+        body=r.read()
+    assert 39<=packets<=40
+    assert content_length==packets*(frame_bytes+2400)
+    assert len(body)==content_length
+
     server.shutdown();server.server_close();thread.join(timeout=2)
 
 print("THEATER_BRIDGE_OK")
@@ -112,3 +127,4 @@ print("PCM_48K_STREAM_PASS")
 print("BLIT_FULL_WALL_334X165_20FPS_FRAME_PASS")
 print("VECTORIZED_ENCODER_EQUIVALENCE_PASS")
 print("MUX_AV_PACKET_20FPS_PASS")
+print("FINITE_SEGMENT_2S_CONTENT_LENGTH_PASS")

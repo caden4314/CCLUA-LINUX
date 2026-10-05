@@ -265,7 +265,7 @@ class TheaterBridge:
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "CCLUATheater/0.1"
-    protocol_version = "HTTP/1.0"
+    protocol_version = "HTTP/1.1"
 
     @property
     def bridge(self) -> TheaterBridge:
@@ -306,7 +306,7 @@ class Handler(BaseHTTPRequestHandler):
             self.json({"schema":1,"updated_utc":utc_now(),"movies":self.bridge.catalog()})
             return
 
-        m = re.fullmatch(r"/v1/movies/([0-9a-f]{16})/(audio\.pcm|video\.blit|av\.stream)", path)
+        m = re.fullmatch(r"/v1/movies/([0-9a-f]{16})/(audio\.pcm|video\.blit|av\.stream|av\.segment)", path)
         if not m:
             self.json({"ok":False,"error":"not found"},404)
             return
@@ -335,6 +335,13 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if kind == "video.blit":
                 self.stream_video(source,start,cols,rows,fps)
+            elif kind == "av.segment":
+                try:
+                    seconds = max(0.5,min(4.0,float((q.get("seconds") or ["2.0"])[0])))
+                except Exception:
+                    self.json({"ok":False,"error":"invalid segment duration"},400)
+                    return
+                self.send_av_segment(source,start,cols,rows,fps,seconds)
             else:
                 self.stream_av(source,start,cols,rows,fps)
 
@@ -426,6 +433,113 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 proc.kill()
 
+    def send_av_segment(self, source: Path, start: float, cols: int, rows: int, fps: float, seconds: float):
+        """Render one finite A/V segment and return it with Content-Length.
+
+        CC:Tweaked's synchronous http.get waits for the response to complete
+        before yielding a handle, so theater playback uses bounded segments.
+        """
+        started = time.perf_counter()
+        width, height = cols*2, rows*3
+        sample_rate = 48000
+        audio_bytes = max(1, int(round(sample_rate / fps)))
+        raw_frame_bytes = width*height*3
+        encoded_bytes = cols*rows*3
+        packet_target = max(1, int(round(seconds*fps)))
+
+        vf = (
+            f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+            f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black,"
+            f"fps={fps:.3f}"
+        )
+        vcmd = [ffmpeg_exe(),"-hide_banner","-loglevel","error"]
+        acmd = [ffmpeg_exe(),"-hide_banner","-loglevel","error"]
+        if start > 0:
+            vcmd += ["-ss",f"{start:.3f}"]
+            acmd += ["-ss",f"{start:.3f}"]
+        vcmd += [
+            "-i",str(source),"-an","-vf",vf,
+            "-pix_fmt","rgb24","-f","rawvideo","pipe:1"
+        ]
+        acmd += [
+            "-i",str(source),"-vn","-map","0:a:0?",
+            "-ac","1","-ar",str(sample_rate),"-acodec","pcm_s8","-f","s8","pipe:1"
+        ]
+
+        vproc = subprocess.Popen(
+            vcmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL, creationflags=NO_WINDOW
+        )
+        aproc = subprocess.Popen(
+            acmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL, creationflags=NO_WINDOW
+        )
+
+        def read_exact(stream, size: int) -> bytes:
+            buf = bytearray()
+            while len(buf) < size:
+                chunk = stream.read(size-len(buf))
+                if not chunk:
+                    break
+                buf.extend(chunk)
+            return bytes(buf)
+
+        body = bytearray()
+        packets = 0
+        try:
+            assert vproc.stdout is not None
+            assert aproc.stdout is not None
+            for _ in range(packet_target):
+                raw = read_exact(vproc.stdout, raw_frame_bytes)
+                if len(raw) != raw_frame_bytes:
+                    break
+                audio = read_exact(aproc.stdout, audio_bytes)
+                if len(audio) < audio_bytes:
+                    audio += bytes(audio_bytes-len(audio))
+                body.extend(encode_frame(raw,cols,rows))
+                body.extend(audio)
+                packets += 1
+        finally:
+            for proc in (vproc,aproc):
+                if proc.poll() is None:
+                    proc.terminate()
+            for proc in (vproc,aproc):
+                try:
+                    proc.wait(timeout=2)
+                except Exception:
+                    proc.kill()
+
+        if packets == 0:
+            self.json({"ok":False,"error":"segment reached end of movie"},416)
+            return
+
+        render_ms = (time.perf_counter()-started)*1000
+        self.bridge.log_event(
+            "segment_ready", movie=source.name, start=round(start,3),
+            seconds=round(packets/fps,3), packets=packets,
+            cols=cols, rows=rows, fps=round(fps,3),
+            bytes=len(body), render_ms=round(render_ms,1),
+        )
+
+        self.send_response(200)
+        self.send_header("Content-Type","application/octet-stream")
+        self.send_header("Content-Length",str(len(body)))
+        self.send_header("X-CCLUA-Format","av-segment-v1")
+        self.send_header("X-CCLUA-Cols",str(cols))
+        self.send_header("X-CCLUA-Rows",str(rows))
+        self.send_header("X-CCLUA-FPS",f"{fps:.3f}")
+        self.send_header("X-CCLUA-Frame-Bytes",str(encoded_bytes))
+        self.send_header("X-CCLUA-Audio-Bytes",str(audio_bytes))
+        self.send_header("X-CCLUA-Sample-Rate",str(sample_rate))
+        self.send_header("X-CCLUA-Packets",str(packets))
+        self.send_header("X-CCLUA-Start-Seconds",f"{start:.3f}")
+        self.send_header("Cache-Control","no-store")
+        self.send_header("Connection","close")
+        self.end_headers()
+        self.wfile.write(body)
+        self.wfile.flush()
+        self.close_connection = True
+
     def stream_av(self, source: Path, start: float, cols: int, rows: int, fps: float):
         """Stream synchronized CC blit video + signed 8-bit mono PCM.
 
@@ -483,8 +597,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-CCLUA-Frame-Bytes",str(encoded_bytes))
         self.send_header("X-CCLUA-Audio-Bytes",str(audio_bytes))
         self.send_header("X-CCLUA-Sample-Rate",str(sample_rate))
+        self.send_header("Cache-Control","no-store")
         self.send_header("Connection","close")
         self.end_headers()
+        self.wfile.flush()
         self.close_connection = True
 
         def read_exact(stream, size: int) -> bytes:
