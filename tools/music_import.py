@@ -25,6 +25,11 @@ except ImportError:
 
 DEFAULT_WORLD = Path(r"E:\Minecraft\PrismLauncher\instances\CC Tweaked Creative\.minecraft\saves\COMPUTERS2")
 
+# Console applications such as FFmpeg/curl will otherwise flash a transient
+# PowerShell/cmd-style window when launched by pythonw on Windows. Keep all
+# bridge/import helper children detached from the visible desktop.
+NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
+
 def ffmpeg_exe() -> str:
     if imageio_ffmpeg is not None:
         return imageio_ffmpeg.get_ffmpeg_exe()
@@ -59,6 +64,7 @@ def spotify_oembed(url: str) -> dict:
                 text=True,
                 encoding="utf-8",
                 errors="replace",
+                creationflags=NO_WINDOW,
             )
             if proc.returncode == 0:
                 return json.loads(proc.stdout)
@@ -72,6 +78,7 @@ def probe(source: str) -> dict:
         text=True,
         encoding="utf-8",
         errors="replace",
+        creationflags=NO_WINDOW,
     )
     text = proc.stderr or ""
     meta = {}
@@ -96,7 +103,7 @@ def convert(source: str, output: Path) -> None:
         "-f", "dfpwm", str(temp),
     ]
     try:
-        subprocess.run(cmd, check=True)
+        subprocess.run(cmd, check=True, creationflags=NO_WINDOW)
         temp.replace(output)
     finally:
         if temp.exists():

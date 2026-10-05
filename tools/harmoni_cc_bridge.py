@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import Any
 
 # Sibling import: shares the tested FFmpeg/probe helpers.
-from music_import import ffmpeg_exe, probe, slugify
+from music_import import NO_WINDOW, ffmpeg_exe, probe, slugify
 
 DEFAULT_SOURCE = Path(r"C:\Users\Jeff482\Downloads\Harmoni-Windows\music")
 DEFAULT_CACHE = Path(__file__).resolve().parents[1] / ".cache" / "harmoni-bridge"
@@ -154,6 +154,7 @@ def ffmpeg_validate(path: Path) -> tuple[bool, str | None]:
         text=True,
         encoding="utf-8",
         errors="replace",
+        creationflags=NO_WINDOW,
     )
     if proc.returncode == 0:
         return True, None
@@ -175,7 +176,7 @@ def convert_to_dfpwm(source: Path, output: Path) -> None:
         "-f", "dfpwm", str(temp),
     ]
     try:
-        subprocess.run(cmd, check=True)
+        subprocess.run(cmd, check=True, creationflags=NO_WINDOW)
         temp.replace(output)
     finally:
         if temp.exists():
@@ -418,6 +419,7 @@ class HarmoniBridge:
                     stdout=subprocess.PIPE,
                     stderr=subprocess.DEVNULL,
                     stdin=subprocess.DEVNULL,
+                    creationflags=NO_WINDOW,
                 )
                 try:
                     assert proc.stdout is not None
@@ -698,6 +700,7 @@ class HarmoniBridge:
                 text=True,
                 encoding="utf-8",
                 errors="replace",
+                creationflags=NO_WINDOW,
             )
             if check.returncode != 0:
                 raise RuntimeError((check.stderr or "DFPWM validation failed").strip())
