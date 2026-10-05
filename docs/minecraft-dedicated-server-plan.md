@@ -13,8 +13,13 @@ The server should do as much simulation, generation, storage, networking, and LO
 - GPU: GeForce RTX 5070 Ti
 - Minecraft: 1.20.1 Fabric
 - CC:Tweaked: 1.120.2
-- CCLUA CCPerf: 0.3.5 development line
+- CCLUA CCPerf: 0.3.6, including dedicated-server HQ PCM transport
+- Java: Eclipse Temurin OpenJDK 17.0.20.1
 - World: COMPUTERS2
+- Tailscale: 1.102.4, backend running
+- Tailnet IPv4: 100.76.188.26
+- Tailnet IPv6: fd7a:115c:a1e0::6831:bc1b
+- MagicDNS: desktop-1r77lod.tail4ae277.ts.net
 
 This hardware is suitable for the first dedicated-server phase without waiting for the planned AM5 upgrade.
 
@@ -92,6 +97,61 @@ Start conservatively:
 - automatic restart only after clean crash detection, never an unconditional kill loop
 
 Bind on the LAN first. Keep the old singleplayer world untouched as rollback until several sessions pass.
+
+### Phase 1B — private Tailscale transport
+
+Production player access should move to Tailscale rather than public router port forwarding.
+
+Current NEWMAIN tailnet identity:
+- IPv4: `100.76.188.26`
+- IPv6: `fd7a:115c:a1e0::6831:bc1b`
+- MagicDNS: `desktop-1r77lod.tail4ae277.ts.net`
+
+Server networking target:
+- Java Edition TCP port `25565`
+- no router/NAT port-forward for `25565`
+- no Tailscale Funnel
+- prefer `server-ip=100.76.188.26` once LAN-copy validation is complete so the production server binds only to the tailnet address
+- clients use `desktop-1r77lod.tail4ae277.ts.net:25565` or the Tailscale IPv4 address
+- keep the Minecraft query/RCON surfaces disabled unless a later management requirement specifically needs them
+
+Windows Firewall should allow TCP/25565 only for the Tailscale address space and block an accidental public/LAN listener. Treat Tailscale ACL/grants as an additional authorization layer, not a replacement for the host firewall.
+
+Planned production `server.properties` network values:
+
+```properties
+server-ip=100.76.188.26
+server-port=25565
+enable-query=false
+enable-rcon=false
+view-distance=8
+simulation-distance=6
+```
+
+Planned Windows Firewall rule after the copied-world server is validated:
+
+```powershell
+New-NetFirewallRule -DisplayName "CCLUA Minecraft Tailscale" `
+  -Direction Inbound -Action Allow -Protocol TCP `
+  -LocalAddress 100.76.188.26 -LocalPort 25565 `
+  -RemoteAddress 100.64.0.0/10
+```
+
+Verify the Java listener with `Get-NetTCPConnection -LocalPort 25565 -State Listen`; production should show the Tailscale IPv4 address rather than `0.0.0.0`.
+
+Tailnet policy target:
+- give the server a dedicated Minecraft service identity/tag when ready
+- allow only approved players/groups to reach TCP/25565
+- keep Caden Commander, SMB/NAS, RDP, and unrelated NEWMAIN services outside that player rule
+- for players outside the main tailnet, prefer Tailscale machine sharing rather than exposing a public game port
+
+Connection validation:
+1. Verify the joining client resolves MagicDNS.
+2. Run `tailscale ping` between client and NEWMAIN.
+3. Prefer a direct peer-to-peer path for lowest latency.
+4. DERP relay remains functional as fallback; investigate NAT/firewall behavior only if game latency is unacceptable.
+5. Do not open UDP/41641 purely by habit; Tailscale normally needs no inbound firewall port. Consider it only when troubleshooting direct-connect performance.
+
 ### Phase 2 — precompute
 
 Use Chunky to pregenerate the normal play/build area while no users are online. Generate Distant Horizons LOD data server-side if the chosen DH build supports the required server/client path.

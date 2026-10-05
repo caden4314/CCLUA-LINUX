@@ -29,8 +29,12 @@ function M.create(o)
     stdin=o.stdin or (pty and pty.stdin) or nil,
     stdout=o.stdout or (pty and pty.stdout) or nil,
     stderr=o.stderr or (pty and pty.stderr) or nil,
+    fd=o.fd or {},owned_streams=o.owned_streams or {},
     job_id=o.job_id,background=o.background==true,
   }
+  p.fd[0]=p.fd[0] or p.stdin
+  p.fd[1]=p.fd[1] or p.stdout
+  p.fd[2]=p.fd[2] or p.stderr
   bypid[pid]=p
   return p
 end
@@ -74,6 +78,12 @@ function M.exit(p,code,state)
   p.ended_at=(os.epoch and os.epoch("utc") or 0)
   p.event_filter=nil
   p.wake_at=nil
+  if not p.streams_closed then
+    p.streams_closed=true
+    for _,stream in ipairs(p.owned_streams or {}) do
+      if stream and stream.close then pcall(stream.close,stream) end
+    end
+  end
   return true
 end
 

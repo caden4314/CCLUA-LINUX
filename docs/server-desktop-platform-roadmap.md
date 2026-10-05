@@ -39,6 +39,12 @@ provides:
 - explicit cancellation plus optional job deadlines/timeouts
 - PTY inheritance for nested commands launched through the shared exec/shell paths
 - immediate compositor wake-up on PTY output and process exit
+- first-class process descriptors via `fd[0]`, `fd[1]`, and `fd[2]`
+- descriptor syscalls for lookup, duplication, and close
+- cooperative pipe streams with lifecycle wakeups and EOF
+- concurrent shell pipelines plus `<`, `>`, `>>`, `2>`, `2>>`, and `2>&1`
+- stream-backed terminal adapters so existing `print` / `write` programs can participate in pipelines
+- stdin-aware `cat`, `grep`, `head`, `wc`, `sort`, `uniq`, `cut`, `tee`, and `tr`
 
 First interactive ports on this foundation:
 - `top`: live alternate-screen process/service view with refresh and sorting
@@ -46,7 +52,8 @@ First interactive ports on this foundation:
 - `watch`: repeated command execution with inherited PTY output
 
 Remaining Phase 2 work:
-- shell pipelines, redirections, and first-class pipe/file-descriptor objects
+- additional shell grammar: `&&`, `||`, subshells, command substitution, variables/globbing, and ordered POSIX redirection edge cases
+- bounded pipes/backpressure and richer descriptor types beyond the initial stream/file/PTY set
 - user-installed signal handlers and fuller POSIX terminal modes
 - improved nano-style editor and man/help database
 - SSH/SCP/SFTP client sessions

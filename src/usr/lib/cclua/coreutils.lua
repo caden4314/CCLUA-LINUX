@@ -1,4 +1,5 @@
 local M={}
+local stdio=dofile("/usr/lib/cclua/stdio.lua")
 
 local function abspath(ctx,p)
   p=p or ctx.process.cwd
@@ -22,6 +23,11 @@ local function writeall(ctx,p,data,mode)
   h.write(data)
   if h.close then h.close() end
   return true
+end
+
+local function readsource(ctx,p)
+  if not p or p=="-" then return stdio.read_all(ctx) end
+  return readall(ctx,p)
 end
 
 local handlers={}
@@ -86,8 +92,8 @@ function handlers.seq(ctx,args)
 end
 
 function handlers.sort(ctx,args)
-  local p=args[#args];if not p then return 1 end
-  local d,e=readall(ctx,p);if not d then print("sort: "..tostring(e));return 1 end
+  local p=args[#args]
+  local d,e=readsource(ctx,p);if not d then stdio.errorln(ctx,"sort: "..tostring(e));return 1 end
   local lines={}for line in (d.."\n"):gmatch("(.-)\n")do lines[#lines+1]=line end
   table.sort(lines)
   for _,l in ipairs(lines)do print(l)end
@@ -95,8 +101,8 @@ function handlers.sort(ctx,args)
 end
 
 function handlers.uniq(ctx,args)
-  local p=args[#args];if not p then return 1 end
-  local d,e=readall(ctx,p);if not d then print("uniq: "..tostring(e));return 1 end
+  local p=args[#args]
+  local d,e=readsource(ctx,p);if not d then stdio.errorln(ctx,"uniq: "..tostring(e));return 1 end
   local prev=nil
   for line in (d.."\n"):gmatch("(.-)\n")do if line~=prev then print(line);prev=line end end
   return 0
@@ -109,8 +115,8 @@ function handlers.cut(ctx,args)
     elseif args[i]=="-f" and args[i+1] then field=tonumber(args[i+1]);i=i+2
     else file=args[i];i=i+1 end
   end
-  if not field or not file then return 1 end
-  local d,e=readall(ctx,file);if not d then print("cut: "..tostring(e));return 1 end
+  if not field then return 1 end
+  local d,e=readsource(ctx,file);if not d then stdio.errorln(ctx,"cut: "..tostring(e));return 1 end
   for line in (d.."\n"):gmatch("(.-)\n")do
     local parts={}for x in (line..delim):gmatch("(.-)"..delim)do parts[#parts+1]=x end
     print(parts[field] or "")
@@ -123,7 +129,7 @@ function handlers.tee(ctx,args)
   for _,a in ipairs(args)do if a=="-a" then append=true else file=a end end
   if not file then return 1 end
   local lines={}
-  while true do local l=read();if l==nil then break end;lines[#lines+1]=l;print(l)end
+  while true do local l=stdio.read_line(ctx);if l==nil then break end;lines[#lines+1]=l;print(l)end
   local data=table.concat(lines,"\n")..(#lines>0 and "\n" or "")
   local ok,e=writeall(ctx,file,data,append and "a" or "w");if not ok then print("tee: "..tostring(e));return 1 end
   return 0
@@ -135,7 +141,7 @@ function handlers.tr(ctx,args)
   local map={}
   for i=1,#from do map[from:sub(i,i)]=to:sub(math.min(i,#to),math.min(i,#to)) end
   while true do
-    local l=read();if l==nil then break end
+    local l=stdio.read_line(ctx);if l==nil then break end
     print((l:gsub(".",function(c)return map[c] or c end)))
   end
   return 0

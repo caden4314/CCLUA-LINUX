@@ -186,6 +186,7 @@ local function run_command(ctx,st,line)
     push(st,"System: cclua fastfetch systemctl journalctl top ps ip ping",colors.lightGray)
     push(st,"Packages: apt dpkg  |  Legacy detail: cclua-status",colors.lightGray)
     push(st,"Jobs: append & for background  |  Ctrl+C interrupt  |  Ctrl+Z stop",colors.lightGray)
+    push(st,"Shell I/O: |  <  >  >>  2>  2>>  2>&1",colors.lightGray)
     push(st,"Editing: Left/Right Home/End  Ctrl+A/E/U/K/W/R  Tab complete",colors.lightGray)
     push(st,"Scrollback: PageUp/PageDown or mouse wheel",colors.lightGray)
     st.lastStatus=0
@@ -224,9 +225,18 @@ local function run_command(ctx,st,line)
     return 0
   end
 
-  local background=argv[#argv]=="&"
-  if background then table.remove(argv,#argv) end
-  local job,err,code=jobs:spawn(argv,{cwd=st.cwd,background=background})
+  local background=argv[#argv]=="&" or line:match("&%s*$")~=nil
+  if background and argv[#argv]=="&" then table.remove(argv,#argv) end
+
+  local launchArgv=argv
+  local compound=line:find("|",1,true) or line:find(">",1,true) or line:find("<",1,true)
+  if compound then
+    local command=line
+    if background then command=command:gsub("%s*&%s*$","") end
+    launchArgv={"sh","-c",command}
+  end
+
+  local job,err,code=jobs:spawn(launchArgv,{cwd=st.cwd,background=background})
   if not job then
     push(st,argv[1]..": "..tostring(err),colors.red)
     st.lastStatus=code or 1

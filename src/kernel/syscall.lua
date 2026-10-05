@@ -9,6 +9,30 @@ function M.new(k)
   if p.uid~=0 and not k.capabilities.has(p,"proc.inspect")then return nil,"EPERM" end
   return k.process.all()
  end
+ function api.getfd(p,fd)
+  fd=tonumber(fd)
+  if fd==nil then return nil,"EINVAL" end
+  local s=p.fd and p.fd[fd] or nil
+  if not s then return nil,"EBADF" end
+  return s
+ end
+ function api.dup(p,oldfd,newfd)
+  oldfd=tonumber(oldfd);newfd=tonumber(newfd)
+  if oldfd==nil or newfd==nil then return nil,"EINVAL" end
+  local s=p.fd and p.fd[oldfd] or nil
+  if not s then return nil,"EBADF" end
+  p.fd=p.fd or {}
+  p.fd[newfd]=s
+  if newfd==0 then p.stdin=s elseif newfd==1 then p.stdout=s elseif newfd==2 then p.stderr=s end
+  return newfd
+ end
+ function api.close(p,fd)
+  fd=tonumber(fd)
+  if fd==nil or not p.fd or not p.fd[fd] then return nil,"EBADF" end
+  p.fd[fd]=nil
+  if fd==0 then p.stdin=nil elseif fd==1 then p.stdout=nil elseif fd==2 then p.stderr=nil end
+  return true
+ end
  local function signal_one(p,t,n)
   if p.uid~=0 and p.uid~=t.uid and not k.capabilities.has(p,"proc.signal") then return nil,"EPERM" end
   t.signal=n

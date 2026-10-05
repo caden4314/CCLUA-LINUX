@@ -1,6 +1,7 @@
 local M={}
 local config=dofile("/usr/lib/cclua/config.lua")
 local ui=dofile("/usr/lib/cclua/cli_ui.lua")
+local pipeline=dofile("/usr/lib/cclua/pipeline.lua")
 
 local function split(line)
   local out,cur,quote={},"",nil
@@ -175,6 +176,7 @@ local function builtin(ctx,args,history)
     print("  Network     cclua network  ip  ping  resolvectl  hostnamectl")
     print("  Fleet       cclua-managerctl  cclua-lightctl  cclua-appctl")
     print("  Packages    apt  dpkg")
+    print("  Shell I/O    |  <  >  >>  2>  2>>  2>&1")
     ui.dim("Editing: Up/Down history | Tab complete | Ctrl+A/E/U/K/W")
     return true,0
   end
@@ -216,6 +218,13 @@ end
 function M.run(ctx,argv)
   ctx.process.environment.PATH=ctx.process.environment.PATH or "/usr/bin:/usr/sbin:/bin:/sbin"
   ctx.process.environment.HOME=ctx.process.environment.HOME or (((ctx.kernel.users.by_uid(ctx.process.uid) or {}).home) or "/")
+
+  if argv and argv[1]=="-c" then
+    local line=table.concat(argv," ",2)
+    if line=="" then return 0 end
+    return pipeline.run(ctx,line)
+  end
+
   local history={}
   local last=0
   banner(ctx)
@@ -230,8 +239,14 @@ function M.run(ctx,argv)
     end
     local args=split(line)
     if #args>0 then
-      local handled,code,action=builtin(ctx,args,history)
-      if not handled then code=run_external(ctx,args) end
+      local code,action
+      if line:find("|",1,true) or line:find(">",1,true) or line:find("<",1,true) then
+        code=pipeline.run(ctx,line)
+      else
+        local handled
+        handled,code,action=builtin(ctx,args,history)
+        if not handled then code=run_external(ctx,args) end
+      end
       last=code or 0
       ctx.process.environment["?"]=tostring(last)
       if action=="exit" then return last end
