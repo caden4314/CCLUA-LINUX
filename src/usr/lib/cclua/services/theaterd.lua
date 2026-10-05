@@ -14,7 +14,7 @@ return function(ctx)
   local targetCols=tonumber(machine.theater_video_cols) or 0
   local targetRows=tonumber(machine.theater_video_rows) or 0
   local speakerOutputVolume=math.max(0.1,math.min(3.0,tonumber(machine.theater_speaker_output_volume) or 3.0))
-  local segmentSeconds=math.max(1,math.min(4,tonumber(machine.theater_segment_seconds) or 2))
+  local segmentSeconds=math.max(0.25,math.min(2,tonumber(machine.theater_segment_seconds) or 0.5))
   local segmentPrefetch=math.max(1,math.min(3,tonumber(machine.theater_segment_prefetch) or 2))
   local initialBufferSegments=math.max(1,math.min(segmentPrefetch,
     tonumber(machine.theater_initial_buffer_segments) or 2))
@@ -1169,7 +1169,23 @@ return function(ctx)
     if paletteSequenceHex then
       palettes,paletteKeys=parse_palette_sequence(paletteSequenceHex,paletteCount)
     end
-    local raw=h.readAll() or ""
+    local raw
+    if type(h.read)=="function" then
+      local parts={}
+      local total=0
+      while true do
+        local chunk=h.read(131072)
+        if not chunk or #chunk==0 then break end
+        parts[#parts+1]=chunk
+        total=total+#chunk
+        -- Yield between bounded reads so large RGB segments cannot monopolize
+        -- the cooperative scheduler and freeze both PCM and video.
+        coroutine.yield("sleep",now_ms()+1)
+      end
+      raw=table.concat(parts)
+    else
+      raw=h.readAll() or ""
+    end
     if h.close then pcall(h.close) end
 
     local packetBytes=frameBytes+audioBytes

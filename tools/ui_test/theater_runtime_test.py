@@ -356,7 +356,7 @@ assert(saved_state.lighting_transition==true)
 settle_brightness(50)
 assert(count_lights()==27,("50 percent fixture count %d"):format(count_lights()))
 
--- Playback uses finite two-second A/V segments. Requests are asynchronous:
+-- Playback uses finite half-second A/V segments. Requests are asynchronous:
 -- the first request may fail/retry without blocking theaterd, and the next
 -- segment is prefetched while the current one is playing. Master volume scales
 -- PCM samples while the speaker API stays at full theater output range.
@@ -377,7 +377,7 @@ end
 
 local firstUrl=latest_segment_url(0)
 assert(firstUrl,"segment 0 request missing")
-assert(firstUrl:find("seconds=2.000",1,true))
+assert(firstUrl:find("seconds=0.500",1,true))
 assert(firstUrl:find("cols=223",1,true))
 assert(firstUrl:find("rows=73",1,true))
 assert(firstUrl:find("fps=20.000",1,true))
