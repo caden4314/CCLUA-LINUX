@@ -231,12 +231,12 @@ return function(ctx)
     return true
   end
 
-  -- Four-speaker theater mode. These are deliberately spread across the
-  -- existing physical speaker ordering to retain room coverage while avoiding
-  -- the independent OpenAL stream drift seen with the full 22-speaker array.
-  -- The remaining speakers stay physically installed and can be restored once
-  -- CCPerf provides sample-aligned multi-source playback.
-  local speakerOrder={7,8,20,0}
+  -- Full theater array. CCPerf releases identical PCM blocks as one
+  -- synchronized group, so all room speakers share the same sample epoch.
+  local speakerOrder={
+    7,2,8,15,20,18,0,1,
+    6,5,4,3,9,10,11,12,13,14,16,17,19,21,
+  }
   local expectedRoomSpeakers=#speakerOrder
   local function room_speakers()
     local out={}
@@ -1369,8 +1369,18 @@ return function(ctx)
               -- Keep the bridge's native 50 ms / 2400-sample packetization.
               -- Giant segment-sized playAudio buffers cause poor OpenAL
               -- streaming behaviour and make individual sources fall behind.
+              -- Audio bytes are interleaved with every video frame:
+              -- [frame][2400 PCM bytes][frame][2400 PCM bytes]...
+              -- seg.audio_bytes is therefore the per-frame block size, not
+              -- the whole segment. Keep this guard explicit so a malformed
+              -- bridge response can never turn into multi-second playAudio.
               local audioStart=packetOffset+seg.frame_bytes
-              local audioRaw=seg.raw:sub(audioStart,audioStart+seg.audio_bytes-1)
+              local audioEnd=audioStart+seg.audio_bytes-1
+              local audioRaw=seg.raw:sub(audioStart,audioEnd)
+              if #audioRaw~=seg.audio_bytes then
+                error(("audio packet %d has %d bytes; expected %d"):format(
+                  packet,#audioRaw,seg.audio_bytes),0)
+              end
               local audio=pcm_decode(audioRaw,s.volume)
               local pending={}
               for _,sp in ipairs(speakers) do pending[#pending+1]=sp end
