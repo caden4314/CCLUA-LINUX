@@ -61,6 +61,10 @@ function fs.getFreeSpace(_) return 1024*1024 end
 function fs.delete(p) files[tostring(p):gsub("^/","")]=nil end
 function fs.open(p,mode)
   p=tostring(p):gsub("^/","")
+  -- Model a normal OS image: /usr is readable system content, not a
+  -- general-purpose writable runtime area. POST must use /var for its
+  -- write/readback probe.
+  if mode=="w" and p:match("^usr/") then return nil end
   if mode=="w" then
     local buf=""
     return {
