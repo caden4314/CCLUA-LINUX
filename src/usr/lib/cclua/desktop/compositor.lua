@@ -1,5 +1,6 @@
 local Canvas=dofile("/usr/lib/cclua/desktop/canvas.lua")
 local Config=dofile("/usr/lib/cclua/config.lua")
+local Theme=dofile("/usr/lib/cclua/desktop/theme.lua")
 local Terminal=dofile("/usr/lib/cclua/desktop/apps/terminal.lua")
 local Files=dofile("/usr/lib/cclua/desktop/apps/files.lua")
 local Editor=dofile("/usr/lib/cclua/desktop/apps/editor.lua")
@@ -245,17 +246,17 @@ function M.run(ctx)
     canvas:reset(colors.purple,colors.white)
     ui.fill(4,2,W,H,colors.purple,colors.white)
 
-    -- Simple low-resolution interpretation of Ubuntu's aubergine wallpaper:
-    -- a dark field with two diagonal magenta planes.
+    -- Keep the workspace quiet: one restrained accent plane preserves the
+    -- Ubuntu aubergine identity without competing with application content.
     for yy=2,H do
-      local start1=math.max(4,W-9-math.floor((yy-2)*0.55))
-      local start2=math.max(4,W-3-math.floor((yy-2)*0.28))
-      ui.fill(start1,yy,W,yy,colors.magenta,colors.white)
-      ui.fill(start2,yy,W,yy,colors.purple,colors.white)
+      local start=math.max(4,W-5-math.floor((yy-2)*0.22))
+      ui.fill(start,yy,W,yy,colors.magenta,colors.white)
     end
 
-    ui.text(6,4,"Ubuntu 22.04 LTS",colors.lightGray,colors.purple)
-    ui.text(6,5,"CCLUA Desktop",colors.orange,colors.purple)
+    if W>=70 and H>=24 then
+      ui.text(7,5,"Ubuntu 22.04 LTS",colors.lightGray,colors.purple)
+      ui.text(7,6,"CCLUA Desktop",colors.orange,colors.purple)
+    end
   end
 
   local function draw_dock()
@@ -269,7 +270,9 @@ function M.run(ctx)
       local bg=selected and colors.gray or colors.black
       ui.fill(1,dy,3,dy,bg,colors.white)
       ui.center(dy,spec.icon,spec.color,bg,1,3)
-      if running then ui.text(1,dy,running.minimized and "-" or ".",colors.orange,bg) end
+      if running then
+        ui.text(1,dy,running.minimized and "-" or "|",selected and colors.orange or colors.lightGray,bg)
+      end
       dy=dy+1
     end
   end
@@ -279,7 +282,8 @@ function M.run(ctx)
     ui.text(2,1,overview and "Applications" or "Activities",colors.white,colors.gray)
 
     local centerText=active and active.title or (machine.hostname or "test-client")
-    ui.center(1,centerText:sub(1,20),colors.white,colors.gray)
+    local centerMeta=active and " - CCLUA" or ""
+    ui.center(1,(centerText..centerMeta):sub(1,28),colors.white,colors.gray)
 
     local clock=os.date and os.date("%H:%M") or ""
     local health=system_health()
@@ -395,18 +399,25 @@ function M.run(ctx)
 
   local function draw_window(win,isActive)
     local titleBg=isActive and colors.gray or colors.black
-    local border=isActive and colors.gray or colors.black
+    local border=isActive and colors.lightGray or colors.gray
     ui.fill(win.x,win.y,win.x+win.w-1,win.y+win.h-1,border,colors.white)
     ui.fill(win.x+1,win.y+1,win.x+win.w-2,win.y+win.h-2,colors.black,colors.white)
     ui.fill(win.x,win.y,win.x+win.w-1,win.y,titleBg,colors.white)
 
+    local spec=APP[win.app]
     local titleRight=win.x+win.w-13
     if titleRight>win.x then
-      ui.center(win.y,win.title:sub(1,math.max(1,win.w-14)),colors.white,titleBg,win.x+1,titleRight)
+      local icon=spec and spec.icon or ""
+      ui.text(win.x+1,win.y,icon:sub(1,2),spec and spec.color or colors.lightGray,titleBg)
+      ui.text(win.x+4,win.y,Theme.fit(win.title,math.max(1,titleRight-win.x-3)),colors.white,titleBg)
     end
-    ui.text(win.x+win.w-11,win.y,"[-]",colors.lightGray,titleBg)
-    ui.text(win.x+win.w-7,win.y,win.max and "[=]" or "[+]",colors.lightGray,titleBg)
-    ui.text(win.x+win.w-3,win.y,"[x]",colors.white,colors.red)
+    ui.text(win.x+win.w-11,win.y," _ ",colors.lightGray,titleBg)
+    ui.text(win.x+win.w-7,win.y,win.max and " o " or " ^ ",colors.lightGray,titleBg)
+    ui.text(win.x+win.w-3,win.y," x ",colors.white,isActive and colors.red or titleBg)
+
+    if isActive and win.w>=24 then
+      ui.text(win.x,win.y,"|",colors.orange,titleBg)
+    end
 
     local spec=APP[win.app]
     if not spec then return end

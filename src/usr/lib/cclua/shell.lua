@@ -1,5 +1,6 @@
 local M={}
 local config=dofile("/usr/lib/cclua/config.lua")
+local ui=dofile("/usr/lib/cclua/cli_ui.lua")
 
 local function split(line)
   local out,cur,quote={},"",nil
@@ -33,6 +34,14 @@ local function hostname()
   return m.hostname or "cclua-server"
 end
 
+local function display_path(ctx)
+  local cwd=tostring(ctx.process.cwd or "/")
+  local home=((ctx.kernel.users.by_uid(ctx.process.uid) or {}).home) or "/"
+  if cwd==home then return "~" end
+  if home~="/" and cwd:sub(1,#home+1)==home.."/" then return "~/"..cwd:sub(#home+2) end
+  return cwd
+end
+
 local function draw_prompt(ctx,last)
   local user=username(ctx)
   term.setTextColor(ctx.process.uid==0 and colors.red or colors.lime)
@@ -44,7 +53,7 @@ local function draw_prompt(ctx,last)
   term.setTextColor(colors.white)
   write(":")
   term.setTextColor(colors.cyan)
-  write(ctx.process.cwd)
+  write(display_path(ctx))
   if last and last~=0 then
     term.setTextColor(colors.red)
     write(" ["..tostring(last).."]")
@@ -56,18 +65,25 @@ end
 
 local function banner(ctx)
   local m=config.machine()
+  local status=config.read_json("/var/lib/cclua/status.json",{state="BOOTING"}) or {}
+  local net=config.read_json("/var/lib/cclua/network-health.json",{state="CHECKING"}) or {}
+  local post=config.read_json("/var/lib/cclua/post.json",{state="UNKNOWN"}) or {}
+
   term.setTextColor(colors.white)
-  print("Welcome to Ubuntu 22.04.5 LTS (GNU/Linux 5.15.0-cclua cclua)")
-  print("")
-  term.setTextColor(colors.lightGray)
-  print(" * Documentation:  CCLUA-LINUX / Ubuntu 22.04 compatibility")
-  print(" * Management:     "..(m.role=="manager" and "cluster manager" or (m.manager or "10.27.0.1")))
-  print(" * IPv4 address:   "..(m.address or "unconfigured"))
-  print(" * Computer ID:    "..tostring(os.getComputerID()))
+  print("Ubuntu 22.04.5 LTS [CCLUA]  "..hostname())
   term.setTextColor(colors.gray)
-  print("")
-  print("CCLUA Kernel "..ctx.kernel.version.version.." - Ubuntu reference 22.04.5")
-  print("Type 'help' for shell help, 'cclua-status' for system health.")
+  print(("ID %d  |  %s  |  %s"):format(
+    os.getComputerID(),tostring(m.role or "server"),tostring(m.address or "unconfigured")
+  ))
+
+  term.setTextColor(ui.state_color(status.state));write("SYSTEM "..tostring(status.state or "BOOTING"))
+  term.setTextColor(colors.gray);write("  |  ")
+  term.setTextColor(ui.state_color(net.state));write("NET "..tostring(net.state or "CHECKING"))
+  term.setTextColor(colors.gray);write("  |  ")
+  term.setTextColor(ui.state_color(post.state));print("POST "..tostring(post.state or "UNKNOWN"))
+
+  term.setTextColor(colors.gray)
+  print("Kernel "..ctx.kernel.version.version.."  |  help: 'help'  |  health: 'cclua-status'")
   print("")
   term.setTextColor(colors.white)
 end
@@ -80,7 +96,7 @@ local function builtin(ctx,args)
     if target:sub(1,1)~="/" then target=ctx.kernel.vfs.normalize(ctx.process.cwd.."/"..target) end
     target=ctx.kernel.vfs.normalize(target)
     if not ctx.kernel.vfs.exists(target) or not ctx.kernel.vfs.isDir(target) then
-      term.setTextColor(colors.red);print("bash: cd: "..target..": No such file or directory");term.setTextColor(colors.white)
+      ui.error("cd: "..target..": No such file or directory","Check the path or use 'pwd' and 'ls'.")
       return true,1
     end
     ctx.process.cwd=target
@@ -92,12 +108,15 @@ local function builtin(ctx,args)
     for i=2,#args do local k,v=args[i]:match("^([%w_]+)=(.*)$");if k then ctx.process.environment[k]=v end end
     return true,0
   elseif cmd=="help" then
-    term.setTextColor(colors.cyan);print("CCLUA Ubuntu shell");term.setTextColor(colors.white)
-    print("Builtins: cd pwd export clear exit help")
-    print("Useful:   ls cat cp mv rm mkdir grep find ps kill")
-    print("Admin:    cclua-status systemctl journalctl dmesg peripherals ip ping hostnamectl")
-    print("Fleet:    cclua-managerctl cclua-lightctl cclua-appctl")
-    print("Packages: apt dpkg")
+    ui.heading("CCLUA shell commands")
+    print("  Shell       cd  pwd  export  clear  exit  help")
+    print("  Files       ls  cat  cp  mv  rm  mkdir  grep  find")
+    print("  Processes   ps  top  kill")
+    print("  System      cclua-status  systemctl  journalctl  dmesg")
+    print("  Network     ip  ping  resolvectl  hostnamectl")
+    print("  Fleet       cclua-managerctl  cclua-lightctl  cclua-appctl")
+    print("  Packages    apt  dpkg")
+    ui.dim("Tip: use Up/Down for command history.")
     return true,0
   end
   return false
@@ -105,7 +124,10 @@ end
 
 local function run_external(ctx,args)
   local path=ctx.kernel.exec.resolve(args[1])
-  if not path then term.setTextColor(colors.red);print(args[1]..": command not found");term.setTextColor(colors.white);return 127 end
+  if not path then
+    ui.error(args[1]..": command not found","Run 'help' for common commands.")
+    return 127
+  end
   local mod,err=ctx.kernel.exec.load(path)
   if not mod then term.setTextColor(colors.red);print(args[1]..": "..tostring(err));term.setTextColor(colors.white);return 126 end
   local child,cerr=ctx.kernel.process.create{

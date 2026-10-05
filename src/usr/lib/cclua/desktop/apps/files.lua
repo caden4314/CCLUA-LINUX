@@ -1,4 +1,5 @@
 local M={}
+local Theme=dofile("/usr/lib/cclua/desktop/theme.lua")
 
 local function host(path)
   local p=tostring(path or ""):gsub("^/","")
@@ -76,26 +77,24 @@ local sidebar={
 function M.draw(ctx,st,ui,x,y,w,h)
   ui.fill(x,y,x+w-1,y+h-1,colors.black,colors.white)
 
-  local sideW=math.min(10,math.max(8,math.floor(w*0.24)))
-  local listX=x+sideW+1
-  local listW=w-sideW-1
+  local compact=Theme.breakpoint(w,h)=="compact"
+  local sideW=compact and 0 or math.min(12,math.max(9,math.floor(w*0.22)))
+  local listX=sideW>0 and (x+sideW+1) or x
+  local listW=sideW>0 and (w-sideW-1) or w
 
-  ui.fill(x,y,x+w-1,y,colors.gray,colors.white)
-  ui.text(x+1,y,"<",colors.lightGray,colors.gray)
   local crumb=st.path
-  if #crumb>listW-2 then crumb="~"..crumb:sub(-(listW-3)) end
-  ui.text(listX,y,crumb:sub(1,listW-1),colors.white,colors.gray)
+  if #crumb>math.max(8,w-12) then crumb="~"..crumb:sub(-(math.max(7,w-13))) end
+  Theme.header(ui,x,y,w,"<  Files",crumb)
 
-  ui.fill(x,y+1,x+sideW-1,y+h-2,colors.gray,colors.white)
-  ui.text(x+1,y+1,"Places",colors.lightGray,colors.gray)
-  for i,item in ipairs(sidebar) do
-    local yy=y+1+i
-    if yy<=y+h-2 then
-      local active=st.path==item[2] or (item[2]~="/" and st.path:sub(1,#item[2])==item[2])
-      local bg=active and colors.lightGray or colors.gray
-      local fg=active and colors.black or colors.white
-      ui.fill(x,yy,x+sideW-1,yy,bg,fg)
-      ui.text(x+1,yy,item[1]:sub(1,sideW-2),fg,bg)
+  if sideW>0 then
+    ui.fill(x,y+1,x+sideW-1,y+h-2,Theme.c.surface,Theme.c.text)
+    ui.text(x+1,y+1,"PLACES",Theme.c.muted,Theme.c.surface)
+    for i,item in ipairs(sidebar) do
+      local yy=y+1+i
+      if yy<=y+h-2 then
+        local active=st.path==item[2] or (item[2]~="/" and st.path:sub(1,#item[2])==item[2])
+        Theme.list_row(ui,x,yy,sideW,item[1],active,active and nil or "muted")
+      end
     end
   end
 
@@ -114,8 +113,8 @@ function M.draw(ctx,st,ui,x,y,w,h)
     if name then
       local full=fs.combine(host(st.path),name)
       local dir=fs.isDir(full)
-      local bg=idx==st.selected and colors.lightGray or colors.black
-      local fg=idx==st.selected and colors.black or (dir and colors.cyan or colors.white)
+      local bg=idx==st.selected and Theme.c.selected_bg or Theme.c.bg
+      local fg=idx==st.selected and Theme.c.selected_fg or (dir and Theme.c.accent_alt or Theme.c.text)
       ui.fill(listX,yy,x+w-1,yy,bg,fg)
       local icon=dir and "/" or "-"
       local size=dir and "" or format_size(fs.getSize(full))
@@ -129,16 +128,16 @@ function M.draw(ctx,st,ui,x,y,w,h)
     end
   end
 
-  ui.fill(x,y+h-1,x+w-1,y+h-1,colors.gray,colors.white)
   local selected=list[st.selected]
   local msg
   if selected then
     local full=fs.combine(host(st.path),selected)
-    msg=fs.isDir(full) and ("Folder  "..selected) or (selected.."  "..format_size(fs.getSize(full)).."  Enter opens")
+    msg=fs.isDir(full) and ("Folder  "..selected.."  |  Enter open")
+      or (selected.."  "..format_size(fs.getSize(full)).."  |  Enter edit")
   else
     msg=#list.." items"
   end
-  ui.text(x+1,y+h-1,msg:sub(1,w-2),colors.lightGray,colors.gray)
+  Theme.footer(ui,x,y+h-1,w,msg)
 end
 
 local function open_selected(st)
@@ -162,15 +161,16 @@ function M.event(ctx,st,ev,a,b,c,rx,ry,w,h)
     end
     if a==keys.home then st.path="/home/caden";st.selected=1;st.offset=1;return true end
   elseif ev=="mouse_click" and rx and ry then
-    local sideW=math.min(10,math.max(8,math.floor(w*0.24)))
-    if ry==1 and rx<=3 then
+    local compact=Theme.breakpoint(w,h)=="compact"
+    local sideW=compact and 0 or math.min(12,math.max(9,math.floor(w*0.22)))
+    if ry==1 and rx<=8 then
       st.path=parent(st.path);st.selected=1;st.offset=1;return true
     end
-    if rx<=sideW and ry>=3 then
+    if sideW>0 and rx<=sideW and ry>=3 then
       local idx=ry-2
       local item=sidebar[idx]
       if item then st.path=item[2];st.selected=1;st.offset=1;return true end
-    elseif rx>sideW and ry>=2 and ry<=h-1 then
+    elseif (sideW==0 or rx>sideW) and ry>=2 and ry<=h-1 then
       local idx=st.offset+ry-2
       if (st._entries or {})[idx] then
         if st.selected==idx then return open_selected(st) end

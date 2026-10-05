@@ -1,5 +1,6 @@
 local M={}
 local config=dofile("/usr/lib/cclua/config.lua")
+local Theme=dofile("/usr/lib/cclua/desktop/theme.lua")
 local TABS={"Processes","Services","Devices","Health"}
 
 function M.new(ctx)
@@ -85,13 +86,7 @@ end
 function M.draw(ctx,st,ui,x,y,w,h)
   ui.fill(x,y,x+w-1,y+h-1,colors.black,colors.white)
 
-  local tx=x+1
-  for i,label in ipairs(TABS) do
-    local bg=i==st.tab and colors.gray or colors.black
-    local fg=i==st.tab and colors.white or colors.lightGray
-    ui.text(tx,y," "..label.." ",fg,bg)
-    tx=tx+#label+3
-  end
+  Theme.tabs(ui,x,y,w,TABS,st.tab)
 
   local list=rows(ctx,st.tab)
   st._rows=list
@@ -113,9 +108,20 @@ function M.draw(ctx,st,ui,x,y,w,h)
     local yy=y+1+line
     ui.fill(x,yy,x+w-1,yy,colors.black,colors.white)
     if item then
-      local bg=idx==st.selected and colors.lightGray or colors.black
-      local fg=idx==st.selected and colors.black or colors.white
-      ui.fill(x,yy,x+w-1,yy,bg,fg)
+      local bg=idx==st.selected and Theme.c.selected_bg or Theme.c.bg
+      local fg=idx==st.selected and Theme.c.selected_fg or Theme.c.text
+      local tone=nil
+      if st.tab==2 or st.tab==4 then
+        local state=tostring(item.b or ""):upper()
+        if Theme.state_color(state)==Theme.c.success then tone="success"
+        elseif Theme.state_color(state)==Theme.c.danger then tone="danger"
+        elseif Theme.state_color(state)==Theme.c.warning then tone="warning" end
+      end
+      if idx~=st.selected then
+        if tone=="success" then fg=Theme.c.success
+        elseif tone=="danger" then fg=Theme.c.danger
+        elseif tone=="warning" then fg=Theme.c.warning end
+      end
       local text
       if st.tab==1 then
         text=("%-5s %-26s %s"):format(item.a,item.b:sub(1,26),item.c)
@@ -130,9 +136,8 @@ function M.draw(ctx,st,ui,x,y,w,h)
     end
   end
 
-  local footer=(" %d items  Tab changes view "):format(#list)
-  ui.fill(x,y+h-1,x+w-1,y+h-1,colors.gray,colors.white)
-  ui.text(x,y+h-1,footer:sub(1,w),colors.lightGray,colors.gray)
+  local footer=("%d items  |  Tab view  |  Up/Down select"):format(#list)
+  Theme.footer(ui,x,y+h-1,w,footer)
 end
 
 local function tab_at(rx)

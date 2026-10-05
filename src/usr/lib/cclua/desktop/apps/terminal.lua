@@ -1,7 +1,12 @@
 local M={}
+local config=dofile("/usr/lib/cclua/config.lua")
 
-local function push(st,line)
-  st.lines[#st.lines+1]=tostring(line or "")
+local function push(st,line,fg,bg)
+  st.lines[#st.lines+1]={
+    text=tostring(line or ""),
+    fg=fg or colors.lightGray,
+    bg=bg or colors.black,
+  }
   while #st.lines>500 do table.remove(st.lines,1) end
 end
 
@@ -17,9 +22,9 @@ function M.new(ctx)
     title="Terminal",icon="T",
     cwd=ctx.process.cwd or "/home/caden",
     input="",lines={
-      "Ubuntu 22.04.5 LTS",
-      "CCLUA terminal - type 'help' for commands.",
-      ""
+      {text="Ubuntu 22.04.5 LTS",fg=colors.white,bg=colors.black},
+      {text="CCLUA terminal  |  type 'help' for commands",fg=colors.gray,bg=colors.black},
+      {text="",fg=colors.lightGray,bg=colors.black}
     },
     history={},historyIndex=nil,
   }
@@ -72,13 +77,16 @@ local function capture(st)
     while true do
       local p=pending:find("\n",1,true)
       if not p then break end
-      push(st,pending:sub(1,p-1))
+      push(st,pending:sub(1,p-1),t.fg,t.bg)
       pending=pending:sub(p+1)
       t.x=1;t.y=t.y+1
     end
     if pending~="" then
       -- Most CCLUA commands write complete lines, but keep partial output visible.
-      if #st.lines==0 or st.lines[#st.lines]~=pending then push(st,pending) end
+      local last=st.lines[#st.lines]
+      if #st.lines==0 or type(last)~="table" or last.text~=pending then
+        push(st,pending,t.fg,t.bg)
+      end
       pending=""
     end
   end
@@ -111,8 +119,9 @@ local function run_command(ctx,st,line)
   while #st.history>100 do table.remove(st.history,1) end
   st.historyIndex=nil
 
-  local prompt="caden@test-client:"..pretty_path(st.cwd).."$ "
-  push(st,prompt..line)
+  local host=(config.machine().hostname or "test-client")
+  local prompt="caden@"..host..":"..pretty_path(st.cwd).."$ "
+  push(st,prompt..line,colors.white,colors.black)
 
   if argv[1]=="clear" then st.lines={};return end
   if argv[1]=="pwd" then push(st,st.cwd);return end
@@ -125,7 +134,7 @@ local function run_command(ctx,st,line)
     if ctx.kernel.vfs.exists(target) and ctx.kernel.vfs.isDir(target) then
       st.cwd=target
     else
-      push(st,"bash: cd: "..target..": No such file or directory")
+      push(st,"bash: cd: "..target..": No such file or directory",colors.red)
     end
     return
   end
@@ -142,9 +151,13 @@ local function run_command(ctx,st,line)
   end
 
   local path=ctx.kernel.exec.resolve(argv[1])
-  if not path then push(st,argv[1]..": command not found");return end
+  if not path then
+    push(st,argv[1]..": command not found",colors.red)
+    push(st,"Try 'help' for common commands.",colors.gray)
+    return
+  end
   local mod,err=ctx.kernel.exec.load(path)
-  if not mod then push(st,argv[1]..": "..tostring(err));return end
+  if not mod then push(st,argv[1]..": "..tostring(err),colors.red);return end
 
   local args={}
   for i=2,#argv do args[#args+1]=argv[i] end
@@ -156,7 +169,7 @@ local function run_command(ctx,st,line)
   local ok,res=pcall(mod.main,ctx,args)
   ctx.process.cwd=oldcwd
   term.redirect(old)
-  if not ok then push(st,"error: "..tostring(res)) end
+  if not ok then push(st,"Error: "..tostring(res),colors.red) end
 end
 
 local function history_move(st,delta)
@@ -176,15 +189,33 @@ function M.draw(ctx,st,ui,x,y,w,h,active)
   for i=start,#st.lines do
     row=row+1
     if row>body then break end
-    ui.text(x+1,y+row-1,(st.lines[i] or ""):sub(1,math.max(1,w-2)),colors.lightGray,colors.black)
+    local entry=st.lines[i]
+    local text=type(entry)=="table" and entry.text or tostring(entry or "")
+    local fg=type(entry)=="table" and entry.fg or colors.lightGray
+    local bg=type(entry)=="table" and entry.bg or colors.black
+    ui.text(x+1,y+row-1,text:sub(1,math.max(1,w-2)),fg,bg)
   end
 
   ui.fill(x,y+h-1,x+w-1,y+h-1,colors.black,colors.white)
-  local prompt="caden@test-client:"..pretty_path(st.cwd).."$ "
-  local full=prompt..st.input
+  local host=(config.machine().hostname or "test-client")
+  local user="caden"
+  local path=pretty_path(st.cwd)
+  local fixed=user.."@"..host..":"..path.."$ "
+  local full=fixed..st.input
   local visible=full
-  if #visible>w-2 then visible=visible:sub(-(w-2)) end
-  ui.text(x+1,y+h-1,visible,colors.white,colors.black)
+  if #visible>w-2 then
+    visible=visible:sub(-(w-2))
+    ui.text(x+1,y+h-1,visible,colors.white,colors.black)
+  else
+    local px=x+1
+    ui.text(px,y+h-1,user,colors.lime,colors.black);px=px+#user
+    ui.text(px,y+h-1,"@",colors.lightGray,colors.black);px=px+1
+    ui.text(px,y+h-1,host,colors.lightBlue,colors.black);px=px+#host
+    ui.text(px,y+h-1,":",colors.white,colors.black);px=px+1
+    ui.text(px,y+h-1,path,colors.cyan,colors.black);px=px+#path
+    ui.text(px,y+h-1,"$ ",colors.yellow,colors.black);px=px+2
+    ui.text(px,y+h-1,st.input,colors.white,colors.black)
+  end
 
   if active then
     ui.cursor=x+math.min(w-2,#visible+1)

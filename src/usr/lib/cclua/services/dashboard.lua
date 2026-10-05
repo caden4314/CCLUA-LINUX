@@ -100,10 +100,9 @@ return function(ctx)
     fill(1,colors.blue)
     text(2,1,clipped(title,w-2),colors.white,colors.blue)
     fill(2,colors.gray)
-    text(2,2,("Ubuntu 22.04.5 LTS | kernel %s | ID %d"):format(
-      tostring(ctx.kernel.version.version),
-      os.getComputerID()
-    ),colors.white,colors.gray)
+    text(2,2,clipped(("Ubuntu 22.04.5 | ID %d | %s | %s"):format(
+      os.getComputerID(),tostring(machine.role or "server"),tostring(machine.address or "-")
+    ),w-2),colors.white,colors.gray)
   end
 
   local function draw_server_compact()
@@ -178,8 +177,92 @@ return function(ctx)
     text(2,h,clipped("CCLUA | "..tostring(monitorName or "?"),w-2),colors.gray)
   end
 
+  local function draw_server_wide()
+    local w,h=size()
+    monitor.setBackgroundColor(colors.black)
+    monitor.clear()
+
+    local status=read("/var/lib/cclua/status.json",{state="BOOTING"})
+    local post=read("/var/lib/cclua/post.json",{state="UNKNOWN"})
+    local link=read("/var/lib/cclua/network-health.json",{state="CHECKING"})
+    local update=read("/var/lib/cclua/update-state.json",{})
+    local net=read("/var/lib/cclua/network.json",{peers={},stats={}})
+    local active,failed,total=service_counts()
+    local fault=tonumber(status.error_code or 0) or 0
+
+    draw_header((machine.hostname or "ubuntu-server").." | server console")
+    local gap=2
+    local cardW=math.floor((w-4-gap*2)/3)
+    local x1=2
+    local x2=x1+cardW+gap
+    local x3=x2+cardW+gap
+
+    text(x1,4,"SYSTEM",colors.cyan)
+    text(x1,5,tostring(status.state or "BOOTING"),status_color(status.state))
+    text(x1,6,("%d/%d services"):format(active,total),failed>0 and colors.red or colors.lightGray)
+    text(x1,7,("%d processes  up %ds"):format(#ctx.kernel.process.all(),math.floor(os.clock())),colors.lightGray)
+    if fault>0 then
+      text(x1,8,clipped(("FAULT %d %s"):format(fault,status.error_reason or ""),cardW),colors.red)
+    else
+      text(x1,8,("POST %s"):format(tostring(post.state or "UNKNOWN")),status_color(post.state))
+    end
+
+    text(x2,4,"NETWORK",colors.cyan)
+    text(x2,5,tostring(link.state or "CHECKING"),status_color(link.state))
+    text(x2,6,clipped("IP "..tostring(machine.address or "-"),cardW),colors.lightGray)
+    text(x2,7,("RTT %sms  missed %s"):format(link.manager_rtt_ms or "-",link.missed_probes or 0),colors.lightGray)
+    text(x2,8,("Peers %d  modems %s"):format(#(net.peers or {}),link.modem_count or 0),colors.lightGray)
+
+    local phase=tostring(update.state or update.phase or "IDLE")
+    local pct=tonumber(update.percent or (phase=="CURRENT" and 100 or 0)) or 0
+    text(x3,4,"UPDATE",colors.cyan)
+    text(x3,5,phase,status_color(phase))
+    text(x3,6,("%3d%%  %s"):format(pct,tostring(update.current_commit or "-"):sub(1,8)),colors.lightGray)
+    text(x3,7,"Target "..tostring(update.target_commit or update.available_commit or "-"):sub(1,8),colors.lightGray)
+    text(x3,8,update.auto_apply==false and "Auto apply OFF" or "Auto apply ON",
+      update.auto_apply==false and colors.yellow or colors.gray)
+
+    text(2,10,"SERVICES",colors.cyan)
+    fill(11,colors.gray)
+    text(2,11,"UNIT",colors.white,colors.gray)
+    text(math.floor(w*0.58),11,"STATE",colors.white,colors.gray)
+    text(math.floor(w*0.75),11,"PID",colors.white,colors.gray)
+    text(math.floor(w*0.84),11,"RESTARTS",colors.white,colors.gray)
+
+    local services={}
+    for _,unit in ipairs(ctx.kernel.services:list()) do
+      if not unit.reference or unit.exec then services[#services+1]=unit end
+    end
+    table.sort(services,function(a,b)
+      if a.state=="failed" and b.state~="failed" then return true end
+      if b.state=="failed" and a.state~="failed" then return false end
+      return tostring(a.name)<tostring(b.name)
+    end)
+
+    local yy=12
+    for _,unit in ipairs(services) do
+      if yy>h-1 then break end
+      local color=unit.state=="active" and colors.lime
+        or unit.state=="failed" and colors.red or colors.gray
+      text(2,yy,clipped(unit.name,math.floor(w*0.54)),color)
+      text(math.floor(w*0.58),yy,tostring(unit.state),color)
+      text(math.floor(w*0.75),yy,tostring(unit.pid or "-"),colors.lightGray)
+      text(math.floor(w*0.84),yy,tostring(unit.total_restarts or 0),
+        tonumber(unit.total_restarts or 0)>0 and colors.yellow or colors.gray)
+      yy=yy+1
+    end
+
+    local footer=failed>0 and ("%d FAILED | systemctl --failed"):format(failed)
+      or ("Healthy | "..tostring(monitorName or "monitor").." | cclua-status")
+    text(2,h,clipped(footer,w-2),failed>0 and colors.red or colors.gray)
+  end
+
   local function draw_server()
     local w,h=size()
+    if w>=70 and h>=26 then
+      draw_server_wide()
+      return
+    end
     if w<46 or h<23 then
       draw_server_compact()
       return

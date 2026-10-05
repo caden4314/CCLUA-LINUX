@@ -1,5 +1,6 @@
 local M={}
 local config=dofile("/usr/lib/cclua/config.lua")
+local Theme=dofile("/usr/lib/cclua/desktop/theme.lua")
 
 function M.new(ctx)
   return {title="Settings",icon="S",section=1}
@@ -66,49 +67,67 @@ local function value_rows(ctx,section)
 end
 
 function M.draw(ctx,st,ui,x,y,w,h)
-  ui.fill(x,y,x+w-1,y+h-1,colors.black,colors.white)
-  local side=math.min(12,math.max(10,math.floor(w*0.28)))
-  ui.fill(x,y,x+side-1,y+h-1,colors.gray,colors.white)
+  ui.fill(x,y,x+w-1,y+h-1,Theme.c.bg,Theme.c.text)
+  local bp=Theme.breakpoint(w,h)
+  local contentX,contentY,contentW
 
-  ui.text(x+1,y,"Settings",colors.white,colors.gray)
-  for i,label in ipairs(sections) do
-    local yy=y+1+i
-    local active=i==st.section
-    local bg=active and colors.lightGray or colors.gray
-    local fg=active and colors.black or colors.white
-    ui.fill(x,yy,x+side-1,yy,bg,fg)
-    ui.text(x+1,yy,label:sub(1,side-2),fg,bg)
+  Theme.header(ui,x,y,w,"Settings",sections[st.section] or "About")
+
+  if bp=="compact" then
+    Theme.tabs(ui,x,y+1,w,sections,st.section)
+    contentX=x+1
+    contentY=y+3
+    contentW=w-2
+  else
+    local side=math.min(16,math.max(12,math.floor(w*0.24)))
+    ui.fill(x,y+1,x+side-1,y+h-2,Theme.c.surface,Theme.c.text)
+    ui.text(x+1,y+1,"CATEGORIES",Theme.c.muted,Theme.c.surface)
+    for i,label in ipairs(sections) do
+      local yy=y+1+i
+      Theme.list_row(ui,x,yy,side,label,i==st.section,i==st.section and nil or "muted")
+    end
+    contentX=x+side+2
+    contentY=y+2
+    contentW=w-side-3
   end
 
-  local contentX=x+side+1
-  local contentW=w-side-1
-  local heading=sections[st.section] or "About"
-  ui.text(contentX,y+1,heading,colors.orange,colors.black)
-
+  Theme.section(ui,contentX,contentY,contentW,sections[st.section] or "About")
   local rows=value_rows(ctx,st.section)
-  local yy=y+3
+  local yy=contentY+2
   for _,r in ipairs(rows) do
     if yy>y+h-2 then break end
-    local labelW=math.min(11,math.max(8,math.floor(contentW*0.34)))
-    local valueW=math.max(1,contentW-labelW-1)
-    ui.text(contentX,yy,fit(r[1],labelW-1),colors.gray,colors.black)
-    ui.text(contentX+labelW,yy,fit(r[2],valueW),colors.white,colors.black)
+    local tone=nil
+    if r[1]=="Link" or r[1]=="State" or r[1]=="POST" or r[1]=="Manager" then tone=r[2] end
+    Theme.kv(ui,contentX,yy,contentW,r[1],r[2],tone,math.min(14,math.max(9,math.floor(contentW*0.32))))
     yy=yy+1
   end
 
-  ui.fill(contentX,y+h-1,x+w-1,y+h-1,colors.gray,colors.white)
-  ui.text(contentX+1,y+h-1,"Up/Down section",colors.lightGray,colors.gray)
+  Theme.footer(ui,x,y+h-1,w,bp=="compact" and "Left/Right category" or "Up/Down category","muted")
 end
 
 function M.event(ctx,st,ev,a,b,c,rx,ry,w,h)
+  local compact=Theme.breakpoint(w,h)=="compact"
   if ev=="key" then
-    if a==keys.up then st.section=math.max(1,st.section-1);return true end
-    if a==keys.down then st.section=math.min(#sections,st.section+1);return true end
+    if a==keys.up or (compact and a==keys.left) then
+      st.section=math.max(1,st.section-1);return true
+    end
+    if a==keys.down or (compact and a==keys.right) then
+      st.section=math.min(#sections,st.section+1);return true
+    end
   elseif ev=="mouse_click" and rx and ry then
-    local side=math.min(12,math.max(10,math.floor(w*0.28)))
-    if rx<=side and ry>=3 and ry<=2+#sections then
-      st.section=ry-2
-      return true
+    if compact and ry==2 then
+      local tx=1
+      for i,label in ipairs(sections) do
+        local width=#label+2
+        if rx>=tx and rx<tx+width then st.section=i;return true end
+        tx=tx+width+1
+      end
+    elseif not compact then
+      local side=math.min(16,math.max(12,math.floor(w*0.24)))
+      if rx<=side and ry>=3 and ry<=2+#sections then
+        st.section=ry-2
+        return true
+      end
     end
   end
   return false

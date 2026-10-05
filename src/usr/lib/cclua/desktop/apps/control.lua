@@ -1,5 +1,6 @@
 local M={}
 local admin=dofile("/usr/lib/cclua/admin.lua")
+local Theme=dofile("/usr/lib/cclua/desktop/theme.lua")
 
 local tabs={"Fleet","GPS","Lights"}
 
@@ -92,13 +93,7 @@ local function state_color(state,online)
 end
 
 local function draw_tabs(st,ui,x,y,w)
-  local tx=x+1
-  for i,label in ipairs(tabs) do
-    local bg=i==st.tab and colors.gray or colors.black
-    local fg=i==st.tab and colors.white or colors.lightGray
-    ui.text(tx,y," "..label.." ",fg,bg)
-    tx=tx+#label+3
-  end
+  Theme.tabs(ui,x,y,w,tabs,st.tab)
 end
 
 function M.draw(ctx,st,ui,x,y,w,h)
@@ -196,9 +191,12 @@ function M.draw(ctx,st,ui,x,y,w,h)
     end
   end
 
-  ui.fill(x,y+h-1,x+w-1,y+h-1,colors.gray,colors.white)
-  ui.text(x+1,y+h-1,tostring(st.message or "Tab view"):sub(1,math.max(1,w-2)),
-    st.message and colors.orange or colors.lightGray,colors.gray)
+  local tone=st.message and (
+    tostring(st.message):lower():find("fail",1,true) and "danger"
+    or tostring(st.message):lower():find("offline",1,true) and "danger"
+    or "accent"
+  ) or nil
+  Theme.footer(ui,x,y+h-1,w,tostring(st.message or "Tab view"),tone)
 end
 
 local function selected_node(st)
