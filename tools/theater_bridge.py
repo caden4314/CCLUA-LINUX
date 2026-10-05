@@ -275,7 +275,15 @@ def derive_adaptive_palette(frames: list[bytes], width: int, height: int) -> np.
         method=Image.Quantize.MEDIANCUT,
         dither=Image.Dither.NONE,
     )
-    raw=np.array(quant.getpalette()[:48],dtype=np.int32).reshape(16,3)
+    # Pillow may return a truncated palette when the sampled scene contains
+    # fewer than 16 unique colours. Always materialize 16 RGB entries so a
+    # low-colour/near-solid frame cannot abort the HTTP response.
+    palette_values=list(quant.getpalette() or [])
+    needed=16*3
+    if len(palette_values)<needed:
+        fallback=PALETTE.astype(np.uint8).reshape(-1).tolist()
+        palette_values.extend(fallback[len(palette_values):needed])
+    raw=np.array(palette_values[:needed],dtype=np.int32).reshape(16,3)
 
     # Stable luminance ordering makes palette transitions less chaotic. Keep an
     # exact black entry for letterbox bars and near-black cinema scenes.
