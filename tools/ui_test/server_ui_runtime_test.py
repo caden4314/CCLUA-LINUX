@@ -189,6 +189,20 @@ top_rc=top.main(ctx,{"--batch"})
 top_out=output_text()
 
 reset_output()
+local cclua=dofile("/usr/bin/cclua.lua")
+cclua_rc=cclua.main(ctx,{"status"})
+cclua_out=output_text()
+
+reset_output()
+cclua_services_rc=cclua.main(ctx,{"services","failed"})
+cclua_services_out=output_text()
+
+reset_output()
+local fastfetch=dofile("/usr/bin/fastfetch.lua")
+fastfetch_rc=fastfetch.main(ctx,{"--plain"})
+fastfetch_out=output_text()
+
+reset_output()
 read=function(_,_) return nil end
 local shell=dofile("/usr/lib/cclua/shell.lua")
 shell_rc=shell.run(ctx,{"--login"})
@@ -209,6 +223,9 @@ def check(name, text, terms):
 status_out=str(g.status_out)
 systemctl_out=str(g.systemctl_out)
 top_out=str(g.top_out)
+cclua_out=str(g.cclua_out)
+cclua_services_out=str(g.cclua_services_out)
+fastfetch_out=str(g.fastfetch_out)
 shell_out=str(g.shell_out)
 dashboard_out=str(g.dashboard_out)
 
@@ -218,6 +235,12 @@ assert int(g.systemctl_rc)==3
 check("systemctl",systemctl_out,["example-failed.service","Active:","Error:","Hint:"])
 assert int(g.top_rc)==0
 check("top",top_out,["Tasks:","Services:","PID USER","systemd-networkd.service"])
+assert int(g.cclua_rc)==1
+check("cclua status",cclua_out,["serverr-4","System","Services","Network","Update"])
+assert int(g.cclua_services_rc)==1
+check("cclua services",cclua_services_out,["SERVICES","example-failed.service","simulated service failure"])
+assert int(g.fastfetch_rc)==1
+check("fastfetch",fastfetch_out,["Ubuntu 22.04.5 / CCLUA","caden@serverr-4","Kernel:","Network:","Update:"])
 assert int(g.shell_rc)==0
 check("shell",shell_out,["Ubuntu 22.04.5 LTS [CCLUA]","SYSTEM DEGRADED","NET ONLINE","POST PASSED"])
 check("dashboard",dashboard_out,["SYSTEM","NETWORK","UPDATE","SERVICES","example-failed.service"])
@@ -226,5 +249,7 @@ print("SERVER_UI_RUNTIME_OK")
 print("STATUS_HIERARCHY_PASS")
 print("SYSTEMCTL_ERROR_UX_PASS")
 print("TOP_TABLE_PASS")
+print("SYSTEM_API_UNIFIED_CLI_PASS")
+print("FASTFETCH_PASS")
 print("SHELL_MOTD_PASS")
 print("WIDE_DASHBOARD_PASS")

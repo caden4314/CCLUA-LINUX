@@ -1,5 +1,6 @@
 local M={}
 local config=dofile("/usr/lib/cclua/config.lua")
+local systemApi=dofile("/usr/lib/cclua/api/system.lua")
 local Theme=dofile("/usr/lib/cclua/desktop/theme.lua")
 
 function M.new(ctx)
@@ -17,9 +18,10 @@ local function fit(value,width)
 end
 
 local function value_rows(ctx,section)
-  local m=config.machine()
+  local snapshot=systemApi.snapshot(ctx)
+  local m=snapshot.machine
   if section==2 then
-    local n=config.read_json("/var/lib/cclua/network-health.json",{})
+    local n=snapshot.network
     return {
       {"Hostname",m.hostname or "test-client"},
       {"Address",m.address or "unconfigured"},
@@ -32,7 +34,7 @@ local function value_rows(ctx,section)
       {"Reopens",tostring(n.reopen_count or 0)},
     }
   elseif section==3 then
-    local u=config.read_json("/var/lib/cclua/update-state.json",{})
+    local u=snapshot.update
     return {
       {"State",u.state or "UNKNOWN"},
       {"Image",fit(u.current_commit or "?",18)},
@@ -52,17 +54,16 @@ local function value_rows(ctx,section)
       {"Session","ubuntu"},
     }
   end
-  local post=config.read_json("/var/lib/cclua/post.json",{})
   return {
     {"OS","Ubuntu 22.04.5 LTS Desktop"},
-    {"Device",m.hostname or "test-client"},
-    {"Computer ID",tostring(os.getComputerID())},
-    {"Kernel",tostring(ctx.kernel.version.version)},
-    {"Kernel ABI",tostring(ctx.kernel.version.kernel_abi)},
-    {"Role",m.role or "desktop-client"},
-    {"POST",post.state or "UNKNOWN"},
-    {"Processes",tostring(#ctx.kernel.process.all())},
-    {"User","caden"},
+    {"Device",snapshot.host.hostname},
+    {"Computer ID",tostring(snapshot.host.computer_id)},
+    {"Kernel",tostring(snapshot.system.kernel)},
+    {"Kernel ABI",tostring(snapshot.system.kernel_abi)},
+    {"Role",snapshot.host.role},
+    {"POST",snapshot.post.state},
+    {"Processes",tostring(snapshot.system.process_count)},
+    {"User",snapshot.host.user},
   }
 end
 

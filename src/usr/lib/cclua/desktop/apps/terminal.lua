@@ -178,7 +178,8 @@ local function run_command(ctx,st,line)
   end
   if argv[1]=="help" then
     push(st,"Shell: cd pwd clear history help",colors.cyan)
-    push(st,"System: cclua-status systemctl journalctl top ps ip ping apt dpkg",colors.lightGray)
+    push(st,"System: cclua fastfetch systemctl journalctl top ps ip ping",colors.lightGray)
+    push(st,"Packages: apt dpkg  |  Legacy detail: cclua-status",colors.lightGray)
     push(st,"Editing: Left/Right Home/End  Ctrl+A/E/U/K/W/C/R  Tab complete",colors.lightGray)
     push(st,"Scrollback: PageUp/PageDown or mouse wheel",colors.lightGray)
     st.lastStatus=0
