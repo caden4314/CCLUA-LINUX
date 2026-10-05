@@ -1261,8 +1261,16 @@ return function(ctx)
     if cols<32 or rows<12 then return nil,"main monitor is too small" end
     s.video_cols=cols
     s.video_rows=rows
-    s.rgb24=type(mon.rgbBegin)=="function" and
-      type(mon.rgbChunk)=="function" and type(mon.rgbPresent)=="function"
+    -- CCPerf exposes the framebuffer as a generic monitor extension. Theater
+    -- only consumes that API; it has no renderer-specific monitor hooks.
+    s.rgb24=type(mon.framebufferInfo)=="function" and
+      type(mon.framebufferCreate)=="function" and
+      type(mon.framebufferWrite)=="function" and
+      type(mon.framebufferPresent)=="function"
+    if s.rgb24 then
+      local okInfo,info=pcall(mon.framebufferInfo)
+      s.rgb24=okInfo and type(info)=="table" and info.format=="rgb888"
+    end
     s.rgb_width=cols*2
     s.rgb_height=rows*3
 
@@ -1394,17 +1402,17 @@ return function(ctx)
                 local video=seg.raw:sub(packetOffset,packetOffset+seg.frame_bytes-1)
                 if seg.color_mode=="rgb24" and s.rgb24 then
                   if not s.rgb_initialized then
-                    mon.rgbBegin(s.rgb_width,s.rgb_height)
+                    mon.framebufferCreate(s.rgb_width,s.rgb_height)
                     s.rgb_initialized=true
                   end
                   local chunkBytes=24576
                   local off=1
                   while off<=#video do
                     local last=math.min(#video,off+chunkBytes-1)
-                    mon.rgbChunk(off-1,video:sub(off,last))
+                    mon.framebufferWrite(off-1,video:sub(off,last))
                     off=last+1
                   end
-                  mon.rgbPresent()
+                  mon.framebufferPresent()
                 else
                   local voff=1
                   for row=0,rows-1 do
