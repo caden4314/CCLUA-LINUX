@@ -1,7 +1,7 @@
 $ErrorActionPreference = "Stop"
 
 $Root = "E:\Minecraft\CCLUA-Server"
-$Java = "C:\Program Files\Eclipse Adoptium\jdk-17.0.20.101-hotspot\bin\java.exe"
+$Java = "E:\Minecraft\Runtime\java17\bin\javaw.exe"
 $Jar = Join-Path $Root "fabric-server-launch.jar"
 $Control = Join-Path $Root "control"
 $Logs = Join-Path $Root "logs"
