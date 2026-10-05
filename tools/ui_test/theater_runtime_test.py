@@ -64,7 +64,7 @@ function textutils.unserializeJSON(raw)
 end
 
 http_requests={}
-video_connect_failures=1
+av_connect_failures=1
 http={}
 function http.get(url,headers,binary)
   url=tostring(url)
@@ -76,33 +76,36 @@ function http.get(url,headers,binary)
       close=function() end,
     }
   end
-  if url:find("/audio.pcm",1,true) then
-    local sent=false
+  if url:find("/av.stream",1,true) then
+    if av_connect_failures>0 then
+      av_connect_failures=av_connect_failures-1
+      return nil,"Could not connect"
+    end
+    local reads=0
     return {
       getResponseCode=function() return 200 end,
+      getResponseHeaders=function()
+        return {
+          ["X-CCLUA-Format"]="av-blit-pcm-v1",
+          ["X-CCLUA-Cols"]="167",
+          ["X-CCLUA-Rows"]="55",
+          ["X-CCLUA-FPS"]="20.000",
+          ["X-CCLUA-Frame-Bytes"]=tostring(167*55*3),
+          ["X-CCLUA-Audio-Bytes"]="2400",
+          ["X-CCLUA-Sample-Rate"]="48000",
+        }
+      end,
       read=function(n)
-        if sent then return nil end
-        sent=true
-        return string.rep(string.char(0),math.min(1024,tonumber(n) or 1024))
+        reads=reads+1
+        if reads==1 then return string.rep(" ",tonumber(n) or 1) end
+        if reads==2 then return string.rep(string.char(0),tonumber(n) or 1) end
+        return nil
       end,
       close=function() end,
     }
   end
-  if url:find("/video.blit",1,true) then
-    if video_connect_failures>0 then
-      video_connect_failures=video_connect_failures-1
-      return nil,"Could not connect"
-    end
-    local sent=false
-    return {
-      getResponseCode=function() return 200 end,
-      read=function(n)
-        if sent then return nil end
-        sent=true
-        return string.rep(" ",tonumber(n) or 1)
-      end,
-      close=function() end,
-    }
+  if url:find("/audio.pcm",1,true) or url:find("/video.blit",1,true) then
+    error("split stream endpoint should not be used by normal theater playback")
   end
   return nil,"unexpected URL in theater runtime test: "..url
 end
@@ -316,40 +319,40 @@ assert(saved_state.lighting_transition==true)
 settle_brightness(50)
 assert(count_lights()==27,("50 percent fixture count %d"):format(count_lights()))
 
--- Playback workers must synchronize through their shared session state without
--- depending on custom queueEvent delivery. Maximum-quality mode should use the
--- entire 167x55 monitor at 20 FPS.
+-- Normal playback uses one multiplexed A/V worker. The first mocked
+-- connection fails, retry succeeds, and one complete video+audio packet must
+-- arrive before the controller leaves BUFFERING.
 kind=drive("cclua_theater_command","play",{id="movie1"})
 assert(kind=="wait_event")
 assert(saved_state.state=="BUFFERING")
-assert(#child_order==2,"expected audio and video workers")
+assert(#child_order==1,"expected one multiplexed A/V worker")
 run_children_once()
-assert(processes[child_order[1]].state=="sleeping")
-assert(processes[child_order[2]].state=="sleeping")
--- The mocked video bridge rejects the first connection. Advance through the
--- retry backoff and require the next attempt to reach the shared sync barrier.
+assert(processes[child_order[1]].state=="sleeping","first A/V retry should back off")
+
 mock_now=mock_now+250
 run_children_once()
+assert(processes[child_order[1]].state=="sleeping","A/V worker should prebuffer then wait for start")
 assert(last_refresh_timer~=nil)
 kind=drive("timer",last_refresh_timer)
 assert(kind=="wait_event")
-assert(saved_state.state=="PLAYING","playback did not leave BUFFERING")
-assert(saved_state.streams.audio.ready==true)
-assert(saved_state.streams.video.ready==true)
-assert(saved_state.streams.video.cols==167)
-assert(saved_state.streams.video.rows==55)
+assert(saved_state.state=="PLAYING","multiplexed playback did not leave BUFFERING")
+assert(saved_state.streams.av.ready==true)
+assert(saved_state.streams.av.cols==167)
+assert(saved_state.streams.av.rows==55)
+assert(saved_state.streams.av.audio_bytes==2400)
 
-local sawAudio,videoRequests=false,0
+local avRequests=0
 for _,url in ipairs(http_requests) do
-  if url:find("/audio.pcm",1,true) then sawAudio=true end
-  if url:find("/video.blit",1,true) then
-    videoRequests=videoRequests+1
+  if url:find("/av.stream",1,true) then
+    avRequests=avRequests+1
     assert(url:find("cols=167",1,true))
     assert(url:find("rows=55",1,true))
     assert(url:find("fps=20.000",1,true))
   end
+  assert(not url:find("/audio.pcm",1,true),"normal playback used split audio endpoint")
+  assert(not url:find("/video.blit",1,true),"normal playback used split video endpoint")
 end
-assert(sawAudio and videoRequests>=2,"stream retry did not issue the expected bridge requests")
+assert(avRequests>=2,"multiplexed stream retry did not issue expected requests")
 
 print("THEATER_RUNTIME_OK")
 print("MONITORS_3_OF_3_PASS")
@@ -359,7 +362,7 @@ print("FEATURE_5_GUIDE_FIXTURES_PASS")
 print("TRAILERS_17_SYMMETRIC_FIXTURES_PASS")
 print("PRESHOW_33_FIXTURES_PASS")
 print("DIMMER_50_PERCENT_27_SYMMETRIC_FIXTURES_PASS")
-print("PLAYBACK_SHARED_SYNC_PASS")
-print("VIDEO_CONNECT_RETRY_PASS")
-print("FULL_WALL_167X55_20FPS_REQUEST_PASS")
+print("PLAYBACK_MUX_PREBUFFER_PASS")
+print("AV_CONNECT_RETRY_PASS")
+print("FULL_WALL_167X55_20FPS_MUX_REQUEST_PASS")
 ''')

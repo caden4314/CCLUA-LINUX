@@ -92,6 +92,18 @@ with tempfile.TemporaryDirectory(prefix="cclua-theater-test-") as td:
     assert len(chars)==len(fg)==len(bg)==cols
     assert all(c in b"0123456789abcdef" for c in fg+bg)
 
+    av_url=origin+f"/v1/movies/{item['id']}/av.stream?start=0.25&cols={cols}&rows={rows}&fps=20"
+    with urllib.request.urlopen(av_url,timeout=20) as r:
+        assert r.headers.get("X-CCLUA-Format")=="av-blit-pcm-v1"
+        assert int(r.headers.get("X-CCLUA-Cols"))==cols
+        assert int(r.headers.get("X-CCLUA-Rows"))==rows
+        assert float(r.headers.get("X-CCLUA-FPS"))==20.0
+        assert int(r.headers.get("X-CCLUA-Frame-Bytes"))==frame_bytes
+        audio_bytes=int(r.headers.get("X-CCLUA-Audio-Bytes"))
+        assert audio_bytes==2400
+        packet=r.read(frame_bytes+audio_bytes)
+    assert len(packet)==frame_bytes+2400
+
     server.shutdown();server.server_close();thread.join(timeout=2)
 
 print("THEATER_BRIDGE_OK")
@@ -99,3 +111,4 @@ print("CATALOG_METADATA_PASS")
 print("PCM_48K_STREAM_PASS")
 print("BLIT_FULL_WALL_334X165_20FPS_FRAME_PASS")
 print("VECTORIZED_ENCODER_EQUIVALENCE_PASS")
+print("MUX_AV_PACKET_20FPS_PASS")

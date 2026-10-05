@@ -571,6 +571,7 @@ return function(ctx)
     if not session then return end
     if keepPosition then state.position=current_position() end
     session.active=false
+    stop_process(session.av_pid)
     stop_process(session.audio_pid)
     stop_process(session.video_pid)
     for _,s in ipairs(room_speakers()) do pcall(s.obj.stop) end
@@ -797,6 +798,169 @@ return function(ctx)
     end)
     return true
   end
+  local function spawn_av(s,movie)
+    local mon=wrap_monitor(mainName)
+    if not mon then return nil,"main theater monitor missing" end
+    local speakers=room_speakers()
+    if #speakers==0 then return nil,"no theater speakers present" end
+
+    local mw,mh=mon.getSize()
+    local cols=(targetCols and targetCols>0) and math.min(targetCols,mw) or mw
+    local rows=(targetRows and targetRows>0) and math.min(targetRows,mh) or mh
+    cols=math.max(1,math.floor(cols))
+    rows=math.max(1,math.floor(rows))
+    if cols<32 or rows<12 then return nil,"main monitor is too small" end
+
+    s.video_cols=cols
+    s.video_rows=rows
+
+    local parent=ctx.process
+    local proc,err=ctx.kernel.process.create{
+      ppid=parent.pid,name="cclua-theater-av",
+      uid=parent.uid,gid=parent.gid,groups=parent.groups,
+      cwd=parent.cwd,capabilities=parent.capabilities,
+      argv={"theater-av",tostring(movie.id)},
+    }
+    if not proc then return nil,err end
+    s.av_pid=proc.pid
+
+    ctx.kernel.scheduler:add(proc,function()
+      local ok,runErr=pcall(function()
+        local url=ORIGIN.."/v1/movies/"..tostring(movie.id).."/av.stream"..
+          ("?start=%.3f&cols=%d&rows=%d&fps=%.3f"):format(
+            s.start_position or 0,cols,rows,fps)
+
+        local h,httpErr=open_stream(s,"av",url,{
+          ["Accept"]="application/octet-stream",
+          ["User-Agent"]="CCLUA-Theater/0.2",
+        })
+        if not h then error(tostring(httpErr or "A/V stream unavailable"),0) end
+
+        local code=h.getResponseCode and h.getResponseCode() or 200
+        if tonumber(code)~=200 then h.close();error("A/V HTTP "..tostring(code),0) end
+
+        local headers=h.getResponseHeaders and h.getResponseHeaders() or {}
+        local function header(name)
+          local wanted=tostring(name):lower()
+          for k,v in pairs(headers) do
+            if tostring(k):lower()==wanted then return tostring(v) end
+          end
+          return nil
+        end
+
+        local format=header("X-CCLUA-Format")
+        local gotCols=tonumber(header("X-CCLUA-Cols")) or cols
+        local gotRows=tonumber(header("X-CCLUA-Rows")) or rows
+        local gotFps=tonumber(header("X-CCLUA-FPS")) or fps
+        local frameBytes=tonumber(header("X-CCLUA-Frame-Bytes")) or (cols*rows*3)
+        local audioBytes=tonumber(header("X-CCLUA-Audio-Bytes")) or math.floor(48000/fps+0.5)
+        local sampleRate=tonumber(header("X-CCLUA-Sample-Rate")) or 48000
+
+        if format and format~="av-blit-pcm-v1" then
+          h.close();error("unsupported A/V stream format: "..tostring(format),0)
+        end
+        if gotCols~=cols or gotRows~=rows then
+          h.close();error(("A/V geometry mismatch: bridge=%dx%d client=%dx%d"):format(
+            gotCols,gotRows,cols,rows),0)
+        end
+        if frameBytes~=cols*rows*3 then
+          h.close();error(("A/V frame mismatch: bridge bytes=%d client bytes=%d"):format(
+            frameBytes,cols*rows*3),0)
+        end
+        if math.abs(gotFps-fps)>0.01 then
+          h.close();error(("A/V FPS mismatch: bridge=%.3f client=%.3f"):format(gotFps,fps),0)
+        end
+        if sampleRate~=48000 or audioBytes<1 then
+          h.close();error("unsupported A/V audio geometry",0)
+        end
+
+        s.audio_bytes=audioBytes
+        s.av_stage="prebuffering"
+
+        -- Do not declare playback ready until one complete synchronized packet
+        -- has arrived. This prevents an HTTP connection with no payload from
+        -- leaving the theater in a permanent BUFFERING state.
+        local videoRaw=read_exact(h,frameBytes)
+        local audioRaw=read_exact(h,audioBytes)
+        if not videoRaw or not audioRaw then
+          h.close();error("A/V stream ended during prebuffer",0)
+        end
+
+        s.av_ready=true
+        s.av_stage="ready"
+        s.start_epoch=now_ms()+250
+        s.go=true
+
+        mon.setBackgroundColor(colors.black)
+        mon.setTextColor(colors.white)
+        mon.clear()
+        local ox=math.floor((mw-cols)/2)+1
+        local oy=math.floor((mh-rows)/2)+1
+        local frame=0
+
+        local function present(video,audioRaw)
+          frame=frame+1
+          local target=(s.start_epoch or now_ms())+((frame-1)/fps)*1000
+          if now_ms()<target then coroutine.yield("sleep",math.floor(target)) end
+          local late=now_ms()-target
+
+          if late<120 then
+            local off=1
+            for row=0,rows-1 do
+              local chars=video:sub(off,off+cols-1);off=off+cols
+              local fg=video:sub(off,off+cols-1);off=off+cols
+              local bg=video:sub(off,off+cols-1);off=off+cols
+              mon.setCursorPos(ox,oy+row)
+              mon.blit(chars,fg,bg)
+            end
+          else
+            s.dropped_frames=(s.dropped_frames or 0)+1
+          end
+
+          local audio=pcm_decode(audioRaw)
+          local pending={}
+          for _,sp in ipairs(speakers) do pending[#pending+1]=sp end
+          while s.active and #pending>0 do
+            for i=#pending,1,-1 do
+              local sp=pending[i]
+              local okPlay,accepted=pcall(sp.obj.playAudio,audio,s.volume)
+              if not okPlay then
+                ctx.kernel.log.write("warning","theaterd","speaker playback failed",
+                  {speaker=sp.name,error=tostring(accepted)},proc.pid)
+                table.remove(pending,i)
+              elseif accepted then
+                table.remove(pending,i)
+              end
+            end
+            if #pending>0 then
+              local ev=coroutine.yield("wait_event",{"speaker_audio_empty","terminate"})
+              if ev=="terminate" then return false end
+            end
+          end
+          return s.active
+        end
+
+        s.av_stage="playing"
+        while s.active do
+          if not present(videoRaw,audioRaw) then break end
+          videoRaw=read_exact(h,frameBytes)
+          if not videoRaw then break end
+          audioRaw=read_exact(h,audioBytes)
+          if not audioRaw then break end
+        end
+        h.close()
+      end)
+
+      if not ok then
+        ctx.kernel.log.write("error","theaterd","A/V stream failed",{error=tostring(runErr)},proc.pid)
+        if os.queueEvent then os.queueEvent("cclua_theater_stream_error",s.token,"av",tostring(runErr)) end
+        return 1
+      end
+      if s.active and os.queueEvent then os.queueEvent("cclua_theater_stream_end",s.token,"av") end
+      return 0
+    end)
+    return true
+  end
   local function start_movie(movie,position)
     if not movie then return nil,"movie metadata required" end
     stop_session(false)
@@ -817,12 +981,11 @@ return function(ctx)
     state.error=nil
     lastRenderKey.main=nil
 
-    local vok,verr=spawn_video(s,movie)
-    local aok,aerr=spawn_audio(s,movie)
-    if not vok or not aok then
+    local avok,averr=spawn_av(s,movie)
+    if not avok then
       stop_session(false)
       state.state="ERROR"
-      state.error=tostring(verr or aerr)
+      state.error=tostring(averr)
       save_state();render_all()
       return nil,state.error
     end
@@ -992,19 +1155,14 @@ return function(ctx)
 
     elseif ev=="timer" and a==refreshTimer then
       if session and session.active then
-        local ap=session.audio_pid and ctx.kernel.process.get(session.audio_pid) or nil
-        local vp=session.video_pid and ctx.kernel.process.get(session.video_pid) or nil
+        local avp=session.av_pid and ctx.kernel.process.get(session.av_pid) or nil
         state.streams={
-          audio={
-            pid=session.audio_pid,state=ap and ap.state or "missing",
-            stage=session.audio_stage or "spawned",ready=session.audio_ready==true,
-            attempt=session.audio_attempt,last_error=session.audio_last_error,
-          },
-          video={
-            pid=session.video_pid,state=vp and vp.state or "missing",
-            stage=session.video_stage or "spawned",ready=session.video_ready==true,
-            attempt=session.video_attempt,last_error=session.video_last_error,
+          av={
+            pid=session.av_pid,state=avp and avp.state or "missing",
+            stage=session.av_stage or "spawned",ready=session.av_ready==true,
+            attempt=session.av_attempt,last_error=session.av_last_error,
             cols=session.video_cols,rows=session.video_rows,
+            audio_bytes=session.audio_bytes,
           },
         }
         if session.go then
@@ -1045,8 +1203,17 @@ return function(ctx)
     elseif ev=="cclua_theater_stream_end" and session and a==session.token then
       local kind=tostring(b or "")
       session[kind.."_ended"]=true
-      if session.audio_ended or session.video_ended then
-        -- Either stream ending naturally means the feature is effectively over.
+      if kind=="av" then
+        if state.duration and current_position()>=state.duration-1.5 then
+          stop_movie(true)
+        else
+          stop_session(true)
+          state.state="ERROR"
+          state.error="A/V stream ended before the feature completed"
+          lastRenderKey.main=nil
+          save_state();render_all()
+        end
+      elseif session.audio_ended or session.video_ended then
         if state.duration and current_position()>=state.duration-1.5 then
           stop_movie(true)
         end

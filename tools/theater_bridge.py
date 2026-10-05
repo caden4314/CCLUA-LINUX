@@ -30,6 +30,7 @@ from music_import import NO_WINDOW, ffmpeg_exe
 DEFAULT_LIBRARY = Path(r"E:\Minecraft\Theater\Movies")
 DEFAULT_BIND = "127.0.0.1"
 DEFAULT_PORT = 8766
+DEFAULT_LIVE_LOG = Path(r"E:\Minecraft\CCLUA-LINUX\artifacts\theater-bridge-live.jsonl")
 MOVIE_EXTENSIONS = {".mp4", ".mkv", ".webm", ".mov", ".m4v", ".avi"}
 
 # Standard CC:Tweaked 16-colour palette, indexed by blit nibble 0..f.
@@ -228,10 +229,23 @@ class TheaterBridge:
     def __init__(self, cfg: BridgeConfig):
         self.cfg = cfg
         self.started = utc_now()
+        self.live_log = DEFAULT_LIVE_LOG
+        self._log_lock = threading.Lock()
         self._lock = threading.RLock()
         self._catalog: list[dict] = []
         self._catalog_at = 0.0
         self._probe_cache: dict[str, tuple[int,int,dict]] = {}
+
+    def log_event(self, event: str, **details) -> None:
+        record = {"ts": utc_now(), "event": event, **details}
+        try:
+            self.live_log.parent.mkdir(parents=True, exist_ok=True)
+            raw = json.dumps(record, separators=(",",":"), ensure_ascii=False)
+            with self._log_lock:
+                with self.live_log.open("a", encoding="utf-8") as f:
+                    f.write(raw+"\n")
+        except Exception:
+            pass
 
     def catalog(self, max_age: float = 3.0) -> list[dict]:
         with self._lock:
@@ -292,7 +306,7 @@ class Handler(BaseHTTPRequestHandler):
             self.json({"schema":1,"updated_utc":utc_now(),"movies":self.bridge.catalog()})
             return
 
-        m = re.fullmatch(r"/v1/movies/([0-9a-f]{16})/(audio\.pcm|video\.blit)", path)
+        m = re.fullmatch(r"/v1/movies/([0-9a-f]{16})/(audio\.pcm|video\.blit|av\.stream)", path)
         if not m:
             self.json({"ok":False,"error":"not found"},404)
             return
@@ -319,7 +333,10 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 self.json({"ok":False,"error":"invalid video geometry"},400)
                 return
-            self.stream_video(source,start,cols,rows,fps)
+            if kind == "video.blit":
+                self.stream_video(source,start,cols,rows,fps)
+            else:
+                self.stream_av(source,start,cols,rows,fps)
 
     def stream_audio(self, source: Path, start: float):
         cmd = [ffmpeg_exe(),"-hide_banner","-loglevel","error"]
@@ -408,6 +425,99 @@ class Handler(BaseHTTPRequestHandler):
             try: proc.wait(timeout=2)
             except Exception:
                 proc.kill()
+
+    def stream_av(self, source: Path, start: float, cols: int, rows: int, fps: float):
+        """Stream synchronized CC blit video + signed 8-bit mono PCM.
+
+        Packet layout is fixed by the response headers:
+          [video_frame_bytes][audio_bytes_per_frame]
+        repeated until EOF. At 20 FPS, audio_bytes_per_frame is exactly 2400
+        samples (50 ms at 48 kHz).
+        """
+        width, height = cols*2, rows*3
+        sample_rate = 48000
+        audio_bytes = max(1, int(round(sample_rate / fps)))
+        raw_frame_bytes = width*height*3
+        encoded_bytes = cols*rows*3
+
+        vf = (
+            f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+            f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black,"
+            f"fps={fps:.3f}"
+        )
+
+        vcmd = [ffmpeg_exe(),"-hide_banner","-loglevel","error"]
+        acmd = [ffmpeg_exe(),"-hide_banner","-loglevel","error"]
+        if start > 0:
+            vcmd += ["-ss",f"{start:.3f}"]
+            acmd += ["-ss",f"{start:.3f}"]
+        vcmd += [
+            "-i",str(source),"-an","-vf",vf,
+            "-pix_fmt","rgb24","-f","rawvideo","pipe:1"
+        ]
+        acmd += [
+            "-i",str(source),"-vn","-map","0:a:0?",
+            "-ac","1","-ar",str(sample_rate),"-acodec","pcm_s8","-f","s8","pipe:1"
+        ]
+
+        vproc = subprocess.Popen(
+            vcmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL, creationflags=NO_WINDOW
+        )
+        aproc = subprocess.Popen(
+            acmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL, creationflags=NO_WINDOW
+        )
+
+        self.send_response(200)
+        self.send_header("Content-Type","application/octet-stream")
+        self.send_header("X-CCLUA-Format","av-blit-pcm-v1")
+        self.send_header("X-CCLUA-Cols",str(cols))
+        self.send_header("X-CCLUA-Rows",str(rows))
+        self.send_header("X-CCLUA-FPS",f"{fps:.3f}")
+        self.send_header("X-CCLUA-Frame-Bytes",str(encoded_bytes))
+        self.send_header("X-CCLUA-Audio-Bytes",str(audio_bytes))
+        self.send_header("X-CCLUA-Sample-Rate",str(sample_rate))
+        self.send_header("Connection","close")
+        self.end_headers()
+        self.close_connection = True
+
+        def read_exact(stream, size: int) -> bytes:
+            buf = bytearray()
+            while len(buf) < size:
+                chunk = stream.read(size-len(buf))
+                if not chunk:
+                    break
+                buf.extend(chunk)
+            return bytes(buf)
+
+        try:
+            assert vproc.stdout is not None
+            assert aproc.stdout is not None
+            while True:
+                raw = read_exact(vproc.stdout, raw_frame_bytes)
+                if len(raw) != raw_frame_bytes:
+                    break
+
+                audio = read_exact(aproc.stdout, audio_bytes)
+                if len(audio) < audio_bytes:
+                    audio += bytes(audio_bytes-len(audio))
+
+                encoded = encode_frame(raw,cols,rows)
+                self.wfile.write(encoded)
+                self.wfile.write(audio)
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass
+        finally:
+            for proc in (vproc,aproc):
+                if proc.poll() is None:
+                    proc.terminate()
+            for proc in (vproc,aproc):
+                try:
+                    proc.wait(timeout=2)
+                except Exception:
+                    proc.kill()
 
 class Server(ThreadingHTTPServer):
     daemon_threads = True
