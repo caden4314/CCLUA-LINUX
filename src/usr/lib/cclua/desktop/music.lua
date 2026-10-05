@@ -442,42 +442,84 @@ function M.play_remote(ctx,track,speakerName,volume,opts)
 
   ctx.kernel.scheduler:add(proc,function()
     local okRun,runErr=pcall(function()
-      local headers={
-        ["Accept"]=usePcm and "application/octet-stream" or "audio/x-dfpwm",
-        ["User-Agent"]="CCLUA-Music/0.4"
-      }
-      if not usePcm and start>0 then
-        headers["Range"]="bytes="..tostring(math.floor(start*6000)).."-"
-      end
-      local h,httpErr=http.get(url,headers,true)
-      if not h then error(tostring(httpErr or "bridge stream unavailable"),0) end
-      local code=h.getResponseCode and h.getResponseCode() or 200
-      if tonumber(code)~=200 and tonumber(code)~=206 then
-        h.close()
-        error("bridge stream HTTP "..tostring(code),0)
-      end
-
-      local decoder=usePcm and pcm_s8_decode or make_dfpwm_decoder()
-      local chunkSize=usePcm and (12*1024) or (16*1024)
-      while true do
-        local chunk=h.read(chunkSize)
-        if not chunk then break end
-        local audio=decoder(chunk)
+      local function submit_audio(audio,h)
         while true do
           local current=M.players[key]
-          if not current or current.pid~=proc.pid then h.close();return end
+          if not current or current.pid~=proc.pid then h.close();return false end
           local okPlay,accepted=pcall(speaker.playAudio,audio,current.volume)
           if not okPlay then h.close();error(accepted,0) end
           if accepted then
             current.position=(current.position or 0)+(#audio/48000)
             if current.duration then current.position=math.min(current.duration,current.position) end
-            break
+            return true
           end
           local ev=coroutine.yield("wait_event",{"speaker_audio_empty","terminate"})
-          if ev=="terminate" then h.close();return end
+          if ev=="terminate" then h.close();return false end
         end
       end
-      h.close()
+
+      if usePcm then
+        local segmentSeconds=240
+        local segmentStart=start
+        while true do
+          local segmentUrl=pcmUrl..(pcmUrl:find("?",1,true) and "&" or "?")..
+            "start="..("%.3f"):format(segmentStart)..
+            "&seconds="..tostring(segmentSeconds)
+          player.stream_url=segmentUrl
+
+          local h,httpErr=http.get(segmentUrl,{
+            ["Accept"]="application/octet-stream",
+            ["User-Agent"]="CCLUA-Music/0.4"
+          },true)
+          if not h then error(tostring(httpErr or "bridge PCM stream unavailable"),0) end
+          local code=h.getResponseCode and h.getResponseCode() or 200
+          if tonumber(code)~=200 then
+            h.close()
+            error("bridge PCM HTTP "..tostring(code),0)
+          end
+
+          local samples=0
+          while true do
+            local chunk=h.read(12*1024)
+            if not chunk then break end
+            local audio=pcm_s8_decode(chunk)
+            samples=samples+#audio
+            if not submit_audio(audio,h) then return end
+          end
+          h.close()
+
+          local current=M.players[key]
+          if not current or current.pid~=proc.pid then return end
+          if samples==0 then break end
+          if current.duration and current.position>=current.duration-0.05 then break end
+          if samples<(segmentSeconds*48000)-1024 then break end
+          segmentStart=current.position
+        end
+      else
+        local headers={
+          ["Accept"]="audio/x-dfpwm",
+          ["User-Agent"]="CCLUA-Music/0.4"
+        }
+        if start>0 then
+          headers["Range"]="bytes="..tostring(math.floor(start*6000)).."-"
+        end
+        local h,httpErr=http.get(url,headers,true)
+        if not h then error(tostring(httpErr or "bridge DFPWM stream unavailable"),0) end
+        local code=h.getResponseCode and h.getResponseCode() or 200
+        if tonumber(code)~=200 and tonumber(code)~=206 then
+          h.close()
+          error("bridge DFPWM HTTP "..tostring(code),0)
+        end
+
+        local decoder=make_dfpwm_decoder()
+        while true do
+          local chunk=h.read(16*1024)
+          if not chunk then break end
+          if not submit_audio(decoder(chunk),h) then return end
+        end
+        h.close()
+      end
+
       coroutine.yield("wait_event",{"speaker_audio_empty","peripheral_detach","terminate"})
     end)
 

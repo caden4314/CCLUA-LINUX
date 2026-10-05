@@ -365,19 +365,26 @@ class HarmoniBridge:
                             return
                         remaining -= len(chunk)
 
-            def send_pcm_track(self, track_id: str, start_seconds: float = 0.0) -> None:
+            def send_pcm_track(
+                self, track_id: str, start_seconds: float = 0.0, segment_seconds: float = 240.0
+            ) -> None:
                 source = bridge.source_track_path(track_id)
                 if source is None:
                     self.send_json({"ok": False, "error": "track source not found"}, HTTPStatus.NOT_FOUND)
                     return
 
                 start_seconds = max(0.0, float(start_seconds or 0.0))
+                # Keep every response comfortably below CC:Tweaked's configured
+                # 16 MiB max_download rule. 48 kHz mono s8 is 48,000 bytes/s,
+                # so 240 seconds is ~11.5 MB.
+                segment_seconds = max(1.0, min(300.0, float(segment_seconds or 240.0)))
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Content-Type", "application/octet-stream")
                 self.send_header("X-CCLUA-Audio-Format", "pcm_s8")
                 self.send_header("X-CCLUA-Sample-Rate", "48000")
                 self.send_header("X-CCLUA-Channels", "1")
                 self.send_header("X-CCLUA-Start-Seconds", f"{start_seconds:.3f}")
+                self.send_header("X-CCLUA-Segment-Seconds", f"{segment_seconds:.3f}")
                 self.send_header("Cache-Control", "no-store")
                 self.send_header("Connection", "close")
                 self.end_headers()
@@ -393,6 +400,7 @@ class HarmoniBridge:
                     cmd += ["-ss", f"{start_seconds:.6f}"]
                 cmd += [
                     "-i", str(source),
+                    "-t", f"{segment_seconds:.6f}",
                     "-vn", "-map", "0:a:0",
                     "-ac", "1", "-ar", "48000",
                     "-acodec", "pcm_s8", "-f", "s8", "pipe:1",
@@ -448,11 +456,13 @@ class HarmoniBridge:
                         self.send_json({"ok": False, "error": "invalid track id"}, HTTPStatus.BAD_REQUEST)
                     else:
                         try:
-                            start = float((parse_qs(parsed.query).get("start") or ["0"])[0])
+                            query = parse_qs(parsed.query)
+                            start = float((query.get("start") or ["0"])[0])
+                            seconds = float((query.get("seconds") or ["240"])[0])
                         except (TypeError, ValueError):
-                            self.send_json({"ok": False, "error": "invalid start"}, HTTPStatus.BAD_REQUEST)
+                            self.send_json({"ok": False, "error": "invalid PCM segment query"}, HTTPStatus.BAD_REQUEST)
                             return
-                        self.send_pcm_track(track_id, start)
+                        self.send_pcm_track(track_id, start, seconds)
                 else:
                     self.send_json({"ok": False, "error": "not found"}, HTTPStatus.NOT_FOUND)
 

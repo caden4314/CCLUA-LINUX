@@ -179,6 +179,12 @@ try:
             seeked=response.read()
         assert 6000<=len(seeked)<len(pcm)
 
+        with urllib.request.urlopen(track["pcm_stream_url"]+"?start=0&seconds=0.05",timeout=3) as response:
+            segmented=response.read()
+            assert response.headers.get("X-CCLUA-Segment-Seconds")=="1.000"
+        # Server enforces a one-second minimum segment to avoid request churn.
+        assert 11000<=len(segmented)<=13000
+
         req=urllib.request.Request(track["stream_url"],headers={"Range":"bytes=2-9"})
         with urllib.request.urlopen(req,timeout=3) as response:
             partial=response.read()
