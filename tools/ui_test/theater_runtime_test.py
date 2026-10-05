@@ -64,6 +64,7 @@ function textutils.unserializeJSON(raw)
 end
 
 http_requests={}
+video_connect_failures=1
 http={}
 function http.get(url,headers,binary)
   url=tostring(url)
@@ -88,6 +89,10 @@ function http.get(url,headers,binary)
     }
   end
   if url:find("/video.blit",1,true) then
+    if video_connect_failures>0 then
+      video_connect_failures=video_connect_failures-1
+      return nil,"Could not connect"
+    end
     local sent=false
     return {
       getResponseCode=function() return 200 end,
@@ -321,6 +326,10 @@ assert(#child_order==2,"expected audio and video workers")
 run_children_once()
 assert(processes[child_order[1]].state=="sleeping")
 assert(processes[child_order[2]].state=="sleeping")
+-- The mocked video bridge rejects the first connection. Advance through the
+-- retry backoff and require the next attempt to reach the shared sync barrier.
+mock_now=mock_now+250
+run_children_once()
 assert(last_refresh_timer~=nil)
 kind=drive("timer",last_refresh_timer)
 assert(kind=="wait_event")
@@ -330,17 +339,17 @@ assert(saved_state.streams.video.ready==true)
 assert(saved_state.streams.video.cols==167)
 assert(saved_state.streams.video.rows==55)
 
-local sawAudio,sawVideo=false,false
+local sawAudio,videoRequests=false,0
 for _,url in ipairs(http_requests) do
   if url:find("/audio.pcm",1,true) then sawAudio=true end
   if url:find("/video.blit",1,true) then
-    sawVideo=true
+    videoRequests=videoRequests+1
     assert(url:find("cols=167",1,true))
     assert(url:find("rows=55",1,true))
     assert(url:find("fps=20.000",1,true))
   end
 end
-assert(sawAudio and sawVideo,"audio/video bridge requests were not issued")
+assert(sawAudio and videoRequests>=2,"stream retry did not issue the expected bridge requests")
 
 print("THEATER_RUNTIME_OK")
 print("MONITORS_3_OF_3_PASS")
@@ -351,5 +360,6 @@ print("TRAILERS_17_SYMMETRIC_FIXTURES_PASS")
 print("PRESHOW_33_FIXTURES_PASS")
 print("DIMMER_50_PERCENT_27_SYMMETRIC_FIXTURES_PASS")
 print("PLAYBACK_SHARED_SYNC_PASS")
+print("VIDEO_CONNECT_RETRY_PASS")
 print("FULL_WALL_167X55_20FPS_REQUEST_PASS")
 ''')

@@ -337,7 +337,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type","application/octet-stream")
         self.send_header("X-CCLUA-Format","pcm_s8")
         self.send_header("X-CCLUA-Sample-Rate","48000")
+        self.send_header("Connection","close")
         self.end_headers()
+        self.close_connection = True
         try:
             assert proc.stdout is not None
             while True:
@@ -381,7 +383,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-CCLUA-Rows",str(rows))
         self.send_header("X-CCLUA-FPS",f"{fps:.3f}")
         self.send_header("X-CCLUA-Frame-Bytes",str(encoded_bytes))
+        self.send_header("Connection","close")
         self.end_headers()
+        self.close_connection = True
         try:
             assert proc.stdout is not None
             while True:
@@ -408,6 +412,7 @@ class Handler(BaseHTTPRequestHandler):
 class Server(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
+    request_queue_size = 32
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="CCLUA Theater movie bridge")

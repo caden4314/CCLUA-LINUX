@@ -577,6 +577,27 @@ return function(ctx)
     session=nil
   end
 
+  local function open_stream(s,kind,url,headers)
+    local lastErr=nil
+    for attempt=1,6 do
+      if not s.active then return nil,"session stopped" end
+      s[kind.."_stage"]="connecting"
+      s[kind.."_attempt"]=attempt
+      local h,err=http.get(url,headers,true)
+      if h then
+        s[kind.."_last_error"]=nil
+        return h
+      end
+      lastErr=tostring(err or "Could not connect")
+      s[kind.."_last_error"]=lastErr
+      s[kind.."_stage"]="retry "..attempt
+      if attempt<6 then
+        coroutine.yield("sleep",now_ms()+math.min(1200,150*attempt))
+      end
+    end
+    return nil,lastErr or "Could not connect"
+  end
+
   local function wait_sync(s,kind)
     if not s.active then return false end
     s[kind.."_ready"]=true
@@ -622,13 +643,12 @@ return function(ctx)
 
     ctx.kernel.scheduler:add(proc,function()
       local ok,runErr=pcall(function()
-        s.audio_stage="connecting"
         local url=ORIGIN..tostring(movie.audio_url or "")..
           "?start="..("%.3f"):format(s.start_position or 0)
-        local h,httpErr=http.get(url,{
+        local h,httpErr=open_stream(s,"audio",url,{
           ["Accept"]="application/octet-stream",
           ["User-Agent"]="CCLUA-Theater/0.1",
-        },true)
+        })
         if not h then error(tostring(httpErr or "audio stream unavailable"),0) end
         local code=h.getResponseCode and h.getResponseCode() or 200
         if tonumber(code)~=200 then h.close();error("audio HTTP "..tostring(code),0) end
@@ -698,14 +718,13 @@ return function(ctx)
 
     ctx.kernel.scheduler:add(proc,function()
       local ok,runErr=pcall(function()
-        s.video_stage="connecting"
         local url=ORIGIN..tostring(movie.video_url or "")..
           ("?start=%.3f&cols=%d&rows=%d&fps=%.3f"):format(
             s.start_position or 0,cols,rows,fps)
-        local h,httpErr=http.get(url,{
+        local h,httpErr=open_stream(s,"video",url,{
           ["Accept"]="application/octet-stream",
           ["User-Agent"]="CCLUA-Theater/0.1",
-        },true)
+        })
         if not h then error(tostring(httpErr or "video stream unavailable"),0) end
         local code=h.getResponseCode and h.getResponseCode() or 200
         if tonumber(code)~=200 then h.close();error("video HTTP "..tostring(code),0) end
@@ -979,10 +998,12 @@ return function(ctx)
           audio={
             pid=session.audio_pid,state=ap and ap.state or "missing",
             stage=session.audio_stage or "spawned",ready=session.audio_ready==true,
+            attempt=session.audio_attempt,last_error=session.audio_last_error,
           },
           video={
             pid=session.video_pid,state=vp and vp.state or "missing",
             stage=session.video_stage or "spawned",ready=session.video_ready==true,
+            attempt=session.video_attempt,last_error=session.video_last_error,
             cols=session.video_cols,rows=session.video_rows,
           },
         }
