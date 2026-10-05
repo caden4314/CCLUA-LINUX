@@ -23,7 +23,7 @@ return function(ctx)
   }
   local sceneOrder={"house","preshow","trailers","feature","blackout"}
 
-  -- Physical mapping discovered from the theater build. Each relay's DOWN
+  -- Physical mapping discovered from the theater build. Each relay's BOTTOM
   -- output directly feeds one ceiling fixture. IDs are wired-peripheral IDs.
   local fixtureIds={
     {74,75,76,77,78,79,80,81,82,120,119},
@@ -76,9 +76,15 @@ return function(ctx)
   for zi=10,1,-1 do group("3:"..zi) end
 
   local state=config.read_json(STATE_PATH,{}) or {}
+  local persistedState=tostring(state.state or "IDLE")
   state.schema=2
   state.state="IDLE"
   state.scene=tostring(state.scene or "house")
+  -- A reboot/crash during feature playback must never strand the room dark.
+  if (persistedState=="PLAYING" or persistedState=="BUFFERING")
+    and (state.scene=="feature" or state.scene=="blackout") then
+    state.scene="house"
+  end
   if not scenes[state.scene] then state.scene="house" end
   state.brightness=tonumber(state.brightness) or scenes[state.scene].level
   state.volume=math.max(0,math.min(1,tonumber(state.volume) or 0.85))
@@ -706,6 +712,33 @@ return function(ctx)
 
         local rowBytes=cols*3
         local frameBytes=rowBytes*rows
+
+        -- Validate the bridge's negotiated geometry before reading a single
+        -- frame. A stale bridge once clamped 167 columns to 160, which shifted
+        -- every frame boundary and left playback stuck in BUFFERING.
+        if h.getResponseHeaders then
+          local headers=h.getResponseHeaders() or {}
+          local function header(name)
+            local wanted=tostring(name):lower()
+            for k,v in pairs(headers) do
+              if tostring(k):lower()==wanted then return tostring(v) end
+            end
+            return nil
+          end
+          local gotCols=tonumber(header("X-CCLUA-Cols"))
+          local gotRows=tonumber(header("X-CCLUA-Rows"))
+          local gotBytes=tonumber(header("X-CCLUA-Frame-Bytes"))
+          if gotCols and gotCols~=cols then
+            h.close();error(("video geometry mismatch: bridge cols=%d client cols=%d"):format(gotCols,cols),0)
+          end
+          if gotRows and gotRows~=rows then
+            h.close();error(("video geometry mismatch: bridge rows=%d client rows=%d"):format(gotRows,rows),0)
+          end
+          if gotBytes and gotBytes~=frameBytes then
+            h.close();error(("video frame mismatch: bridge bytes=%d client bytes=%d"):format(gotBytes,frameBytes),0)
+          end
+        end
+
         if not wait_sync(s,"video") then h.close();return end
 
         mon.setBackgroundColor(colors.black);mon.setTextColor(colors.white);mon.clear()
