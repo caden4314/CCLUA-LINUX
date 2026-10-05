@@ -80,6 +80,7 @@ return function(ctx)
   -- Fill the remaining centerline last, rear toward the screen.
   for zi=10,1,-1 do group("3:"..zi) end
 
+  local COMMAND_PATH="/var/lib/cclua/theater-command.json"
   local state=config.read_json(STATE_PATH,{}) or {}
   local persistedState=tostring(state.state or "IDLE")
   state.schema=2
@@ -1694,6 +1695,18 @@ return function(ctx)
       step_light_animation()
 
     elseif ev=="timer" and a==refreshTimer then
+      if fs and fs.exists and fs.exists(COMMAND_PATH) then
+        local command=config.read_json(COMMAND_PATH,nil)
+        pcall(fs.delete,COMMAND_PATH)
+        if type(command)=="table" and command.op then
+          local ok,err=handle_command(tostring(command.op),command.payload or {})
+          if not ok and err then
+            state.error=tostring(err)
+            ctx.kernel.log.write("warning","theaterd","mailbox command failed",
+              {op=command.op,error=err},ctx.process.pid)
+          end
+        end
+      end
       if session and session.active then
         local avp=session.av_pid and ctx.kernel.process.get(session.av_pid) or nil
         local buffered=0
