@@ -7,8 +7,8 @@ return function(ctx)
   local BRIDGE=tostring(machine.theater_bridge_base or "http://127.0.0.1:8766/v1")
   local ORIGIN=BRIDGE:gsub("/v1/?$","")
   local mainName=tostring(machine.theater_main_monitor or "monitor_7")
-  local transportName=tostring(machine.theater_transport_monitor or "north")
-  local controlName=tostring(machine.theater_control_monitor or "south")
+  local transportName=tostring(machine.theater_transport_monitor or "left")
+  local controlName=tostring(machine.theater_control_monitor or "right")
   local boothSpeaker=tostring(machine.theater_booth_speaker or "bottom")
   local fps=math.max(2,math.min(20,tonumber(machine.theater_video_fps) or 12))
   local targetCols=math.max(32,math.min(160,tonumber(machine.theater_video_cols) or 144))
@@ -114,6 +114,9 @@ return function(ctx)
       return nil,err
     end
     catalog=type(data.movies)=="table" and data.movies or {}
+    config.write_json("/var/lib/cclua/theater-catalog.json",{
+      schema=1,updated_at=now_ms(),movies=catalog,
+    })
     state.catalog_count=#catalog
     state.bridge="ONLINE"
     state.bridge_error=nil
@@ -200,7 +203,7 @@ return function(ctx)
       return nil,"missing "..f.name
     end
     local relay=peripheral.wrap(f.name)
-    local ok,err=pcall(relay.setOutput,"down",on==true)
+    local ok,err=pcall(relay.setOutput,"bottom",on==true)
     if ok then fixtureOn[f.id]=on==true;return true end
     return nil,tostring(err)
   end
@@ -838,7 +841,7 @@ return function(ctx)
   for _,f in ipairs(fixtures) do
     if peripheral_ok(f.name,"redstone_relay") then
       local relay=peripheral.wrap(f.name)
-      local ok,v=pcall(relay.getOutput,"down")
+      local ok,v=pcall(relay.getOutput,"bottom")
       fixtureOn[f.id]=ok and v==true or false
     end
   end

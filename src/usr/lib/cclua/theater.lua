@@ -42,9 +42,13 @@ function M.bridge_status()
 end
 
 function M.catalog()
-  local data,err=get_json(M.bridge_base().."/catalog")
-  if not data then return nil,err end
-  return data.movies or {}
+  -- theaterd owns bridge I/O. Desktop apps read its local cache so opening the
+  -- Theater window never blocks the compositor on a network response handle.
+  local cached=config.read_json("/var/lib/cclua/theater-catalog.json",nil)
+  if type(cached)=="table" and type(cached.movies)=="table" then
+    return cached.movies
+  end
+  return {},"Theater catalog is initializing"
 end
 
 function M.movie(id)

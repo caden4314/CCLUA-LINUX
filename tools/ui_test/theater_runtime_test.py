@@ -22,8 +22,8 @@ mock_machine={
   role="theater-controller",theater_enabled=true,
   theater_bridge_base="http://127.0.0.1:8766/v1",
   theater_main_monitor="monitor_7",
-  theater_transport_monitor="north",
-  theater_control_monitor="south",
+  theater_transport_monitor="left",
+  theater_control_monitor="right",
   theater_booth_speaker="bottom",
   theater_video_fps=12,theater_video_cols=144,theater_video_rows=54,
 }
@@ -84,8 +84,8 @@ local function monitor(w,h)
 end
 
 objects["monitor_7"]=monitor(167,55); types["monitor_7"]="monitor"
-objects["north"]=monitor(72,38); types["north"]="monitor"
-objects["south"]=monitor(104,38); types["south"]="monitor"
+objects["left"]=monitor(57,24); types["left"]="monitor"
+objects["right"]=monitor(72,48); types["right"]="monitor"
 
 for id=0,21 do
   local name="speaker_"..id
@@ -108,8 +108,8 @@ for _,id in ipairs(relay_ids) do
   local name="redstone_relay_"..id
   relay_state[id]=true
   local r={}
-  function r.getOutput(side) assert(side=="down");return relay_state[id] end
-  function r.setOutput(side,value) assert(side=="down");relay_state[id]=value==true end
+  function r.getOutput(side) assert(side=="bottom");return relay_state[id] end
+  function r.setOutput(side,value) assert(side=="bottom");relay_state[id]=value==true end
   objects[name]=r;types[name]="redstone_relay"
 end
 

@@ -122,7 +122,10 @@ local function draw_movies(st,ui,x,y,w,h,state)
     local movie=st.movies[idx]
     local dur=movie.duration and theater.format_time(movie.duration) or "--:--"
     local marker=tostring(state.movie_id)==tostring(movie.id) and "*" or " "
-    local row=("%s %-*s %8s"):format(marker,math.max(8,w-14),fit(movie.title,math.max(8,w-14)),dur)
+    local titleWidth=math.max(8,w-14)
+    local title=fit(movie.title,titleWidth)
+    title=title..string.rep(" ",math.max(0,titleWidth-#title))
+    local row=("%s %s %8s"):format(marker,title,dur)
     Theme.list_row(ui,x,yy,w,row,idx==st.selected,
       tostring(state.movie_id)==tostring(movie.id) and "success" or nil)
     yy=yy+1

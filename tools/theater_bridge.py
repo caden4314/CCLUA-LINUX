@@ -54,8 +54,10 @@ def parse_duration(stderr: str) -> float | None:
     return int(m.group(1))*3600 + int(m.group(2))*60 + float(m.group(3))
 
 def probe_movie(path: Path) -> dict:
+    # Reading container/stream headers is enough for metadata. Do not decode the
+    # entire feature here: catalog scans must stay fast even for multi-gigabyte movies.
     proc = subprocess.run(
-        [ffmpeg_exe(), "-hide_banner", "-i", str(path), "-f", "null", "-"],
+        [ffmpeg_exe(), "-hide_banner", "-i", str(path)],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
         text=True,
