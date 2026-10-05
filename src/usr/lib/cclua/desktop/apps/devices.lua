@@ -1,5 +1,6 @@
 local M={}
 local perfs=dofile("/usr/lib/cclua/peripherals.lua")
+local Theme=dofile("/usr/lib/cclua/desktop/theme.lua")
 
 local tabs={"Devices","Printer","Audio"}
 
@@ -22,7 +23,7 @@ local function status_text(dev)
   if dev.type=="printer" then
     return ("ink %s paper %s"):format(tostring(s.ink or "?"),tostring(s.paper or "?"))
   elseif dev.type=="speaker" then
-    return "48 kHz audio"
+    return "48 kHz HQ PCM"
   elseif dev.type=="modem" then
     return s.wireless and "wireless" or "wired"
   elseif dev.type=="monitor" then
@@ -36,14 +37,7 @@ end
 function M.draw(ctx,st,ui,x,y,w,h)
   ui.fill(x,y,x+w-1,y+h-1,colors.black,colors.white)
 
-  local tx=x+1
-  for i,label in ipairs(tabs) do
-    local active=i==st.tab
-    local bg=active and colors.gray or colors.black
-    local fg=active and colors.white or colors.lightGray
-    ui.text(tx,y," "..label.." ",fg,bg)
-    tx=tx+#label+3
-  end
+  Theme.tabs(ui,x,y,w,tabs,st.tab)
 
   local list=device_list(ctx,st.tab)
   st._list=list
@@ -55,15 +49,12 @@ function M.draw(ctx,st,ui,x,y,w,h)
     for i=1,math.min(maxRows,#list) do
       local d=list[i]
       local yy=y+1+i
-      local bg=i==st.selected and colors.lightGray or colors.black
-      local fg=i==st.selected and colors.black or colors.white
-      ui.fill(x,yy,x+w-1,yy,bg,fg)
       local line=("%-18s %-12s %s"):format(
         tostring(d.name):sub(1,18),
         tostring(d.type or "peripheral"):sub(1,12),
         status_text(d)
       )
-      ui.text(x+1,yy,line:sub(1,math.max(1,w-2)),fg,bg)
+      Theme.list_row(ui,x,yy,w,line,i==st.selected,i==st.selected and nil or "muted")
     end
 
   elseif st.tab==2 then
@@ -90,17 +81,15 @@ function M.draw(ctx,st,ui,x,y,w,h)
       ui.text(x+1,y+4,"No speaker attached.",colors.red,colors.black)
     else
       ui.text(x+1,y+4,"Device: "..d.name,colors.white,colors.black)
-      ui.text(x+1,y+5,"Audio:  48 kHz PCM / DFPWM-ready",colors.white,colors.black)
+      ui.text(x+1,y+5,"Audio:  48 kHz HQ PCM transport",colors.white,colors.black)
       ui.text(x+1,y+7,"N  Play note",colors.lightGray,colors.black)
       ui.text(x+1,y+8,"S  Play test sound",colors.lightGray,colors.black)
       ui.text(x+1,y+9,"X  Stop audio",colors.lightGray,colors.black)
     end
   end
 
-  ui.fill(x,y+h-1,x+w-1,y+h-1,colors.gray,colors.white)
-  local footer=st.message or ("Tab view | "..#list.." device(s)")
-  ui.text(x+1,y+h-1,tostring(footer):sub(1,math.max(1,w-2)),
-    st.message and colors.orange or colors.lightGray,colors.gray)
+  local footer=st.message or ("Tab view  |  "..#list.." device(s)  |  Up/Down select")
+  Theme.footer(ui,x,y+h-1,w,tostring(footer),st.message and "accent" or nil)
 end
 
 function M.event(ctx,st,ev,a,b,c,rx,ry,w,h)

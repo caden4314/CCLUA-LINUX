@@ -88,7 +88,62 @@ local function banner(ctx)
   term.setTextColor(colors.white)
 end
 
-local function builtin(ctx,args)
+local BUILTINS={"cd","pwd","export","clear","history","exit","help"}
+
+local function completion(ctx,line)
+  line=tostring(line or "")
+  local token=line:match("([^%s]*)$") or ""
+  local before=line:sub(1,#line-#token)
+  local seen,out={},{}
+
+  local function add(candidate,isDir)
+    candidate=tostring(candidate or "")
+    if candidate:sub(1,#token)~=token then return end
+    local suffix=candidate:sub(#token+1)
+    if isDir then suffix=suffix.."/"
+    elseif suffix~="" or candidate==token then suffix=suffix.." " end
+    if suffix~="" and not seen[suffix] then
+      seen[suffix]=true
+      out[#out+1]=suffix
+    end
+  end
+
+  if before:match("^%s*$") then
+    for _,name in ipairs(BUILTINS) do add(name,false) end
+    local path=tostring(ctx.process.environment.PATH or "/usr/bin:/usr/sbin:/bin:/sbin")
+    for dir in path:gmatch("[^:]+") do
+      if fs.exists(dir) and fs.isDir(dir) then
+        for _,name in ipairs(fs.list(dir)) do
+          add(tostring(name):gsub("%.lua$",""),false)
+        end
+      end
+    end
+  else
+    local expanded=token
+    local home=tostring(ctx.process.environment.HOME or "/")
+    if expanded=="~" then expanded=home
+    elseif expanded:sub(1,2)=="~/" then expanded=fs.combine(home,expanded:sub(3))
+    elseif expanded:sub(1,1)~="/" then expanded=fs.combine(ctx.process.cwd,expanded) end
+
+    local dir=fs.getDir(expanded)
+    local prefix=expanded:match("([^/]+)$") or ""
+    if dir=="" then dir="/" end
+    if fs.exists(dir) and fs.isDir(dir) then
+      local tokenDir=token:match("^(.*[/])") or ""
+      for _,name in ipairs(fs.list(dir)) do
+        if tostring(name):sub(1,#prefix)==prefix then
+          local full=fs.combine(dir,name)
+          add(tokenDir..tostring(name),fs.isDir(full))
+        end
+      end
+    end
+  end
+
+  table.sort(out)
+  return out
+end
+
+local function builtin(ctx,args,history)
   local cmd=args[1]
   if cmd=="cd" then
     local target=args[2] or ((ctx.kernel.users.by_uid(ctx.process.uid) or {}).home) or "/"
@@ -107,16 +162,20 @@ local function builtin(ctx,args)
   elseif cmd=="export" then
     for i=2,#args do local k,v=args[i]:match("^([%w_]+)=(.*)$");if k then ctx.process.environment[k]=v end end
     return true,0
+  elseif cmd=="history" then
+    local first=math.max(1,#(history or {})-49)
+    for i=first,#(history or {}) do print(("%4d  %s"):format(i,history[i])) end
+    return true,0
   elseif cmd=="help" then
     ui.heading("CCLUA shell commands")
-    print("  Shell       cd  pwd  export  clear  exit  help")
+    print("  Shell       cd  pwd  export  clear  history  exit  help")
     print("  Files       ls  cat  cp  mv  rm  mkdir  grep  find")
     print("  Processes   ps  top  kill")
     print("  System      cclua-status  systemctl  journalctl  dmesg")
     print("  Network     ip  ping  resolvectl  hostnamectl")
     print("  Fleet       cclua-managerctl  cclua-lightctl  cclua-appctl")
     print("  Packages    apt  dpkg")
-    ui.dim("Tip: use Up/Down for command history.")
+    ui.dim("Editing: Up/Down history | Tab complete | Ctrl+A/E/U/K/W")
     return true,0
   end
   return false
@@ -161,12 +220,16 @@ function M.run(ctx,argv)
   banner(ctx)
   while true do
     draw_prompt(ctx,last)
-    local line=read(nil,history)
+    local line=read(nil,history,function(partial) return completion(ctx,partial) end)
     if line==nil then return 0 end
-    if line~="" then history[#history+1]=line end
+    line=tostring(line):gsub("^%s+",""):gsub("%s+$","")
+    if line~="" and history[#history]~=line then
+      history[#history+1]=line
+      while #history>200 do table.remove(history,1) end
+    end
     local args=split(line)
     if #args>0 then
-      local handled,code,action=builtin(ctx,args)
+      local handled,code,action=builtin(ctx,args,history)
       if not handled then code=run_external(ctx,args) end
       last=code or 0
       ctx.process.environment["?"]=tostring(last)

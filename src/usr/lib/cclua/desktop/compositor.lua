@@ -145,12 +145,19 @@ function M.run(ctx)
     active=win
   end
 
-  local function close(win)
+  local function close(win,force)
+    if not win then return false end
+    local spec=APP[win.app]
+    if not force and spec and spec.mod.before_close then
+      local ok,allow=pcall(spec.mod.before_close,ctx,win.state)
+      if ok and allow==false then return false end
+    end
     for i=#windows,1,-1 do
       if windows[i]==win then table.remove(windows,i);break end
     end
     active=top_visible()
     save_session()
+    return true
   end
 
   local function minimize(win)
@@ -281,8 +288,9 @@ function M.run(ctx)
     ui.fill(1,1,W,1,colors.gray,colors.white)
     ui.text(2,1,overview and "Applications" or "Activities",colors.white,colors.gray)
 
-    local centerText=active and active.title or (machine.hostname or "test-client")
-    local centerMeta=active and " - CCLUA" or ""
+    local centerText=overview and "Applications"
+      or (active and active.title or (machine.hostname or "test-client"))
+    local centerMeta=(not overview and active) and " - CCLUA" or ""
     ui.center(1,(centerText..centerMeta):sub(1,28),colors.white,colors.gray)
 
     local clock=os.date and os.date("%H:%M") or ""
@@ -327,8 +335,8 @@ function M.run(ctx)
     end
 
     local cards={}
-    local cols=3
-    local cardW=math.max(12,math.floor((W-8)/cols))
+    local cols=W>=92 and 4 or (W>=58 and 3 or 2)
+    local cardW=math.max(12,math.floor((W-8-(cols-1))/cols))
     local cardH=3
     for i,name in ipairs(filtered) do
       local spec=APP[name]
@@ -398,6 +406,16 @@ function M.run(ctx)
   end
 
   local function draw_window(win,isActive)
+    local spec=APP[win.app]
+    local displayTitle=win.title
+    if spec and spec.mod.get_title then
+      local ok,value=pcall(spec.mod.get_title,win.state)
+      if ok and type(value)=="string" and value~="" then
+        displayTitle=value
+        win.title=value
+      end
+    end
+
     local titleBg=isActive and colors.gray or colors.black
     local border=isActive and colors.lightGray or colors.gray
     ui.fill(win.x,win.y,win.x+win.w-1,win.y+win.h-1,border,colors.white)
@@ -409,7 +427,7 @@ function M.run(ctx)
     if titleRight>win.x then
       local icon=spec and spec.icon or ""
       ui.text(win.x+1,win.y,icon:sub(1,2),spec and spec.color or colors.lightGray,titleBg)
-      ui.text(win.x+4,win.y,Theme.fit(win.title,math.max(1,titleRight-win.x-3)),colors.white,titleBg)
+      ui.text(win.x+4,win.y,Theme.fit(displayTitle,math.max(1,titleRight-win.x-3)),colors.white,titleBg)
     end
     ui.text(win.x+win.w-11,win.y," _ ",colors.lightGray,titleBg)
     ui.text(win.x+win.w-7,win.y,win.max and " o " or " ^ ",colors.lightGray,titleBg)
@@ -419,7 +437,6 @@ function M.run(ctx)
       ui.text(win.x,win.y,"|",colors.orange,titleBg)
     end
 
-    local spec=APP[win.app]
     if not spec then return end
     local cx,cy=win.x+1,win.y+1
     local cw,ch=win.w-2,win.h-2
@@ -470,6 +487,9 @@ function M.run(ctx)
     if type(result)~="table" then return result end
     if result.action=="open_app" and result.app then
       launch(result.app,result)
+      return true
+    elseif result.action=="close_self" then
+      close(active,result.force==true)
       return true
     end
     return result
@@ -652,21 +672,30 @@ function M.run(ctx)
       end
       render(false)
 
-    elseif ev=="mouse_drag" and drag then
-      local x,y=b,c
-      local win=drag.win
-      if drag.mode=="move" then
-        win.x=math.max(4,math.min(W-win.w+1,x-drag.dx))
-        win.y=math.max(2,math.min(H-win.h+1,y-drag.dy))
-      else
-        win.w=math.max(24,math.min(W-win.x+1,x-win.x+1))
-        win.h=math.max(8,math.min(H-win.y+1,y-win.y+1))
+    elseif ev=="mouse_drag" then
+      if drag then
+        local x,y=b,c
+        local win=drag.win
+        if drag.mode=="move" then
+          win.x=math.max(4,math.min(W-win.w+1,x-drag.dx))
+          win.y=math.max(2,math.min(H-win.h+1,y-drag.dy))
+        else
+          win.w=math.max(24,math.min(W-win.x+1,x-win.x+1))
+          win.h=math.max(8,math.min(H-win.y+1,y-win.y+1))
+        end
+      elseif not overview and not systemMenu and active then
+        route_app(active,ev,a,b,c,b,c)
       end
       render(false)
 
     elseif ev=="mouse_up" then
-      if drag then save_session() end
+      if drag then
+        save_session()
+      elseif not overview and not systemMenu and active then
+        route_app(active,ev,a,b,c,b,c)
+      end
       drag=nil
+      render(false)
 
     elseif ev=="mouse_scroll" and not overview and not systemMenu and active then
       route_app(active,ev,a,b,c,b,c)

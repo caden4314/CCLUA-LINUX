@@ -48,17 +48,25 @@ function M.fit(mon,opts)
   end
 
   local requestedMax=clamp_scale(opts.max_scale or 5)
-  local autoCeiling=clamp_scale(opts.auto_max_scale or 1.0)
-  local maxScale=math.min(requestedMax,autoCeiling)
   local minScale=clamp_scale(opts.min_scale or 0.5)
   local baseW=currentW*currentScale
   local baseH=currentH*currentScale
+
+  -- Normal walls retain the high-density 1.0 ceiling. Very large physical
+  -- walls (for example a 16x9 CC monitor) have so much backing resolution
+  -- under CCPerf 2x density that scale 1.0 would yield a 300+ column UI.
+  -- Allow those walls to auto-grow to 2.0, landing around 160-170 columns
+  -- while preserving substantially more workspace than stock CC monitors.
+  local largeWall=(baseW>=240 or baseH>=90)
+  local defaultAutoCeiling=largeWall and 2.0 or 1.0
+  local autoCeiling=clamp_scale(opts.auto_max_scale or defaultAutoCeiling)
+  local maxScale=math.min(requestedMax,autoCeiling)
   local target=minScale
 
   -- Predict the largest fitting scale from the current monitor geometry.
-  -- Auto mode intentionally caps at 1.0 so CCPerf's 2x backing density remains
-  -- useful on large walls instead of blowing dashboards up to 1.5-3.0 text.
-  -- Fixed mode above may still explicitly request a larger scale.
+  -- Normal walls cap at 1.0. Very large walls may use 2.0 so 16x9 displays
+  -- remain readable instead of rendering several hundred tiny columns.
+  -- Fixed mode above may still explicitly request another scale.
   -- This also avoids probing every scale with setTextScale(), which emits
   -- monitor_resize and can create a resize/flicker feedback loop.
   for _,scale in ipairs(SCALES) do

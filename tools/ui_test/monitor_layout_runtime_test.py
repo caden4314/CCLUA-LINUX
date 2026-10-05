@@ -23,11 +23,13 @@ function mock_monitor(blockW,blockH)
   function m.getTextScale() return current end
   function m.getSetScaleCalls() return setCalls end
   function m.getSize()
-    -- Model the CCPerf 2x backing density. A one-monitor viewport which
-    -- normally exposes about 51x19 at stock 0.5 has 102x38 at 0.5 and
-    -- 51x19 at 1.0.
-    return math.floor((51*blockW)/current+0.5),
-           math.floor((19*blockH)/current+0.5)
+    -- Match CC:Tweaked ServerMonitor.rebuild with CCPerf's 2x density:
+    -- physical monitor span minus the 5/16 block bezel, divided by the
+    -- effective 3x4.5 pixel character cell and text scale.
+    local w=(blockW-0.3125)/(current*3.0*0.015625)
+    local h=(blockH-0.3125)/(current*4.5*0.015625)
+    return math.max(1,math.floor(w+0.5)),
+           math.max(1,math.floor(h+0.5))
   end
   function m.setCursorBlink(_) end
   function m.setBackgroundColor(_) end
@@ -37,27 +39,27 @@ end
 
 layout=dofile("/usr/lib/cclua/monitor_layout.lua")
 
-local one=mock_monitor(1,1)
-local scale,w,h,fits=layout.fit(one,{min_width=46,min_height=18,max_scale=3})
+local wall=mock_monitor(4,3)
+local scale,w,h,fits=layout.fit(wall,{min_width=46,min_height=18,max_scale=3})
 assert(scale==1.0,("expected 1.0 got %s (%sx%s)"):format(scale,w,h))
-assert(fits and w>=46 and h>=18)
-assert(one.getSetScaleCalls()==1,"initial fit should resize once")
-local calls=one.getSetScaleCalls()
-local scaleAgain=layout.fit(one,{min_width=46,min_height=18,max_scale=3})
-assert(scaleAgain==1.0 and one.getSetScaleCalls()==calls,
+assert(fits and w>=70 and h>=30)
+assert(wall.getSetScaleCalls()==1,"initial fit should resize once")
+local calls=wall.getSetScaleCalls()
+local scaleAgain=layout.fit(wall,{min_width=46,min_height=18,max_scale=3})
+assert(scaleAgain==1.0 and wall.getSetScaleCalls()==calls,
   "stable fit must not call setTextScale again")
 
-local wall=mock_monitor(3,2)
-local s2,w2,h2,f2=layout.fit(wall,{min_width=70,min_height=24,max_scale=3})
-assert(s2==1.0,("large wall auto scale should cap at 1.0, got %s"):format(s2))
-assert(f2 and w2>=70 and h2>=24)
-assert(w2>=120,"large wall should retain useful high-resolution workspace")
+local cinema=mock_monitor(16,9)
+local s2,w2,h2,f2=layout.fit(cinema,{min_width=70,min_height=24,max_scale=3})
+assert(s2==2.0,("16x9 wall should use scale 2.0, got %s"):format(s2))
+assert(f2 and w2>=160 and w2<=175 and h2>=58 and h2<=66,
+  ("16x9 wall expected ~167x62 workspace, got %sx%s"):format(w2,h2))
 
 local fixed=mock_monitor(1,1)
 local s3=layout.fit(fixed,{min_width=100,min_height=30,fixed_scale=0.5})
 assert(s3==0.5)
 
 print("MONITOR_LAYOUT_OK")
-print("ONE_BLOCK_SCALE",scale,w,h)
-print("LARGE_WALL_SCALE",s2,w2,h2)
+print("STANDARD_WALL_SCALE",scale,w,h)
+print("WALL_16X9_SCALE",s2,w2,h2)
 ''')
