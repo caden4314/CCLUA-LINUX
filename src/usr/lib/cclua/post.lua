@@ -356,6 +356,7 @@ local function checks_for(ctx,machine)
     ["gps-control"]="usr/lib/cclua/services/gps-control.lua",
     ["gps-monitor"]="usr/lib/cclua/services/gps-monitor.lua",
     ["gps-host"]="usr/lib/cclua/services/gps-host.lua",
+    ["theater-controller"]="usr/lib/cclua/services/theaterd.lua",
     ["manager"]="usr/lib/cclua/services/managerd.lua",
     ["network-manager"]="usr/lib/cclua/services/managerd.lua",
   }

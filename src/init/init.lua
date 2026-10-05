@@ -127,6 +127,13 @@ local function register_services(recoveryMode)
       enabled=true,
       exec=load_service("/usr/lib/cclua/services/gps-host.lua")
     }
+  elseif machine.role=="theater-controller" or machine.theater_enabled==true then
+    k.services:register{
+      name="cclua-theaterd.service",
+      description="CCLUA cinema displays, audio and lighting controller",
+      enabled=true,
+      exec=load_service("/usr/lib/cclua/services/theaterd.lua")
+    }
   end
 
   if machine.dashboard_enabled~=false then
@@ -190,6 +197,7 @@ k.scheduler:add(init,function()
   local config=dofile("/usr/lib/cclua/config.lua")
   local machine=config.machine()
   local wantsDesktop=machine.role=="desktop-client"
+    or machine.role=="theater-controller"
     or tostring(machine.image or ""):find("desktop",1,true)~=nil
   local desktop=wantsDesktop
 

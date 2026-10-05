@@ -8,6 +8,7 @@ local Monitor=dofile("/usr/lib/cclua/desktop/apps/monitor.lua")
 local Devices=dofile("/usr/lib/cclua/desktop/apps/devices.lua")
 local Control=dofile("/usr/lib/cclua/desktop/apps/control.lua")
 local Music=dofile("/usr/lib/cclua/desktop/apps/music.lua")
+local Theater=dofile("/usr/lib/cclua/desktop/apps/theater.lua")
 local System=dofile("/usr/lib/cclua/desktop/apps/system.lua")
 local Packages=dofile("/usr/lib/cclua/desktop/apps/packages.lua")
 
@@ -21,10 +22,17 @@ local APP={
   devices={title="Devices",icon="Dv",color=colors.cyan,mod=Devices},
   control={title="Control Center",icon="CC",color=colors.orange,mod=Control},
   music={title="Music",icon="Mu",color=colors.magenta,mod=Music},
+  theater={title="Theater",icon="Th",color=colors.orange,mod=Theater},
   system={title="Settings",icon="St",color=colors.lightGray,mod=System},
   packages={title="Software",icon="SW",color=colors.pink,mod=Packages},
 }
 local ORDER={"terminal","files","editor","monitor","devices","control","music","system","packages"}
+do
+  local profile=Config.machine()
+  if profile.role=="theater-controller" or profile.theater_enabled==true then
+    table.insert(ORDER,8,"theater")
+  end
+end
 local SESSION_PATH="home/caden/.config/cclua-desktop/session.json"
 
 local function tune_palette()

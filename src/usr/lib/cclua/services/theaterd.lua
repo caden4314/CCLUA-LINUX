@@ -1,0 +1,935 @@
+return function(ctx)
+  local config=dofile("/usr/lib/cclua/config.lua")
+  local monitorLayout=dofile("/usr/lib/cclua/monitor_layout.lua")
+  local machine=config.machine()
+
+  local STATE_PATH="/var/lib/cclua/theater-state.json"
+  local BRIDGE=tostring(machine.theater_bridge_base or "http://127.0.0.1:8766/v1")
+  local ORIGIN=BRIDGE:gsub("/v1/?$","")
+  local mainName=tostring(machine.theater_main_monitor or "monitor_7")
+  local transportName=tostring(machine.theater_transport_monitor or "north")
+  local controlName=tostring(machine.theater_control_monitor or "south")
+  local boothSpeaker=tostring(machine.theater_booth_speaker or "bottom")
+  local fps=math.max(2,math.min(20,tonumber(machine.theater_video_fps) or 12))
+  local targetCols=math.max(32,math.min(160,tonumber(machine.theater_video_cols) or 144))
+  local targetRows=math.max(12,math.min(60,tonumber(machine.theater_video_rows) or 54))
+
+  local scenes={
+    house={label="HOUSE",level=100},
+    preshow={label="PRE-SHOW",level=60},
+    trailers={label="TRAILERS",level=30},
+    feature={label="FEATURE",level=9},
+    blackout={label="BLACKOUT",level=0},
+  }
+  local sceneOrder={"house","preshow","trailers","feature","blackout"}
+
+  -- Physical mapping discovered from the theater build. Each relay's DOWN
+  -- output directly feeds one ceiling fixture. IDs are wired-peripheral IDs.
+  local fixtureIds={
+    {74,75,76,77,78,79,80,81,82,120,119},
+    {91,90,89,88,87,86,85,84,83,121,122},
+    {92,93,94,95,96,97,98,99,100,123,124},
+    {109,108,107,106,105,104,103,102,101,125,126},
+    {110,111,112,113,114,116,115,117,118,127,128},
+  }
+  local fixtures={}
+  for xi,row in ipairs(fixtureIds) do
+    for zi,id in ipairs(row) do
+      fixtures[#fixtures+1]={
+        id=id,name="redstone_relay_"..id,
+        x=33+(xi-1)*3,z=-10+(zi-1)*2,
+        xi=xi,zi=zi,
+      }
+    end
+  end
+
+  -- Stable spatial dither order. Intermediate brightness levels light an
+  -- evenly distributed subset of the 55 binary lamps, avoiding PWM flicker.
+  table.sort(fixtures,function(a,b)
+    local ar=((a.xi-1)*37+(a.zi-1)*23)%59
+    local br=((b.xi-1)*37+(b.zi-1)*23)%59
+    if ar==br then
+      if a.zi==b.zi then return a.xi<b.xi end
+      return a.zi<b.zi
+    end
+    return ar<br
+  end)
+
+  local state=config.read_json(STATE_PATH,{}) or {}
+  state.schema=2
+  state.state="IDLE"
+  state.scene=tostring(state.scene or "house")
+  if not scenes[state.scene] then state.scene="house" end
+  state.brightness=tonumber(state.brightness) or scenes[state.scene].level
+  state.volume=math.max(0,math.min(1,tonumber(state.volume) or 0.85))
+  state.position=0
+  state.movie_id=nil
+  state.title=nil
+  state.duration=nil
+  state.error=nil
+  state.hardware={}
+  state.catalog_count=0
+  state.selected_index=tonumber(state.selected_index) or 1
+  state.video_fps=fps
+
+  local catalog={}
+  local session=nil
+  local sessionSeq=0
+  local fixtureOn={}
+  local lightAnimation=nil
+  local lastRenderKey={}
+  local monitorCache={}
+
+  local function now_ms()
+    return os.epoch and os.epoch("utc") or math.floor(os.clock()*1000)
+  end
+
+  local function clamp(v,lo,hi)
+    v=tonumber(v) or lo
+    if v<lo then return lo end
+    if v>hi then return hi end
+    return v
+  end
+
+  local function get_json(url)
+    if not http or not http.get then return nil,"HTTP API unavailable" end
+    local h,err=http.get(url,{
+      ["Accept"]="application/json",
+      ["User-Agent"]="CCLUA-Theater/0.1",
+    })
+    if not h then return nil,tostring(err or "HTTP request failed") end
+    local code=h.getResponseCode and h.getResponseCode() or 200
+    local raw=h.readAll();h.close()
+    if tonumber(code)~=200 then return nil,"HTTP "..tostring(code) end
+    local ok,data=pcall(textutils.unserializeJSON,raw)
+    if not ok or type(data)~="table" then return nil,"invalid bridge JSON" end
+    return data
+  end
+
+  local function refresh_catalog()
+    local data,err=get_json(BRIDGE.."/catalog")
+    if not data then
+      state.bridge="OFFLINE"
+      state.bridge_error=err
+      return nil,err
+    end
+    catalog=type(data.movies)=="table" and data.movies or {}
+    state.catalog_count=#catalog
+    state.bridge="ONLINE"
+    state.bridge_error=nil
+    state.selected_index=math.max(1,math.min(math.max(1,#catalog),state.selected_index or 1))
+    return catalog
+  end
+
+  local function find_movie(id)
+    id=tostring(id or "")
+    for i,item in ipairs(catalog) do
+      if tostring(item.id)==id then return item,i end
+    end
+    refresh_catalog()
+    for i,item in ipairs(catalog) do
+      if tostring(item.id)==id then return item,i end
+    end
+    return nil
+  end
+
+  local function save_state()
+    state.updated_at=now_ms()
+    local clean={}
+    for k,v in pairs(state) do clean[k]=v end
+    clean.hardware=state.hardware
+    config.write_json(STATE_PATH,clean)
+  end
+
+  local function peripheral_ok(name,ptype)
+    return name and peripheral.hasType(name,ptype)
+  end
+
+  local function wrap_monitor(name)
+    if not peripheral_ok(name,"monitor") then
+      monitorCache[name]=nil
+      return nil
+    end
+    local m=monitorCache[name]
+    if not m then
+      m=peripheral.wrap(name)
+      monitorCache[name]=m
+    end
+    return m
+  end
+  local function room_speakers()
+    local out={}
+    for id=0,21 do
+      local name="speaker_"..id
+      if name~=boothSpeaker and peripheral_ok(name,"speaker") then
+        out[#out+1]={name=name,obj=peripheral.wrap(name),id=id}
+      end
+    end
+    return out
+  end
+
+  local function hardware_snapshot()
+    local main=wrap_monitor(mainName)
+    local north=wrap_monitor(transportName)
+    local south=wrap_monitor(controlName)
+    local mw,mh=nil,nil
+    if main then mw,mh=main.getSize() end
+    local tw,th=nil,nil
+    if north then tw,th=north.getSize() end
+    local cw,ch=nil,nil
+    if south then cw,ch=south.getSize() end
+
+    local relays=0
+    for _,f in ipairs(fixtures) do
+      if peripheral_ok(f.name,"redstone_relay") then relays=relays+1 end
+    end
+    local speakers=#room_speakers()
+    state.hardware={
+      main_monitor=mainName,main_present=main~=nil,main_size=main and {mw,mh} or nil,
+      transport_monitor=transportName,transport_present=north~=nil,transport_size=north and {tw,th} or nil,
+      control_monitor=controlName,control_present=south~=nil,control_size=south and {cw,ch} or nil,
+      speakers_present=speakers,speakers_expected=22,
+      relays_present=relays,relays_expected=#fixtures,
+      booth_speaker=boothSpeaker,booth_speaker_present=peripheral_ok(boothSpeaker,"speaker"),
+    }
+  end
+
+  local function relay_set(f,on)
+    if not peripheral_ok(f.name,"redstone_relay") then
+      fixtureOn[f.id]=false
+      return nil,"missing "..f.name
+    end
+    local relay=peripheral.wrap(f.name)
+    local ok,err=pcall(relay.setOutput,"down",on==true)
+    if ok then fixtureOn[f.id]=on==true;return true end
+    return nil,tostring(err)
+  end
+
+  local function target_fixture_set(level)
+    level=clamp(level,0,100)
+    local count=math.floor((#fixtures*level/100)+0.5)
+    local wanted={}
+    for i=1,count do wanted[fixtures[i].id]=true end
+    return wanted,count
+  end
+
+  local function finish_light_animation(anim)
+    state.brightness=anim.level
+    state.lights_on=anim.target_count
+    state.light_errors=anim.errors or 0
+    state.lighting_transition=false
+    state.target_brightness=nil
+    lightAnimation=nil
+    save_state()
+  end
+
+  local function step_light_animation()
+    local anim=lightAnimation
+    if not anim then return false end
+    local stop=math.min(#anim.changes,anim.index+anim.batch-1)
+    for i=anim.index,stop do
+      local item=anim.changes[i]
+      local ok=relay_set(item.fixture,item.value)
+      if not ok then anim.errors=(anim.errors or 0)+1 end
+    end
+    anim.index=stop+1
+    if anim.index>#anim.changes then
+      finish_light_animation(anim)
+      return true
+    end
+    anim.timer=os.startTimer(0.05)
+    return true
+  end
+
+  local function set_brightness(level,animate)
+    level=clamp(level,0,100)
+    local wanted,targetCount=target_fixture_set(level)
+    local changes={}
+    for _,f in ipairs(fixtures) do
+      local desired=wanted[f.id]==true
+      local current=fixtureOn[f.id]==true
+      if desired~=current then changes[#changes+1]={fixture=f,value=desired} end
+    end
+
+    if lightAnimation and lightAnimation.timer and os.cancelTimer then
+      pcall(os.cancelTimer,lightAnimation.timer)
+    end
+    lightAnimation=nil
+
+    if animate==false or #changes==0 then
+      local errors=0
+      for _,item in ipairs(changes) do
+        local ok=relay_set(item.fixture,item.value)
+        if not ok then errors=errors+1 end
+      end
+      finish_light_animation({
+        level=level,target_count=targetCount,errors=errors,changes={},index=1,batch=1
+      })
+      return errors==0
+    end
+
+    -- Redstone lamps are binary. Perceived dimming is achieved by changing an
+    -- evenly distributed subset of fixtures in four-lamp batches every 50 ms.
+    -- No fixture is PWM-flickered, and theaterd remains responsive while fading.
+    lightAnimation={
+      level=level,target_count=targetCount,errors=0,
+      changes=changes,index=1,batch=4,timer=nil
+    }
+    state.lighting_transition=true
+    state.target_brightness=level
+    step_light_animation()
+    save_state()
+    return true
+  end
+
+  local function set_scene(name,animate)
+    name=tostring(name or ""):lower()
+    local scene=scenes[name]
+    if not scene then return nil,"unknown scene" end
+    state.scene=name
+    state.state=state.state=="ERROR" and "IDLE" or state.state
+    set_brightness(scene.level,animate)
+    save_state()
+    return true
+  end
+
+  local function configure_monitors()
+    local main=wrap_monitor(mainName)
+    if main then
+      monitorLayout.fit(main,{
+        min_width=144,min_height=54,
+        fixed_scale=tonumber(machine.theater_main_text_scale) or 2.0,
+      })
+      pcall(main.setCursorBlink,false)
+      pcall(main.setBackgroundColor,colors.black)
+      pcall(main.setTextColor,colors.white)
+    end
+
+    for _,name in ipairs({transportName,controlName}) do
+      local mon=wrap_monitor(name)
+      if mon then
+        monitorLayout.fit(mon,{min_width=38,min_height=18,max_scale=2.0,auto_max_scale=1.0})
+        pcall(mon.setCursorBlink,false)
+        pcall(mon.setBackgroundColor,colors.black)
+        pcall(mon.setTextColor,colors.white)
+      end
+    end
+  end
+
+  local function fit(s,n)
+    s=tostring(s or "")
+    if n<=0 then return "" end
+    if #s<=n then return s end
+    if n<=1 then return "~" end
+    return s:sub(1,n-1).."~"
+  end
+
+  local function line(mon,y,text,fg,bg)
+    if not mon then return end
+    local w,h=mon.getSize()
+    if y<1 or y>h then return end
+    text=fit(text,w)
+    mon.setCursorPos(1,y)
+    mon.setBackgroundColor(bg or colors.black)
+    mon.setTextColor(fg or colors.white)
+    mon.write(text..string.rep(" ",math.max(0,w-#text)))
+  end
+
+  local function progress_bar(mon,y,pct,label)
+    local w,h=mon.getSize()
+    if y<1 or y>h then return end
+    local inner=math.max(5,w-4)
+    local fill=math.floor(inner*clamp(pct,0,1)+0.5)
+    mon.setCursorPos(2,y)
+    mon.setBackgroundColor(colors.gray)
+    mon.write(string.rep(" ",inner))
+    if fill>0 then
+      mon.setCursorPos(2,y)
+      mon.setBackgroundColor(colors.orange)
+      mon.write(string.rep(" ",fill))
+    end
+    if label then
+      local txt=fit(label,inner)
+      local x=2+math.max(0,math.floor((inner-#txt)/2))
+      mon.setCursorPos(x,y)
+      mon.setTextColor(colors.white)
+      mon.setBackgroundColor(colors.black)
+      mon.write(txt)
+    end
+    mon.setBackgroundColor(colors.black)
+  end
+
+  local function fmt_time(v)
+    v=math.max(0,math.floor(tonumber(v) or 0))
+    local h=math.floor(v/3600)
+    local m=math.floor((v%3600)/60)
+    local s=v%60
+    return h>0 and ("%d:%02d:%02d"):format(h,m,s) or ("%d:%02d"):format(m,s)
+  end
+  local function current_position()
+    if session and session.active and session.go and session.start_epoch then
+      return math.max(0,(session.start_position or 0)+(now_ms()-session.start_epoch)/1000)
+    end
+    return tonumber(state.position) or 0
+  end
+
+  local function render_transport()
+    local mon=wrap_monitor(transportName)
+    if not mon then return end
+    local w,h=mon.getSize()
+    mon.setBackgroundColor(colors.black);mon.clear()
+    line(mon,1," CCLUA CINEMA // TRANSPORT",colors.white,colors.blue)
+
+    local title=state.title or "No feature loaded"
+    line(mon,3,fit(title,w-2),state.movie_id and colors.white or colors.gray)
+    local pos=current_position()
+    local dur=tonumber(state.duration) or 0
+    local pct=dur>0 and math.min(1,pos/dur) or 0
+    progress_bar(mon,5,pct,fmt_time(pos).." / "..fmt_time(dur))
+
+    line(mon,7,("STATE  %-10s  VOL %3d%%"):format(
+      tostring(state.state or "IDLE"),math.floor((state.volume or 0)*100+0.5)
+    ),state.state=="PLAYING" and colors.lime or state.state=="ERROR" and colors.red or colors.lightGray)
+    line(mon,8,("LIGHT  %-10s  %3d%%"):format(
+      tostring((scenes[state.scene] or {}).label or state.scene),tonumber(state.brightness) or 0
+    ),colors.yellow)
+    if h>=11 then
+      line(mon,h-2," << -10s    PLAY/PAUSE    +10s >>",colors.cyan)
+      line(mon,h-1," Touch L / CENTER / R for transport",colors.gray)
+    end
+    line(mon,h,("AUDIO %d/%d  SCREEN %s"):format(
+      tonumber((state.hardware or {}).speakers_present) or 0,22,
+      (state.hardware or {}).main_present and "READY" or "MISSING"
+    ),(state.hardware or {}).main_present and colors.lime or colors.red)
+  end
+
+  local function render_control()
+    local mon=wrap_monitor(controlName)
+    if not mon then return end
+    local w,h=mon.getSize()
+    mon.setBackgroundColor(colors.black);mon.clear()
+    line(mon,1," CCLUA CINEMA // HOUSE CONTROL",colors.white,colors.blue)
+    line(mon,2,("Scene %-9s | %d fixtures | Bridge %s"):format(
+      tostring((scenes[state.scene] or {}).label or state.scene),
+      tonumber(state.lights_on) or 0,tostring(state.bridge or "CHECKING")
+    ),state.bridge=="ONLINE" and colors.lime or colors.orange)
+
+    local labels={"HOUSE 100%","PRE-SHOW 60%","TRAILERS 30%","FEATURE 9%","BLACKOUT"}
+    local maxScenes=math.min(#labels,math.max(0,h-8))
+    for i=1,maxScenes do
+      local sceneId=sceneOrder[i]
+      local selected=state.scene==sceneId
+      line(mon,3+i,(selected and "> " or "  ")..labels[i],
+        selected and colors.black or colors.white,
+        selected and colors.yellow or colors.black)
+    end
+
+    local y=4+maxScenes+1
+    if y<=h-3 then line(mon,y,"MOVIES",colors.cyan);y=y+1 end
+    local start=math.max(1,math.min(#catalog,tonumber(state.selected_index) or 1)-1)
+    while y<=h-2 and start<=#catalog do
+      local item=catalog[start]
+      local selected=start==(tonumber(state.selected_index) or 1)
+      line(mon,y,(selected and "> " or "  ")..fit(item.title,w-3),
+        selected and colors.black or colors.lightGray,
+        selected and colors.lightGray or colors.black)
+      y=y+1;start=start+1
+    end
+    line(mon,h,"Touch scene/movie | Desktop for full control",colors.gray)
+  end
+
+  local function render_main_idle()
+    if session and session.active and state.state=="PLAYING" then return end
+    local mon=wrap_monitor(mainName)
+    if not mon then return end
+    local key=table.concat({
+      tostring(state.state),tostring(state.title),tostring(state.position),
+      tostring(state.bridge),tostring(state.scene)
+    },"|")
+    if lastRenderKey.main==key then return end
+    lastRenderKey.main=key
+    local w,h=mon.getSize()
+    mon.setBackgroundColor(colors.black);mon.setTextColor(colors.white);mon.clear()
+
+    local title=state.title or "CCLUA CINEMA"
+    local subtitle
+    if state.state=="PAUSED" then
+      subtitle="PAUSED  "..fmt_time(state.position).." / "..fmt_time(state.duration)
+    elseif state.state=="ERROR" then
+      subtitle="SYSTEM ERROR  "..tostring(state.error or "")
+    elseif #catalog==0 then
+      subtitle="THEATER READY // NO MOVIES IN LIBRARY"
+    else
+      subtitle=("%d FEATURES AVAILABLE // HOUSE %s"):format(#catalog,
+        tostring((scenes[state.scene] or {}).label or state.scene))
+    end
+    local y=math.max(2,math.floor(h/2)-1)
+    local x=math.max(1,math.floor((w-#title)/2)+1)
+    mon.setCursorPos(x,y);mon.setTextColor(colors.orange);mon.write(fit(title,w))
+    local sub=fit(subtitle,w-4)
+    mon.setCursorPos(math.max(1,math.floor((w-#sub)/2)+1),math.min(h,y+2))
+    mon.setTextColor(state.state=="ERROR" and colors.red or colors.lightGray);mon.write(sub)
+  end
+
+  local function render_all()
+    local ok,err=pcall(function()
+      render_transport()
+      render_control()
+      render_main_idle()
+    end)
+    if not ok then
+      ctx.kernel.log.write("warning","theaterd","display render failed",{error=tostring(err)},ctx.process.pid)
+      monitorCache={}
+    end
+  end
+  local function read_exact(h,n)
+    local parts={}
+    local total=0
+    while total<n do
+      local chunk=h.read(n-total)
+      if not chunk then break end
+      parts[#parts+1]=chunk
+      total=total+#chunk
+    end
+    if total~=n then return nil,total end
+    return table.concat(parts)
+  end
+
+  local function pcm_decode(raw)
+    local out={}
+    for i=1,#raw do
+      local b=string.byte(raw,i)
+      out[i]=b>=128 and b-256 or b
+    end
+    return out
+  end
+
+  local function stop_process(pid)
+    if not pid then return end
+    local proc=ctx.kernel.process.get(pid)
+    if proc and proc.state~="exited" and proc.state~="killed" and proc.state~="crashed" then
+      ctx.kernel.process.exit(proc,143,"killed")
+      if os.queueEvent then os.queueEvent("cclua_process_exit",proc.pid,143,"killed") end
+    end
+  end
+
+  local function stop_session(keepPosition)
+    if not session then return end
+    if keepPosition then state.position=current_position() end
+    session.active=false
+    stop_process(session.audio_pid)
+    stop_process(session.video_pid)
+    for _,s in ipairs(room_speakers()) do pcall(s.obj.stop) end
+    session=nil
+  end
+
+  local function wait_sync(s,kind)
+    if not s.active then return false end
+    s[kind.."_ready"]=true
+    if os.queueEvent then os.queueEvent("cclua_theater_stream_ready",s.token,kind) end
+    while s.active and not s.go do
+      local ev,token=coroutine.yield("wait_event",{"cclua_theater_sync","terminate"})
+      if ev=="terminate" then return false end
+      if ev=="cclua_theater_sync" and token==s.token then break end
+    end
+    if not s.active then return false end
+    local target=tonumber(s.start_epoch) or now_ms()
+    if now_ms()<target then coroutine.yield("sleep",target) end
+    return s.active
+  end
+
+  local function spawn_audio(s,movie)
+    local speakers=room_speakers()
+    if #speakers==0 then return nil,"no theater speakers present" end
+
+    local parent=ctx.process
+    local proc,err=ctx.kernel.process.create{
+      ppid=parent.pid,name="cclua-theater-audio",
+      uid=parent.uid,gid=parent.gid,groups=parent.groups,
+      cwd=parent.cwd,capabilities=parent.capabilities,
+      argv={"theater-audio",tostring(movie.id)},
+    }
+    if not proc then return nil,err end
+    s.audio_pid=proc.pid
+
+    ctx.kernel.scheduler:add(proc,function()
+      local ok,runErr=pcall(function()
+        local url=ORIGIN..tostring(movie.audio_url or "")..
+          "?start="..("%.3f"):format(s.start_position or 0)
+        local h,httpErr=http.get(url,{
+          ["Accept"]="application/octet-stream",
+          ["User-Agent"]="CCLUA-Theater/0.1",
+        },true)
+        if not h then error(tostring(httpErr or "audio stream unavailable"),0) end
+        local code=h.getResponseCode and h.getResponseCode() or 200
+        if tonumber(code)~=200 then h.close();error("audio HTTP "..tostring(code),0) end
+
+        if not wait_sync(s,"audio") then h.close();return end
+
+        while s.active do
+          local raw=h.read(32*1024)
+          if not raw then break end
+          local audio=pcm_decode(raw)
+          local pending={}
+          for _,sp in ipairs(speakers) do pending[#pending+1]=sp end
+
+          while s.active and #pending>0 do
+            for i=#pending,1,-1 do
+              local sp=pending[i]
+              local okPlay,accepted=pcall(sp.obj.playAudio,audio,s.volume)
+              if not okPlay then
+                ctx.kernel.log.write("warning","theaterd","speaker playback failed",
+                  {speaker=sp.name,error=tostring(accepted)},proc.pid)
+                table.remove(pending,i)
+              elseif accepted then
+                table.remove(pending,i)
+              end
+            end
+            if #pending>0 then
+              local ev=coroutine.yield("wait_event",{"speaker_audio_empty","terminate"})
+              if ev=="terminate" then h.close();return end
+            end
+          end
+        end
+        h.close()
+      end)
+      if not ok then
+        ctx.kernel.log.write("error","theaterd","audio stream failed",{error=tostring(runErr)},proc.pid)
+        if os.queueEvent then os.queueEvent("cclua_theater_stream_error",s.token,"audio",tostring(runErr)) end
+        return 1
+      end
+      if s.active and os.queueEvent then os.queueEvent("cclua_theater_stream_end",s.token,"audio") end
+      return 0
+    end)
+    return true
+  end
+
+  local function spawn_video(s,movie)
+    local mon=wrap_monitor(mainName)
+    if not mon then return nil,"main theater monitor missing" end
+    local mw,mh=mon.getSize()
+    local rows=math.min(targetRows,mh,math.floor(mw*3/8))
+    local cols=math.min(targetCols,mw,math.floor(rows*8/3))
+    rows=math.floor(cols*3/8)
+    if cols<32 or rows<12 then return nil,"main monitor is too small" end
+    s.video_cols=cols;s.video_rows=rows
+
+    local parent=ctx.process
+    local proc,err=ctx.kernel.process.create{
+      ppid=parent.pid,name="cclua-theater-video",
+      uid=parent.uid,gid=parent.gid,groups=parent.groups,
+      cwd=parent.cwd,capabilities=parent.capabilities,
+      argv={"theater-video",tostring(movie.id)},
+    }
+    if not proc then return nil,err end
+    s.video_pid=proc.pid
+
+    ctx.kernel.scheduler:add(proc,function()
+      local ok,runErr=pcall(function()
+        local url=ORIGIN..tostring(movie.video_url or "")..
+          ("?start=%.3f&cols=%d&rows=%d&fps=%.3f"):format(
+            s.start_position or 0,cols,rows,fps)
+        local h,httpErr=http.get(url,{
+          ["Accept"]="application/octet-stream",
+          ["User-Agent"]="CCLUA-Theater/0.1",
+        },true)
+        if not h then error(tostring(httpErr or "video stream unavailable"),0) end
+        local code=h.getResponseCode and h.getResponseCode() or 200
+        if tonumber(code)~=200 then h.close();error("video HTTP "..tostring(code),0) end
+
+        local rowBytes=cols*3
+        local frameBytes=rowBytes*rows
+        if not wait_sync(s,"video") then h.close();return end
+
+        mon.setBackgroundColor(colors.black);mon.setTextColor(colors.white);mon.clear()
+        local ox=math.floor((mw-cols)/2)+1
+        local oy=math.floor((mh-rows)/2)+1
+        local frame=0
+        while s.active do
+          local raw=read_exact(h,frameBytes)
+          if not raw then break end
+          frame=frame+1
+          local target=(s.start_epoch or now_ms())+((frame-1)/fps)*1000
+          local late=now_ms()-target
+
+          if late<120 then
+            if late<0 then coroutine.yield("sleep",math.floor(target)) end
+            local off=1
+            for row=0,rows-1 do
+              local chars=raw:sub(off,off+cols-1);off=off+cols
+              local fg=raw:sub(off,off+cols-1);off=off+cols
+              local bg=raw:sub(off,off+cols-1);off=off+cols
+              mon.setCursorPos(ox,oy+row)
+              mon.blit(chars,fg,bg)
+            end
+          else
+            s.dropped_frames=(s.dropped_frames or 0)+1
+          end
+        end
+        h.close()
+      end)
+      if not ok then
+        ctx.kernel.log.write("error","theaterd","video stream failed",{error=tostring(runErr)},proc.pid)
+        if os.queueEvent then os.queueEvent("cclua_theater_stream_error",s.token,"video",tostring(runErr)) end
+        return 1
+      end
+      if s.active and os.queueEvent then os.queueEvent("cclua_theater_stream_end",s.token,"video") end
+      return 0
+    end)
+    return true
+  end
+  local function start_movie(movie,position)
+    if not movie then return nil,"movie metadata required" end
+    stop_session(false)
+    sessionSeq=sessionSeq+1
+    local s={
+      token=sessionSeq,active=true,go=false,
+      start_position=math.max(0,tonumber(position) or 0),
+      volume=state.volume,
+      movie=movie,
+      dropped_frames=0,
+    }
+    session=s
+    state.movie_id=movie.id
+    state.title=movie.title or "Unknown"
+    state.duration=tonumber(movie.duration)
+    state.position=s.start_position
+    state.state="BUFFERING"
+    state.error=nil
+    lastRenderKey.main=nil
+
+    local vok,verr=spawn_video(s,movie)
+    local aok,aerr=spawn_audio(s,movie)
+    if not vok or not aok then
+      stop_session(false)
+      state.state="ERROR"
+      state.error=tostring(verr or aerr)
+      save_state();render_all()
+      return nil,state.error
+    end
+    save_state();render_all()
+    return true
+  end
+
+  local function play_id(id)
+    local movie,index=find_movie(id)
+    if not movie then return nil,"movie not found" end
+    state.selected_index=index
+    local ok,err=start_movie(movie,0)
+    if ok then set_scene("feature",true) end
+    return ok,err
+  end
+
+  local function pause_movie()
+    if state.state~="PLAYING" and state.state~="BUFFERING" then return false end
+    stop_session(true)
+    state.state="PAUSED"
+    state.error=nil
+    lastRenderKey.main=nil
+    save_state();render_all()
+    return true
+  end
+
+  local function resume_movie()
+    if state.state~="PAUSED" or not state.movie_id then return false end
+    local movie=find_movie(state.movie_id)
+    if not movie then return nil,"movie unavailable" end
+    return start_movie(movie,state.position or 0)
+  end
+
+  local function stop_movie(returnHouse)
+    stop_session(false)
+    state.state="IDLE"
+    state.position=0
+    state.movie_id=nil
+    state.title=nil
+    state.duration=nil
+    state.error=nil
+    lastRenderKey.main=nil
+    if returnHouse~=false then set_scene("house",true) end
+    save_state();render_all()
+    return true
+  end
+
+  local function seek_movie(delta)
+    if not state.movie_id then return false end
+    local movie=find_movie(state.movie_id)
+    if not movie then return nil,"movie unavailable" end
+    local wasPlaying=state.state=="PLAYING" or state.state=="BUFFERING"
+    local pos=clamp(current_position()+(tonumber(delta) or 0),0,math.max(0,(tonumber(movie.duration) or 1)-0.05))
+    stop_session(false)
+    state.position=pos
+    if wasPlaying then return start_movie(movie,pos) end
+    state.state="PAUSED";lastRenderKey.main=nil;save_state();render_all()
+    return true
+  end
+
+  local function set_volume(payload)
+    local value=payload and tonumber(payload.value)
+    if value==nil then value=(state.volume or 0.85)+(payload and tonumber(payload.delta) or 0) end
+    state.volume=clamp(value,0,1)
+    if session then session.volume=state.volume end
+    save_state();render_all()
+    return true
+  end
+
+  local function handle_command(op,payload)
+    payload=type(payload)=="table" and payload or {}
+    if op=="scene" then return set_scene(payload.scene,true)
+    elseif op=="brightness" then
+      state.scene="custom";set_brightness(payload.value,true);save_state();render_all();return true
+    elseif op=="play" then return play_id(payload.id)
+    elseif op=="pause" then return pause_movie()
+    elseif op=="resume" then return resume_movie()
+    elseif op=="toggle" then
+      if state.state=="PLAYING" or state.state=="BUFFERING" then return pause_movie()
+      elseif state.state=="PAUSED" then return resume_movie()
+      elseif catalog[state.selected_index or 1] then return play_id(catalog[state.selected_index or 1].id) end
+      return false
+    elseif op=="stop" then return stop_movie(true)
+    elseif op=="seek" then return seek_movie(payload.delta)
+    elseif op=="volume" then return set_volume(payload)
+    elseif op=="select" then
+      state.selected_index=math.max(1,math.min(math.max(1,#catalog),tonumber(payload.index) or state.selected_index or 1))
+      save_state();render_all();return true
+    elseif op=="refresh" then refresh_catalog();hardware_snapshot();save_state();render_all();return true
+    end
+    return nil,"unknown theater operation"
+  end
+
+  local function touch_transport(x,y)
+    local mon=wrap_monitor(transportName)
+    if not mon then return end
+    local w,h=mon.getSize()
+    if y>=h-2 then
+      if x<=math.floor(w/3) then seek_movie(-10)
+      elseif x>=math.floor(w*2/3) then seek_movie(10)
+      else handle_command("toggle",{}) end
+    elseif y==7 then
+      if x<math.floor(w/2) then set_volume({delta=-0.05}) else set_volume({delta=0.05}) end
+    end
+  end
+
+  local function touch_control(x,y)
+    local mon=wrap_monitor(controlName)
+    if not mon then return end
+    local w,h=mon.getSize()
+    local sceneRow=y-3
+    if sceneRow>=1 and sceneRow<=#sceneOrder then
+      set_scene(sceneOrder[sceneRow],true)
+      return
+    end
+    local maxScenes=math.min(#sceneOrder,math.max(0,h-8))
+    local movieStartY=4+maxScenes+2
+    if y>=movieStartY and y<=h-2 then
+      local first=math.max(1,math.min(#catalog,tonumber(state.selected_index) or 1)-1)
+      local idx=first+(y-movieStartY)
+      if catalog[idx] then
+        state.selected_index=idx
+        play_id(catalog[idx].id)
+      end
+    end
+  end
+  configure_monitors()
+  hardware_snapshot()
+  refresh_catalog()
+
+  -- Reconcile the actual fixture state before applying the persisted scene.
+  for _,f in ipairs(fixtures) do
+    if peripheral_ok(f.name,"redstone_relay") then
+      local relay=peripheral.wrap(f.name)
+      local ok,v=pcall(relay.getOutput,"down")
+      fixtureOn[f.id]=ok and v==true or false
+    end
+  end
+  set_scene(state.scene,true)
+  state.state="IDLE"
+  save_state()
+  render_all()
+
+  ctx.unit.details={
+    bridge=BRIDGE,main_monitor=mainName,
+    transport_monitor=transportName,control_monitor=controlName,
+    speakers=22,fixtures=#fixtures,video={cols=targetCols,rows=targetRows,fps=fps}
+  }
+  ctx.kernel.log.write("info","theaterd","theater controller online",ctx.unit.details,ctx.process.pid)
+
+  local refreshTimer=os.startTimer(0.25)
+  local catalogTimer=os.startTimer(5)
+  while true do
+    local ev,a,b,c=coroutine.yield("wait_event",{
+      "timer","cclua_theater_command","cclua_theater_stream_ready",
+      "cclua_theater_stream_end","cclua_theater_stream_error",
+      "monitor_touch","monitor_resize","peripheral","peripheral_detach","terminate"
+    })
+
+    if ev=="terminate" then
+      stop_session(true)
+      save_state()
+      return 0
+
+    elseif ev=="timer" and lightAnimation and a==lightAnimation.timer then
+      step_light_animation()
+
+    elseif ev=="timer" and a==refreshTimer then
+      if session and session.active and session.go then
+        state.position=current_position()
+        state.dropped_frames=session.dropped_frames or 0
+        if state.duration and state.position>state.duration then state.position=state.duration end
+      end
+      hardware_snapshot()
+      save_state()
+      render_transport()
+      refreshTimer=os.startTimer(0.25)
+
+    elseif ev=="timer" and a==catalogTimer then
+      refresh_catalog()
+      catalogTimer=os.startTimer(5)
+
+    elseif ev=="cclua_theater_command" then
+      local ok,err=handle_command(tostring(a or ""),b)
+      if not ok and err then
+        state.error=tostring(err)
+        ctx.kernel.log.write("warning","theaterd","command failed",{op=a,error=err},ctx.process.pid)
+      end
+
+    elseif ev=="cclua_theater_stream_ready" and session and a==session.token then
+      if session.audio_ready and session.video_ready and not session.go then
+        session.start_epoch=now_ms()+120
+        session.go=true
+        state.state="PLAYING"
+        state.position=session.start_position or 0
+        save_state();render_transport()
+        if os.queueEvent then os.queueEvent("cclua_theater_sync",session.token) end
+      end
+
+    elseif ev=="cclua_theater_stream_end" and session and a==session.token then
+      local kind=tostring(b or "")
+      session[kind.."_ended"]=true
+      if session.audio_ended or session.video_ended then
+        -- Either stream ending naturally means the feature is effectively over.
+        if state.duration and current_position()>=state.duration-1.5 then
+          stop_movie(true)
+        end
+      end
+
+    elseif ev=="cclua_theater_stream_error" and session and a==session.token then
+      local kind,err=tostring(b or ""),tostring(c or "stream failed")
+      stop_session(true)
+      state.state="ERROR";state.error=kind..": "..err
+      lastRenderKey.main=nil
+      save_state();render_all()
+
+    elseif ev=="monitor_touch" then
+      if a==transportName then touch_transport(tonumber(b) or 1,tonumber(c) or 1)
+      elseif a==controlName then touch_control(tonumber(b) or 1,tonumber(c) or 1) end
+
+    elseif ev=="monitor_resize" or ev=="peripheral" or ev=="peripheral_detach" then
+      monitorCache={}
+      configure_monitors()
+      hardware_snapshot()
+      lastRenderKey.main=nil
+      save_state();render_all()
+    end
+  end
+end
