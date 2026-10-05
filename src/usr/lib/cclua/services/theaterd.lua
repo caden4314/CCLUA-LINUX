@@ -1322,15 +1322,6 @@ return function(ctx)
               apply_main_palette(mon,seg.palette,seg.palette_hex)
             end
 
-            local audioParts={}
-            local offset=1
-            for _=1,seg.packets do
-              offset=offset+seg.frame_bytes
-              audioParts[#audioParts+1]=seg.raw:sub(offset,offset+seg.audio_bytes-1)
-              offset=offset+seg.audio_bytes
-            end
-            local audio=pcm_decode(table.concat(audioParts),s.volume)
-
             if not s.go then
               s.start_epoch=now_ms()+120
               s.go=true
@@ -1345,33 +1336,10 @@ return function(ctx)
               coroutine.yield("sleep",math.floor(segmentTarget))
             end
 
-            local pending={}
-            for _,sp in ipairs(speakers) do pending[#pending+1]=sp end
             local acceptedCount=0
             local failedCount=0
-            while s.active and #pending>0 do
-              local remaining={}
-              for i=1,#pending do
-                local sp=pending[i]
-                local okPlay,accepted=pcall(sp.obj.playAudio,audio,speakerOutputVolume)
-                if not okPlay then
-                  failedCount=failedCount+1
-                  ctx.kernel.log.write("warning","theaterd","speaker playback failed",
-                    {speaker=sp.name,error=tostring(accepted)},proc.pid)
-                elseif accepted then
-                  acceptedCount=acceptedCount+1
-                else
-                  remaining[#remaining+1]=sp
-                end
-              end
-              pending=remaining
-              if #pending>0 then
-                local ev=coroutine.yield("wait_event",{"speaker_audio_empty","terminate"})
-                if ev=="terminate" then return 0 end
-              end
-            end
-            s.speaker_submit_ok=acceptedCount
-            s.speaker_submit_failed=failedCount
+            s.speaker_submit_ok=0
+            s.speaker_submit_failed=0
             s.speaker_submit_total=#speakers
             s.speaker_output_volume=speakerOutputVolume
 
@@ -1397,6 +1365,38 @@ return function(ctx)
               local target=segmentTarget+(packet/fps)*1000
               if now_ms()<target then coroutine.yield("sleep",math.floor(target)) end
               local late=now_ms()-target
+
+              -- Keep the bridge's native 50 ms / 2400-sample packetization.
+              -- Giant segment-sized playAudio buffers cause poor OpenAL
+              -- streaming behaviour and make individual sources fall behind.
+              local audioStart=packetOffset+seg.frame_bytes
+              local audioRaw=seg.raw:sub(audioStart,audioStart+seg.audio_bytes-1)
+              local audio=pcm_decode(audioRaw,s.volume)
+              local pending={}
+              for _,sp in ipairs(speakers) do pending[#pending+1]=sp end
+              while s.active and #pending>0 do
+                local remaining={}
+                for i=1,#pending do
+                  local sp=pending[i]
+                  local okPlay,accepted=pcall(sp.obj.playAudio,audio,speakerOutputVolume)
+                  if not okPlay then
+                    failedCount=failedCount+1
+                    ctx.kernel.log.write("warning","theaterd","speaker playback failed",
+                      {speaker=sp.name,error=tostring(accepted)},proc.pid)
+                  elseif accepted then
+                    acceptedCount=acceptedCount+1
+                  else
+                    remaining[#remaining+1]=sp
+                  end
+                end
+                pending=remaining
+                if #pending>0 then
+                  local ev=coroutine.yield("wait_event",{"speaker_audio_empty","terminate"})
+                  if ev=="terminate" then return 0 end
+                end
+              end
+              s.speaker_submit_ok=acceptedCount
+              s.speaker_submit_failed=failedCount
 
               if late<120 then
                 local video=seg.raw:sub(packetOffset,packetOffset+seg.frame_bytes-1)
