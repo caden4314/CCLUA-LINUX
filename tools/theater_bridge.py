@@ -439,6 +439,11 @@ class Handler(BaseHTTPRequestHandler):
         audio_bytes = max(1, int(round(sample_rate / fps)))
         raw_frame_bytes = width*height*3
         encoded_bytes = cols*rows*3
+        self.bridge.log_event(
+            "av_open", movie=source.name, start=round(start,3),
+            cols=cols, rows=rows, fps=round(fps,3),
+            frame_bytes=encoded_bytes, audio_bytes=audio_bytes,
+        )
 
         vf = (
             f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
@@ -491,6 +496,8 @@ class Handler(BaseHTTPRequestHandler):
                 buf.extend(chunk)
             return bytes(buf)
 
+        packets = 0
+        disconnect = None
         try:
             assert vproc.stdout is not None
             assert aproc.stdout is not None
@@ -507,8 +514,18 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.write(encoded)
                 self.wfile.write(audio)
                 self.wfile.flush()
-        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
-            pass
+                packets += 1
+                if packets == 1:
+                    self.bridge.log_event(
+                        "av_first_packet", movie=source.name,
+                        cols=cols, rows=rows, fps=round(fps,3),
+                    )
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError) as exc:
+            disconnect = type(exc).__name__
+            self.bridge.log_event(
+                "av_disconnect", movie=source.name,
+                packets=packets, error=disconnect,
+            )
         finally:
             for proc in (vproc,aproc):
                 if proc.poll() is None:
@@ -518,6 +535,10 @@ class Handler(BaseHTTPRequestHandler):
                     proc.wait(timeout=2)
                 except Exception:
                     proc.kill()
+            self.bridge.log_event(
+                "av_close", movie=source.name, packets=packets,
+                disconnect=disconnect,
+            )
 
 class Server(ThreadingHTTPServer):
     daemon_threads = True
