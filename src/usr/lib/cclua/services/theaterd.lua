@@ -1051,6 +1051,25 @@ return function(ctx)
     return palette
   end
 
+  local function parse_palette_sequence(raw,count)
+    raw=tostring(raw or ""):lower()
+    count=math.floor(tonumber(count) or 0)
+    if count<1 or count>16 or #raw~=count*96 or raw:find("[^0-9a-f]") then
+      return nil
+    end
+    local palettes={}
+    local keys={}
+    for i=1,count do
+      local first=(i-1)*96+1
+      local hex=raw:sub(first,first+95)
+      local palette=parse_palette_hex(hex)
+      if not palette then return nil end
+      palettes[i]=palette
+      keys[i]=hex
+    end
+    return palettes,keys
+  end
+
   local function request_segment(s,index)
     if not s or not s.active then return nil,"session stopped" end
     index=math.max(0,math.floor(tonumber(index) or 0))
@@ -1065,7 +1084,7 @@ return function(ctx)
     end
 
     local url=ORIGIN.."/v1/movies/"..tostring(s.movie.id).."/av.segment"..
-      ("?start=%.3f&seconds=%.3f&cols=%d&rows=%d&fps=%.3f&color=adaptive16&session=%d&seq=%d"):format(
+      ("?start=%.3f&seconds=%.3f&cols=%d&rows=%d&fps=%.3f&color=adaptive16x4&session=%d&seq=%d"):format(
         start,s.segment_seconds,s.video_cols,s.video_rows,fps,s.token,index)
 
     local ok,err=http.request{
@@ -1141,8 +1160,15 @@ return function(ctx)
     local sampleRate=tonumber(segment_header(headers,"X-CCLUA-Sample-Rate")) or 48000
     local packets=tonumber(segment_header(headers,"X-CCLUA-Packets")) or 0
     local paletteHex=segment_header(headers,"X-CCLUA-Palette-RGB")
+    local paletteSequenceHex=segment_header(headers,"X-CCLUA-Palette-RGB-Sequence")
+    local paletteCount=tonumber(segment_header(headers,"X-CCLUA-Palette-Count")) or 0
+    local paletteFrames=tonumber(segment_header(headers,"X-CCLUA-Palette-Frames")) or 0
     local colorMode=segment_header(headers,"X-CCLUA-Color-Mode") or "stock16"
     local palette=paletteHex and parse_palette_hex(paletteHex) or nil
+    local palettes,paletteKeys=nil,nil
+    if paletteSequenceHex then
+      palettes,paletteKeys=parse_palette_sequence(paletteSequenceHex,paletteCount)
+    end
     local raw=h.readAll() or ""
     if h.close then pcall(h.close) end
 
@@ -1170,6 +1196,15 @@ return function(ctx)
     if colorMode=="adaptive16-bayer4" and not palette then
       error("adaptive theater segment is missing a valid 16-color RGB palette",0)
     end
+    if colorMode=="adaptive16x4-fs" then
+      if not palettes or #palettes<1 then
+        error("cinema color segment is missing its palette sequence",0)
+      end
+      paletteFrames=math.max(1,math.floor(paletteFrames))
+      if paletteFrames>packets then
+        error("cinema color palette cadence exceeds segment packet count",0)
+      end
+    end
 
     s.segment_requested[req.index]=nil
     s.segment_retries[req.index]=nil
@@ -1177,7 +1212,9 @@ return function(ctx)
       raw=raw,index=req.index,start=req.start,
       packets=packets,frame_bytes=frameBytes,audio_bytes=audioBytes,
       packet_bytes=packetBytes,duration=packets/gotFps,
-      palette=palette,palette_hex=paletteHex,color_mode=colorMode,
+      palette=palette,palette_hex=paletteHex,
+      palettes=palettes,palette_keys=paletteKeys,palette_frames=paletteFrames,
+      palette_count=palettes and #palettes or 0,color_mode=colorMode,
       received_at=now_ms(),request_ms=now_ms()-(req.requested_at or now_ms()),
     }
     s.audio_bytes=audioBytes
@@ -1321,8 +1358,24 @@ return function(ctx)
             s.speaker_output_volume=speakerOutputVolume
 
             local packetOffset=1
+            local activePaletteIndex=nil
             for packet=0,seg.packets-1 do
               if not s.active then break end
+
+              if seg.palettes and #seg.palettes>0 then
+                local paletteFrames=math.max(1,tonumber(seg.palette_frames) or seg.packets)
+                local paletteIndex=math.min(#seg.palettes,math.floor(packet/paletteFrames)+1)
+                if paletteIndex~=activePaletteIndex then
+                  apply_main_palette(
+                    mon,
+                    seg.palettes[paletteIndex],
+                    seg.palette_keys and seg.palette_keys[paletteIndex] or
+                      (tostring(seg.index)..":"..tostring(paletteIndex))
+                  )
+                  activePaletteIndex=paletteIndex
+                end
+              end
+
               local target=segmentTarget+(packet/fps)*1000
               if now_ms()<target then coroutine.yield("sleep",math.floor(target)) end
               local late=now_ms()-target

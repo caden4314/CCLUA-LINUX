@@ -287,6 +287,34 @@ def derive_adaptive_palette(frames: list[bytes], width: int, height: int) -> np.
 def palette_header(palette: np.ndarray) -> str:
     return "".join(f"{int(r):02x}{int(g):02x}{int(b):02x}" for r,g,b in palette)
 
+def pillow_palette(palette: np.ndarray) -> Image.Image:
+    """Build a Pillow palette image whose first 16 slots are CCLUA colours."""
+    image=Image.new("P",(1,1))
+    raw=np.asarray(palette,dtype=np.uint8).reshape(-1).tolist()
+    image.putpalette(raw+[0]*(768-len(raw)))
+    return image
+
+def encode_frame_floyd(
+    rgb: bytes,
+    cols: int,
+    rows: int,
+    palette: np.ndarray,
+    palette_image: Image.Image | None = None,
+    palette_dist: np.ndarray | None = None,
+) -> bytes:
+    """Quantize a frame with native Floyd-Steinberg colour error diffusion."""
+    width,height=cols*2,rows*3
+    source=Image.frombytes("RGB",(width,height),rgb)
+    pimage=palette_image or pillow_palette(palette)
+    quantized=source.quantize(palette=pimage,dither=Image.Dither.FLOYDSTEINBERG)
+    idx=np.asarray(quantized,dtype=np.uint8)
+    # Pillow sees a 256-entry palette. Slots 16..255 are duplicate black,
+    # so collapse any such selection onto our explicit black slot.
+    if np.any(idx>=16):
+        idx=np.where(idx<16,idx,15).astype(np.uint8)
+    dist=palette_dist if palette_dist is not None else palette_distance(palette)
+    return encode_index_frame(idx,cols,rows,dist)
+
 @dataclass
 class BridgeConfig:
     library: Path
@@ -411,8 +439,9 @@ class Handler(BaseHTTPRequestHandler):
                     self.json({"ok":False,"error":"invalid segment duration"},400)
                     return
                 color_mode=str((q.get("color") or ["stock16"])[0]).lower()
-                adaptive=color_mode in {"adaptive","adaptive16","adaptive16-bayer4"}
-                self.send_av_segment(source,start,cols,rows,fps,seconds,adaptive=adaptive)
+                self.send_av_segment(
+                    source,start,cols,rows,fps,seconds,color_request=color_mode
+                )
             else:
                 self.stream_av(source,start,cols,rows,fps)
 
@@ -506,7 +535,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def send_av_segment(
         self, source: Path, start: float, cols: int, rows: int, fps: float,
-        seconds: float, adaptive: bool = False
+        seconds: float, color_request: str = "stock16"
     ):
         """Render one finite A/V segment and return it with Content-Length.
 
@@ -587,10 +616,49 @@ class Handler(BaseHTTPRequestHandler):
             self.json({"ok":False,"error":"segment reached end of movie"},416)
             return
 
-        if adaptive:
-            # Hold one scene-adaptive palette for an eight-second window. This
-            # gives films far better colour fidelity than CC's stock palette
-            # while avoiding a whole-screen palette shift every two seconds.
+        request=str(color_request or "stock16").lower()
+        palette_text=None
+        palette_sequence_text=None
+        palette_frames=None
+        palette_count=None
+
+        if request in {"adaptive16x4","adaptive16x4-fs","cinema"}:
+            # Four palettes per normal 2-second segment (~0.5 s each at 20
+            # FPS). Each group uses native Floyd-Steinberg colour diffusion,
+            # giving much better apparent colour depth without changing the
+            # CC:Tweaked 16-entry terminal palette limit.
+            palette_count=min(4,max(1,packets))
+            palette_frames=max(1,math.ceil(packets/palette_count))
+            palettes=[]
+            palette_images=[]
+            palette_dists=[]
+            for group in range(palette_count):
+                first=group*palette_frames
+                last=min(packets,first+palette_frames)
+                if first>=packets:
+                    break
+                palette=derive_adaptive_palette(raw_frames[first:last],width,height)
+                palettes.append(palette)
+                palette_images.append(pillow_palette(palette))
+                palette_dists.append(palette_distance(palette))
+            palette_count=len(palettes)
+            palette_sequence_text="".join(palette_header(p) for p in palettes)
+            color_mode="adaptive16x4-fs"
+
+            body=bytearray()
+            for i,(raw,audio) in enumerate(zip(raw_frames,audio_frames)):
+                pidx=min(palette_count-1,i//palette_frames)
+                body.extend(encode_frame_floyd(
+                    raw,cols,rows,
+                    palettes[pidx],
+                    palette_image=palette_images[pidx],
+                    palette_dist=palette_dists[pidx],
+                ))
+                body.extend(audio)
+
+        elif request in {"adaptive","adaptive16","adaptive16-bayer4"}:
+            # Legacy negotiated mode: one palette is held for an eight-second
+            # window. Keep this intact for older theater clients during rollout.
             stat=source.stat()
             palette_key=(str(source.resolve()).lower(),int(stat.st_mtime_ns),int(start//8.0))
             with self.bridge._lock:
@@ -606,20 +674,21 @@ class Handler(BaseHTTPRequestHandler):
                 palette,lut=cached
             palette_text=palette_header(palette)
             color_mode="adaptive16-bayer4"
-            dither_strength=12.0
-        else:
-            palette=PALETTE
-            lut=DEFAULT_PALETTE_LUT
-            palette_text=None
-            color_mode="stock16"
-            dither_strength=0.0
+            body=bytearray()
+            for raw,audio in zip(raw_frames,audio_frames):
+                body.extend(encode_frame(
+                    raw,cols,rows,palette=palette,lut=lut,dither_strength=12.0
+                ))
+                body.extend(audio)
 
-        body=bytearray()
-        for raw,audio in zip(raw_frames,audio_frames):
-            body.extend(encode_frame(
-                raw,cols,rows,palette=palette,lut=lut,dither_strength=dither_strength
-            ))
-            body.extend(audio)
+        else:
+            color_mode="stock16"
+            body=bytearray()
+            for raw,audio in zip(raw_frames,audio_frames):
+                body.extend(encode_frame(
+                    raw,cols,rows,palette=PALETTE,lut=DEFAULT_PALETTE_LUT
+                ))
+                body.extend(audio)
 
         render_ms = (time.perf_counter()-started)*1000
         self.bridge.log_event(
@@ -628,6 +697,7 @@ class Handler(BaseHTTPRequestHandler):
             cols=cols, rows=rows, fps=round(fps,3),
             bytes=len(body), render_ms=round(render_ms,1),
             color_mode=color_mode, palette=palette_text,
+            palette_count=palette_count, palette_frames=palette_frames,
         )
 
         self.send_response(200)
@@ -643,6 +713,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-CCLUA-Packets",str(packets))
         if palette_text is not None:
             self.send_header("X-CCLUA-Palette-RGB",palette_text)
+        if palette_sequence_text is not None:
+            self.send_header("X-CCLUA-Palette-RGB-Sequence",palette_sequence_text)
+            self.send_header("X-CCLUA-Palette-Count",str(palette_count))
+            self.send_header("X-CCLUA-Palette-Frames",str(palette_frames))
         self.send_header("X-CCLUA-Color-Mode",color_mode)
         self.send_header("X-CCLUA-Start-Seconds",f"{start:.3f}")
         self.send_header("Cache-Control","no-store")

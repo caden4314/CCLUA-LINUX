@@ -125,6 +125,22 @@ with tempfile.TemporaryDirectory(prefix="cclua-theater-test-") as td:
     assert content_length==packets*(frame_bytes+2400)
     assert len(body)==content_length
 
+    cinema_url=origin+f"/v1/movies/{item['id']}/av.segment?start=0&seconds=2&cols={cols}&rows={rows}&fps=20&color=adaptive16x4"
+    with urllib.request.urlopen(cinema_url,timeout=30) as r:
+        assert r.headers.get("X-CCLUA-Format")=="av-segment-v1"
+        assert r.headers.get("X-CCLUA-Color-Mode")=="adaptive16x4-fs"
+        assert int(r.headers.get("X-CCLUA-Palette-Count"))==4
+        assert int(r.headers.get("X-CCLUA-Palette-Frames"))==10
+        sequence=r.headers.get("X-CCLUA-Palette-RGB-Sequence")
+        assert sequence and len(sequence)==4*96
+        assert all(c in "0123456789abcdef" for c in sequence.lower())
+        cinema_packets=int(r.headers.get("X-CCLUA-Packets"))
+        cinema_length=int(r.headers.get("Content-Length"))
+        cinema_body=r.read()
+    assert 39<=cinema_packets<=40
+    assert cinema_length==cinema_packets*(frame_bytes+2400)
+    assert len(cinema_body)==cinema_length
+
     server.shutdown();server.server_close();thread.join(timeout=2)
 
 print("THEATER_BRIDGE_OK")
@@ -135,3 +151,4 @@ print("VECTORIZED_ENCODER_EQUIVALENCE_PASS")
 print("MUX_AV_PACKET_20FPS_PASS")
 print("FINITE_SEGMENT_2S_CONTENT_LENGTH_PASS")
 print("ADAPTIVE_SCENE_PALETTE_16X24BIT_PASS")
+print("CINEMA_4X16_PALETTE_FLOYD_STEINBERG_PASS")

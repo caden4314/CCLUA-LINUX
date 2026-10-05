@@ -89,6 +89,8 @@ function http.request(opts,post,headers,binary)
 end
 
 test_palette_hex="102030"..string.rep("406080",14).."000000"
+test_palette_hex_2="a0b0c0"..string.rep("806040",14).."000000"
+test_palette_sequence=test_palette_hex..test_palette_hex_2
 function make_segment_handle(packets)
   packets=tonumber(packets) or 2
   local frameBytes=223*73*3
@@ -108,8 +110,10 @@ function make_segment_handle(packets)
         ["X-CCLUA-Audio-Bytes"]=tostring(audioBytes),
         ["X-CCLUA-Sample-Rate"]="48000",
         ["X-CCLUA-Packets"]=tostring(packets),
-        ["X-CCLUA-Palette-RGB"]=test_palette_hex,
-        ["X-CCLUA-Color-Mode"]="adaptive16-bayer4",
+        ["X-CCLUA-Palette-RGB-Sequence"]=test_palette_sequence,
+        ["X-CCLUA-Palette-Count"]="2",
+        ["X-CCLUA-Palette-Frames"]=tostring(math.max(1,math.ceil(packets/2))),
+        ["X-CCLUA-Color-Mode"]="adaptive16x4-fs",
       }
     end,
     readAll=function() return raw end,
@@ -376,7 +380,7 @@ assert(firstUrl:find("seconds=2.000",1,true))
 assert(firstUrl:find("cols=223",1,true))
 assert(firstUrl:find("rows=73",1,true))
 assert(firstUrl:find("fps=20.000",1,true))
-assert(firstUrl:find("color=adaptive16",1,true))
+assert(firstUrl:find("color=adaptive16x4",1,true))
 
 run_children_once()
 assert(processes[child_order[1]].state=="sleeping","player should wait for first segment")
@@ -405,13 +409,13 @@ mock_now=mock_now+20
 run_children_once()
 assert(processes[child_order[1]].state=="sleeping","player should wait for synchronized start")
 
+mock_now=mock_now+125
+run_children_once()
+
 local moviePalette=objects["monitor_7"].palette[1]
 assert(math.abs(moviePalette[1]-(0x10/255))<0.001)
 assert(math.abs(moviePalette[2]-(0x20/255))<0.001)
 assert(math.abs(moviePalette[3]-(0x30/255))<0.001)
-
-mock_now=mock_now+125
-run_children_once()
 
 assert(#speaker_calls==22,("expected 22 speaker submissions, got %d"):format(#speaker_calls))
 local expected_first={"speaker_7","speaker_2","speaker_8","speaker_15","speaker_20","speaker_18","speaker_0","speaker_1"}
@@ -432,7 +436,7 @@ assert(saved_state.streams.av.ready==true)
 assert(saved_state.streams.av.cols==223)
 assert(saved_state.streams.av.rows==73)
 assert(saved_state.streams.av.audio_bytes==2400)
-assert(saved_state.streams.av.color_mode=="adaptive16-bayer4")
+assert(saved_state.streams.av.color_mode=="adaptive16x4-fs")
 assert(saved_state.streams.av.speaker_submit_ok==22)
 assert(saved_state.streams.av.speaker_submit_failed==0)
 assert(saved_state.streams.av.speaker_submit_total==22)
@@ -476,7 +480,7 @@ print("DIMMER_50_PERCENT_27_SYMMETRIC_FIXTURES_PASS")
 print("ASYNC_SEGMENT_PREBUFFER_PASS")
 print("SEGMENT_RETRY_AND_PREFETCH_PASS")
 print("FULL_WALL_223X73_20FPS_SEGMENT_REQUEST_PASS")
-print("ADAPTIVE_24BIT_PALETTE_PASS")
+print("ADAPTIVE_4X24BIT_PALETTE_PASS")
 print("MASTER_PCM_GAIN_AND_22_SPEAKER_SUBMIT_PASS")
 print("MOVIE_PALETTE_RESTORE_PASS")
 ''')
