@@ -1082,9 +1082,10 @@ return function(ctx)
       return false,"end of movie"
     end
 
+    local colorRequest=s.rgb24 and "rgb24" or "adaptive16x4"
     local url=ORIGIN.."/v1/movies/"..tostring(s.movie.id).."/av.segment"..
-      ("?start=%.3f&seconds=%.3f&cols=%d&rows=%d&fps=%.3f&color=adaptive16x4&session=%d&seq=%d"):format(
-        start,s.segment_seconds,s.video_cols,s.video_rows,fps,s.token,index)
+      ("?start=%.3f&seconds=%.3f&cols=%d&rows=%d&fps=%.3f&color=%s&session=%d&seq=%d"):format(
+        start,s.segment_seconds,s.video_cols,s.video_rows,fps,colorRequest,s.token,index)
 
     local ok,err=http.request{
       url=url,
@@ -1182,8 +1183,14 @@ return function(ctx)
     if math.abs(gotFps-fps)>0.01 or sampleRate~=48000 then
       error("segment timing geometry mismatch",0)
     end
-    if frameBytes~=s.video_cols*s.video_rows*3 or audioBytes<1 then
+    local expectedFrameBytes=colorMode=="rgb24"
+      and (s.video_cols*2)*(s.video_rows*3)*3
+      or s.video_cols*s.video_rows*3
+    if frameBytes~=expectedFrameBytes or audioBytes<1 then
       error("segment packet geometry mismatch",0)
+    end
+    if colorMode=="rgb24" and not s.rgb24 then
+      error("bridge selected RGB24 but CCPerf RGB framebuffer is unavailable",0)
     end
     if packets<1 then
       error("empty theater segment",0)
@@ -1254,6 +1261,10 @@ return function(ctx)
     if cols<32 or rows<12 then return nil,"main monitor is too small" end
     s.video_cols=cols
     s.video_rows=rows
+    s.rgb24=type(mon.rgbBegin)=="function" and
+      type(mon.rgbChunk)=="function" and type(mon.rgbPresent)=="function"
+    s.rgb_width=cols*2
+    s.rgb_height=rows*3
 
     local parent=ctx.process
     local proc,err=ctx.kernel.process.create{
@@ -1381,13 +1392,28 @@ return function(ctx)
 
               if late<120 then
                 local video=seg.raw:sub(packetOffset,packetOffset+seg.frame_bytes-1)
-                local voff=1
-                for row=0,rows-1 do
-                  local chars=video:sub(voff,voff+cols-1);voff=voff+cols
-                  local fg=video:sub(voff,voff+cols-1);voff=voff+cols
-                  local bg=video:sub(voff,voff+cols-1);voff=voff+cols
-                  mon.setCursorPos(ox,oy+row)
-                  mon.blit(chars,fg,bg)
+                if seg.color_mode=="rgb24" and s.rgb24 then
+                  if not s.rgb_initialized then
+                    mon.rgbBegin(s.rgb_width,s.rgb_height)
+                    s.rgb_initialized=true
+                  end
+                  local chunkBytes=24576
+                  local off=1
+                  while off<=#video do
+                    local last=math.min(#video,off+chunkBytes-1)
+                    mon.rgbChunk(off-1,video:sub(off,last))
+                    off=last+1
+                  end
+                  mon.rgbPresent()
+                else
+                  local voff=1
+                  for row=0,rows-1 do
+                    local chars=video:sub(voff,voff+cols-1);voff=voff+cols
+                    local fg=video:sub(voff,voff+cols-1);voff=voff+cols
+                    local bg=video:sub(voff,voff+cols-1);voff=voff+cols
+                    mon.setCursorPos(ox,oy+row)
+                    mon.blit(chars,fg,bg)
+                  end
                 end
               else
                 s.dropped_frames=(s.dropped_frames or 0)+1

@@ -630,7 +630,18 @@ class Handler(BaseHTTPRequestHandler):
         palette_frames=None
         palette_count=None
 
-        if request in {"adaptive16x4","adaptive16x4-fs","cinema"}:
+        if request in {"rgb24","rgb888","truecolor","truecolour"}:
+            # CCPerf true-colour path. Preserve FFmpeg's RGB888 pixels exactly;
+            # the Minecraft client renders these through a dynamic framebuffer
+            # instead of quantising them into CC:Tweaked's terminal palette.
+            encoded_bytes=raw_frame_bytes
+            color_mode="rgb24"
+            body=bytearray()
+            for raw,audio in zip(raw_frames,audio_frames):
+                body.extend(raw)
+                body.extend(audio)
+
+        elif request in {"adaptive16x4","adaptive16x4-fs","cinema"}:
             # Four palettes per normal 2-second segment (~0.5 s each at 20
             # FPS). Each group uses native Floyd-Steinberg colour diffusion,
             # giving much better apparent colour depth without changing the
