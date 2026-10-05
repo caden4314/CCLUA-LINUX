@@ -16,6 +16,8 @@ return function(ctx)
   local speakerOutputVolume=math.max(0.1,math.min(3.0,tonumber(machine.theater_speaker_output_volume) or 3.0))
   local segmentSeconds=math.max(1,math.min(4,tonumber(machine.theater_segment_seconds) or 2))
   local segmentPrefetch=math.max(1,math.min(3,tonumber(machine.theater_segment_prefetch) or 2))
+  local initialBufferSegments=math.max(1,math.min(segmentPrefetch,
+    tonumber(machine.theater_initial_buffer_segments) or 2))
 
   local scenes={
     house={label="HOUSE",level=100},
@@ -1236,6 +1238,21 @@ return function(ctx)
         local oy=math.floor((mh-rows)/2)+1
 
         while s.active do
+          if (s.play_index or 0)==0 and not s.go then
+            while s.active do
+              local ready=0
+              for i=0,initialBufferSegments-1 do
+                if s.segments[i] then ready=ready+1 end
+              end
+              if ready>=initialBufferSegments or
+                (s.segment_eof and s.segment_eof<=initialBufferSegments) then
+                break
+              end
+              s.av_stage=("prebuffer %d/%d segments"):format(ready,initialBufferSegments)
+              coroutine.yield("sleep",now_ms()+15)
+            end
+          end
+
           local index=s.play_index or 0
           local seg=s.segments[index]
           if not seg then
@@ -1574,6 +1591,7 @@ return function(ctx)
             buffered_segments=buffered,
             inflight_index=session.segment_inflight and session.segment_inflight.index or nil,
             segment_seconds=session.segment_seconds,
+            initial_buffer_segments=initialBufferSegments,
             color_mode=session.color_mode,
             speaker_submit_ok=session.speaker_submit_ok,
             speaker_submit_failed=session.speaker_submit_failed,

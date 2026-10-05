@@ -91,7 +91,7 @@ end
 test_palette_hex="102030"..string.rep("406080",14).."000000"
 function make_segment_handle(packets)
   packets=tonumber(packets) or 2
-  local frameBytes=222*73*3
+  local frameBytes=223*73*3
   local audioBytes=2400
   local one=string.rep(" ",frameBytes)..string.rep(string.char(64),audioBytes)
   local raw=string.rep(one,packets)
@@ -101,7 +101,7 @@ function make_segment_handle(packets)
       return {
         ["Content-Length"]=tostring(#raw),
         ["X-CCLUA-Format"]="av-segment-v1",
-        ["X-CCLUA-Cols"]="222",
+        ["X-CCLUA-Cols"]="223",
         ["X-CCLUA-Rows"]="73",
         ["X-CCLUA-FPS"]="20.000",
         ["X-CCLUA-Frame-Bytes"]=tostring(frameBytes),
@@ -130,7 +130,7 @@ local function monitor(w,h,initialScale)
     return 1
   end
   function m.getSize()
-    return math.floor(m.baseW/m.scale+0.001),math.floor(m.baseH/m.scale+0.001)
+    return math.floor(m.baseW/m.scale+0.5),math.floor(m.baseH/m.scale+0.5)
   end
   function m.setTextScale(s) m.scale=s end
   function m.getTextScale() return m.scale end
@@ -311,8 +311,8 @@ assert(saved_state.hardware.speakers_present==22)
 assert(saved_state.hardware.main_present==true)
 assert(saved_state.hardware.transport_present==true)
 assert(saved_state.hardware.control_present==true)
-assert(saved_state.hardware.main_size[1]==222 and saved_state.hardware.main_size[2]==73,
-  ("expected 222x73 theater wall, got %dx%d"):format(
+assert(saved_state.hardware.main_size[1]==223 and saved_state.hardware.main_size[2]==73,
+  ("expected 223x73 theater wall, got %dx%d"):format(
     saved_state.hardware.main_size[1],saved_state.hardware.main_size[2]))
 assert(saved_state.hardware.main_text_scale==1.5)
 assert(saved_state.hardware.speaker_output_volume==3.0)
@@ -373,7 +373,7 @@ end
 local firstUrl=latest_segment_url(0)
 assert(firstUrl,"segment 0 request missing")
 assert(firstUrl:find("seconds=2.000",1,true))
-assert(firstUrl:find("cols=222",1,true))
+assert(firstUrl:find("cols=223",1,true))
 assert(firstUrl:find("rows=73",1,true))
 assert(firstUrl:find("fps=20.000",1,true))
 assert(firstUrl:find("color=adaptive16",1,true))
@@ -390,6 +390,16 @@ kind=drive("http_success",retryUrl,make_segment_handle(4),nil)
 assert(kind=="wait_event")
 local secondUrl=latest_segment_url(1)
 assert(secondUrl,"segment 1 was not prefetched")
+
+mock_now=mock_now+20
+run_children_once()
+assert(processes[child_order[1]].state=="sleeping","player should wait for second startup segment")
+assert(#speaker_calls==0,"audio started before the two-segment buffer was ready")
+
+kind=drive("http_success",secondUrl,make_segment_handle(4),nil)
+assert(kind=="wait_event")
+local thirdUrl=latest_segment_url(2)
+assert(thirdUrl,"segment 2 was not prefetched")
 
 mock_now=mock_now+20
 run_children_once()
@@ -419,7 +429,7 @@ kind=drive("timer",last_refresh_timer)
 assert(kind=="wait_event")
 assert(saved_state.state=="PLAYING","segmented playback did not leave BUFFERING")
 assert(saved_state.streams.av.ready==true)
-assert(saved_state.streams.av.cols==222)
+assert(saved_state.streams.av.cols==223)
 assert(saved_state.streams.av.rows==73)
 assert(saved_state.streams.av.audio_bytes==2400)
 assert(saved_state.streams.av.color_mode=="adaptive16-bayer4")
@@ -427,14 +437,17 @@ assert(saved_state.streams.av.speaker_submit_ok==22)
 assert(saved_state.streams.av.speaker_submit_failed==0)
 assert(saved_state.streams.av.speaker_submit_total==22)
 assert(saved_state.streams.av.speaker_output_volume==3.0)
-assert(saved_state.streams.av.inflight_index==1)
+assert(saved_state.streams.av.initial_buffer_segments==2)
+assert(saved_state.streams.av.inflight_index==2)
+assert(saved_state.streams.av.buffered_segments>=1,
+  "second startup segment was not retained ahead of playback")
 
-kind=drive("http_success",secondUrl,make_segment_handle(4),nil)
+kind=drive("http_success",thirdUrl,make_segment_handle(4),nil)
 assert(kind=="wait_event")
 kind=drive("timer",last_refresh_timer)
 assert(kind=="wait_event")
-assert(saved_state.streams.av.buffered_segments>=1,
-  "prefetched segment was not retained ahead of playback")
+assert(saved_state.streams.av.buffered_segments>=2,
+  "two-segment playback cushion was not retained")
 
 local segmentRequests=0
 for _,url in ipairs(http_requests) do
@@ -443,7 +456,7 @@ for _,url in ipairs(http_requests) do
   assert(not url:find("/audio.pcm",1,true),"normal playback used split audio endpoint")
   assert(not url:find("/video.blit",1,true),"normal playback used split video endpoint")
 end
-assert(segmentRequests>=3,"segment retry/prefetch did not issue expected requests")
+assert(segmentRequests>=4,"segment retry/prefetch did not issue expected requests")
 
 kind=drive("cclua_theater_command","pause",{})
 assert(kind=="wait_event")
@@ -462,7 +475,7 @@ print("PRESHOW_33_FIXTURES_PASS")
 print("DIMMER_50_PERCENT_27_SYMMETRIC_FIXTURES_PASS")
 print("ASYNC_SEGMENT_PREBUFFER_PASS")
 print("SEGMENT_RETRY_AND_PREFETCH_PASS")
-print("FULL_WALL_222X73_20FPS_SEGMENT_REQUEST_PASS")
+print("FULL_WALL_223X73_20FPS_SEGMENT_REQUEST_PASS")
 print("ADAPTIVE_24BIT_PALETTE_PASS")
 print("MASTER_PCM_GAIN_AND_22_SPEAKER_SUBMIT_PASS")
 print("MOVIE_PALETTE_RESTORE_PASS")
