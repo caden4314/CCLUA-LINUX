@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import subprocess
@@ -24,6 +25,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import numpy as np
+from PIL import Image
 
 from music_import import NO_WINDOW, ffmpeg_exe
 
@@ -44,10 +46,7 @@ HEX = b"0123456789abcdef"
 HEX_ARRAY = np.frombuffer(HEX, dtype=np.uint8)
 PALETTE_IDS = np.arange(16, dtype=np.uint8)
 BIT_WEIGHTS = np.array([1,2,4,8,16], dtype=np.uint8)
-PALETTE_DIST = np.sum(
-    (PALETTE[:, None, :] - PALETTE[None, :, :]) ** 2,
-    axis=2,
-).astype(np.int32)
+
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -157,67 +156,136 @@ def encode_texel(values: list[int]) -> tuple[int,int,int]:
     else:
         fg, bg = b, a
     return char, fg, bg
-def encode_frame(rgb: bytes, cols: int, rows: int) -> bytes:
-    """Encode one RGB frame into CC:Tweaked 2x3 blit cells.
+LUT_LEVELS = (np.arange(32, dtype=np.int16) * 8 + 4)
+BAYER4 = np.array([
+    [0, 8, 2, 10],
+    [12, 4, 14, 6],
+    [3, 11, 1, 9],
+    [15, 7, 13, 5],
+], dtype=np.float32)
 
-    This is fully vectorized across the monitor grid. The previous Python
-    per-cell loop could only just sustain ~20 FPS at the full theater wall.
-    """
-    width, height = cols*2, rows*3
-    arr = np.frombuffer(rgb, dtype=np.uint8)
-    if arr.size != width*height*3:
-        raise ValueError(f"bad raw frame size {arr.size}, expected {width*height*3}")
-    arr = arr.reshape(height, width, 3).astype(np.int32)
+def palette_distance(palette: np.ndarray) -> np.ndarray:
+    p=np.asarray(palette,dtype=np.int32)
+    return np.sum((p[:,None,:]-p[None,:,:])**2,axis=2).astype(np.int32)
 
-    # Quantize each physical subpixel to the nearest fixed CC palette colour.
-    diff = arr[:, :, None, :] - PALETTE[None, None, :, :]
-    idx = np.argmin(np.sum(diff*diff, axis=3), axis=2).astype(np.uint8)
+def build_palette_lut(palette: np.ndarray) -> np.ndarray:
+    """Build a 5-bit/channel RGB -> nearest palette-index lookup."""
+    p=np.asarray(palette,dtype=np.int32)
+    r,g,b=np.meshgrid(LUT_LEVELS,LUT_LEVELS,LUT_LEVELS,indexing="ij")
+    grid=np.stack((r,g,b),axis=-1).reshape(-1,3).astype(np.int32)
+    diff=grid[:,None,:]-p[None,:,:]
+    return np.argmin(np.sum(diff*diff,axis=2),axis=1).reshape(32,32,32).astype(np.uint8)
 
-    # Gather each 2x3 cell as six palette indices in pixelbox order:
-    # top-left, top-right, middle-left, middle-right, bottom-left, bottom-right.
-    cells = idx.reshape(rows, 3, cols, 2).transpose(0, 2, 1, 3).reshape(rows, cols, 6)
+DEFAULT_PALETTE_DIST = palette_distance(PALETTE)
+DEFAULT_PALETTE_LUT = build_palette_lut(PALETTE)
 
-    # Pick the two most frequent colours per cell. Ties prefer the colour which
-    # appeared earliest in the six source pixels, matching the old encoder.
-    counts = np.sum(cells[:, :, :, None] == PALETTE_IDS[None, None, None, :], axis=2)
-    first = np.full((rows, cols, 16), 7, dtype=np.int16)
+def encode_index_frame(idx: np.ndarray, cols: int, rows: int, palette_dist: np.ndarray) -> bytes:
+    """Encode a palette-index image into CC:Tweaked 2x3 blit cells."""
+    cells=idx.reshape(rows,3,cols,2).transpose(0,2,1,3).reshape(rows,cols,6)
+
+    counts=np.sum(cells[:,:,:,None]==PALETTE_IDS[None,None,None,:],axis=2)
+    first=np.full((rows,cols,16),7,dtype=np.int16)
     for pos in range(6):
-        mask = cells[:, :, pos][:, :, None] == PALETTE_IDS[None, None, :]
-        first = np.minimum(first, np.where(mask, pos, 7))
-    score = counts.astype(np.int16) * 8 + (7 - first)
-    a = np.argmax(score, axis=2).astype(np.uint8)
+        mask=cells[:,:,pos][:,:,None]==PALETTE_IDS[None,None,:]
+        first=np.minimum(first,np.where(mask,pos,7))
+    score=counts.astype(np.int16)*8+(7-first)
+    a=np.argmax(score,axis=2).astype(np.uint8)
 
-    score_b = score.copy()
-    np.put_along_axis(score_b, a[:, :, None], -1, axis=2)
-    b = np.argmax(score_b, axis=2).astype(np.uint8)
-    unique = np.sum(counts > 0, axis=2)
-    b = np.where(unique > 1, b, a).astype(np.uint8)
+    score_b=score.copy()
+    np.put_along_axis(score_b,a[:,:,None],-1,axis=2)
+    b=np.argmax(score_b,axis=2).astype(np.uint8)
+    unique=np.sum(counts>0,axis=2)
+    b=np.where(unique>1,b,a).astype(np.uint8)
 
-    # Any third colour in a cell is assigned to whichever of the chosen pair is
-    # perceptually nearer in the CC palette.
-    aa = np.broadcast_to(a[:, :, None], cells.shape)
-    bb = np.broadcast_to(b[:, :, None], cells.shape)
-    da = PALETTE_DIST[cells, aa]
-    db = PALETTE_DIST[cells, bb]
-    bits = da <= db
+    aa=np.broadcast_to(a[:,:,None],cells.shape)
+    bb=np.broadcast_to(b[:,:,None],cells.shape)
+    da=palette_dist[cells,aa]
+    db=palette_dist[cells,bb]
+    bits=da<=db
 
-    sixth = bits[:, :, 5]
-    char = 128 + np.sum(
-        (bits[:, :, :5] != sixth[:, :, None]).astype(np.uint8)
-        * BIT_WEIGHTS[None, None, :],
+    sixth=bits[:,:,5]
+    char=128+np.sum(
+        (bits[:,:,:5]!=sixth[:,:,None]).astype(np.uint8)
+        * BIT_WEIGHTS[None,None,:],
         axis=2,
     )
-    same = a == b
-    char = np.where(same, 32, char).astype(np.uint8)
+    same=a==b
+    char=np.where(same,32,char).astype(np.uint8)
 
-    fg = np.where(sixth, b, a).astype(np.uint8)
-    bg = np.where(sixth, a, b).astype(np.uint8)
+    fg=np.where(sixth,b,a).astype(np.uint8)
+    bg=np.where(sixth,a,b).astype(np.uint8)
 
-    out = np.empty((rows, cols*3), dtype=np.uint8)
-    out[:, :cols] = char
-    out[:, cols:cols*2] = HEX_ARRAY[fg]
-    out[:, cols*2:] = HEX_ARRAY[bg]
+    out=np.empty((rows,cols*3),dtype=np.uint8)
+    out[:,:cols]=char
+    out[:,cols:cols*2]=HEX_ARRAY[fg]
+    out[:,cols*2:]=HEX_ARRAY[bg]
     return out.tobytes()
+
+def encode_frame(
+    rgb: bytes,
+    cols: int,
+    rows: int,
+    palette: np.ndarray = PALETTE,
+    lut: np.ndarray | None = None,
+    dither_strength: float = 0.0,
+) -> bytes:
+    """Encode one RGB frame into CC:Tweaked 2x3 blit cells.
+
+    RGB quantisation uses a cached 5-bit/channel lookup table rather than
+    computing 16 full colour distances for every source subpixel.
+    """
+    width,height=cols*2,rows*3
+    arr=np.frombuffer(rgb,dtype=np.uint8)
+    if arr.size!=width*height*3:
+        raise ValueError(f"bad raw frame size {arr.size}, expected {width*height*3}")
+    arr=arr.reshape(height,width,3)
+
+    if dither_strength:
+        tiled=np.tile(BAYER4,(math.ceil(height/4),math.ceil(width/4)))[:height,:width]
+        offset=((tiled/15.0)-0.5)*float(dither_strength)
+        work=np.clip(arr.astype(np.float32)+offset[:,:,None],0,255).astype(np.uint8)
+    else:
+        work=arr
+
+    table=DEFAULT_PALETTE_LUT if lut is None and palette is PALETTE else (
+        build_palette_lut(palette) if lut is None else lut
+    )
+    idx=table[work[:,:,0]>>3,work[:,:,1]>>3,work[:,:,2]>>3]
+    dist=DEFAULT_PALETTE_DIST if palette is PALETTE else palette_distance(palette)
+    return encode_index_frame(idx,cols,rows,dist)
+
+
+def derive_adaptive_palette(frames: list[bytes], width: int, height: int) -> np.ndarray:
+    """Choose 16 scene colours from several frames in the current segment."""
+    if not frames:
+        return PALETTE.copy()
+
+    picks=sorted(set(np.linspace(0,len(frames)-1,min(5,len(frames)),dtype=int).tolist()))
+    thumbs=[]
+    for i in picks:
+        image=Image.frombytes("RGB",(width,height),frames[i])
+        thumbs.append(image.resize((96,54),Image.Resampling.BILINEAR))
+
+    canvas=Image.new("RGB",(96*len(thumbs),54))
+    for i,image in enumerate(thumbs):
+        canvas.paste(image,(i*96,0))
+
+    quant=canvas.quantize(
+        colors=16,
+        method=Image.Quantize.MEDIANCUT,
+        dither=Image.Dither.NONE,
+    )
+    raw=np.array(quant.getpalette()[:48],dtype=np.int32).reshape(16,3)
+
+    # Stable luminance ordering makes palette transitions less chaotic. Keep an
+    # exact black entry for letterbox bars and near-black cinema scenes.
+    luma=0.2126*raw[:,0]+0.7152*raw[:,1]+0.0722*raw[:,2]
+    raw=raw[np.argsort(-luma)]
+    raw[-1]=np.array((0,0,0),dtype=np.int32)
+    return raw
+
+def palette_header(palette: np.ndarray) -> str:
+    return "".join(f"{int(r):02x}{int(g):02x}{int(b):02x}" for r,g,b in palette)
 
 @dataclass
 class BridgeConfig:
@@ -235,6 +303,7 @@ class TheaterBridge:
         self._catalog: list[dict] = []
         self._catalog_at = 0.0
         self._probe_cache: dict[str, tuple[int,int,dict]] = {}
+        self._palette_cache: dict[tuple[str,int,int], tuple[np.ndarray,np.ndarray]] = {}
 
     def log_event(self, event: str, **details) -> None:
         record = {"ts": utc_now(), "event": event, **details}
@@ -341,7 +410,9 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception:
                     self.json({"ok":False,"error":"invalid segment duration"},400)
                     return
-                self.send_av_segment(source,start,cols,rows,fps,seconds)
+                color_mode=str((q.get("color") or ["stock16"])[0]).lower()
+                adaptive=color_mode in {"adaptive","adaptive16","adaptive16-bayer4"}
+                self.send_av_segment(source,start,cols,rows,fps,seconds,adaptive=adaptive)
             else:
                 self.stream_av(source,start,cols,rows,fps)
 
@@ -433,7 +504,10 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 proc.kill()
 
-    def send_av_segment(self, source: Path, start: float, cols: int, rows: int, fps: float, seconds: float):
+    def send_av_segment(
+        self, source: Path, start: float, cols: int, rows: int, fps: float,
+        seconds: float, adaptive: bool = False
+    ):
         """Render one finite A/V segment and return it with Content-Length.
 
         CC:Tweaked's synchronous http.get waits for the response to complete
@@ -484,8 +558,8 @@ class Handler(BaseHTTPRequestHandler):
                 buf.extend(chunk)
             return bytes(buf)
 
-        body = bytearray()
-        packets = 0
+        raw_frames: list[bytes] = []
+        audio_frames: list[bytes] = []
         try:
             assert vproc.stdout is not None
             assert aproc.stdout is not None
@@ -496,9 +570,8 @@ class Handler(BaseHTTPRequestHandler):
                 audio = read_exact(aproc.stdout, audio_bytes)
                 if len(audio) < audio_bytes:
                     audio += bytes(audio_bytes-len(audio))
-                body.extend(encode_frame(raw,cols,rows))
-                body.extend(audio)
-                packets += 1
+                raw_frames.append(raw)
+                audio_frames.append(audio)
         finally:
             for proc in (vproc,aproc):
                 if proc.poll() is None:
@@ -509,9 +582,44 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception:
                     proc.kill()
 
+        packets=len(raw_frames)
         if packets == 0:
             self.json({"ok":False,"error":"segment reached end of movie"},416)
             return
+
+        if adaptive:
+            # Hold one scene-adaptive palette for an eight-second window. This
+            # gives films far better colour fidelity than CC's stock palette
+            # while avoiding a whole-screen palette shift every two seconds.
+            stat=source.stat()
+            palette_key=(str(source.resolve()).lower(),int(stat.st_mtime_ns),int(start//8.0))
+            with self.bridge._lock:
+                cached=self.bridge._palette_cache.get(palette_key)
+            if cached is None:
+                palette=derive_adaptive_palette(raw_frames,width,height)
+                lut=build_palette_lut(palette)
+                with self.bridge._lock:
+                    if len(self.bridge._palette_cache)>=256:
+                        self.bridge._palette_cache.pop(next(iter(self.bridge._palette_cache)))
+                    self.bridge._palette_cache[palette_key]=(palette,lut)
+            else:
+                palette,lut=cached
+            palette_text=palette_header(palette)
+            color_mode="adaptive16-bayer4"
+            dither_strength=12.0
+        else:
+            palette=PALETTE
+            lut=DEFAULT_PALETTE_LUT
+            palette_text=None
+            color_mode="stock16"
+            dither_strength=0.0
+
+        body=bytearray()
+        for raw,audio in zip(raw_frames,audio_frames):
+            body.extend(encode_frame(
+                raw,cols,rows,palette=palette,lut=lut,dither_strength=dither_strength
+            ))
+            body.extend(audio)
 
         render_ms = (time.perf_counter()-started)*1000
         self.bridge.log_event(
@@ -519,6 +627,7 @@ class Handler(BaseHTTPRequestHandler):
             seconds=round(packets/fps,3), packets=packets,
             cols=cols, rows=rows, fps=round(fps,3),
             bytes=len(body), render_ms=round(render_ms,1),
+            color_mode=color_mode, palette=palette_text,
         )
 
         self.send_response(200)
@@ -532,6 +641,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-CCLUA-Audio-Bytes",str(audio_bytes))
         self.send_header("X-CCLUA-Sample-Rate",str(sample_rate))
         self.send_header("X-CCLUA-Packets",str(packets))
+        if palette_text is not None:
+            self.send_header("X-CCLUA-Palette-RGB",palette_text)
+        self.send_header("X-CCLUA-Color-Mode",color_mode)
         self.send_header("X-CCLUA-Start-Seconds",f"{start:.3f}")
         self.send_header("Cache-Control","no-store")
         self.send_header("Connection","close")

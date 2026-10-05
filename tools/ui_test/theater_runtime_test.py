@@ -88,11 +88,12 @@ function http.request(opts,post,headers,binary)
   return true
 end
 
+test_palette_hex="102030"..string.rep("406080",14).."000000"
 function make_segment_handle(packets)
   packets=tonumber(packets) or 2
-  local frameBytes=167*55*3
+  local frameBytes=222*73*3
   local audioBytes=2400
-  local one=string.rep(" ",frameBytes)..string.rep(string.char(0),audioBytes)
+  local one=string.rep(" ",frameBytes)..string.rep(string.char(64),audioBytes)
   local raw=string.rep(one,packets)
   return {
     getResponseCode=function() return 200 end,
@@ -100,13 +101,15 @@ function make_segment_handle(packets)
       return {
         ["Content-Length"]=tostring(#raw),
         ["X-CCLUA-Format"]="av-segment-v1",
-        ["X-CCLUA-Cols"]="167",
-        ["X-CCLUA-Rows"]="55",
+        ["X-CCLUA-Cols"]="222",
+        ["X-CCLUA-Rows"]="73",
         ["X-CCLUA-FPS"]="20.000",
         ["X-CCLUA-Frame-Bytes"]=tostring(frameBytes),
         ["X-CCLUA-Audio-Bytes"]=tostring(audioBytes),
         ["X-CCLUA-Sample-Rate"]="48000",
         ["X-CCLUA-Packets"]=tostring(packets),
+        ["X-CCLUA-Palette-RGB"]=test_palette_hex,
+        ["X-CCLUA-Color-Mode"]="adaptive16-bayer4",
       }
     end,
     readAll=function() return raw end,
@@ -118,11 +121,27 @@ relay_state={}
 objects={}
 types={}
 
-local function monitor(w,h)
-  local m={w=w,h=h,scale=1}
-  function m.getSize() return m.w,m.h end
+local function monitor(w,h,initialScale)
+  initialScale=tonumber(initialScale) or 1
+  local m={baseW=w*initialScale,baseH=h*initialScale,scale=initialScale,palette={},paletteWrites=0}
+  for i=0,15 do m.palette[i+1]={0.1+i/100,0.2+i/100,0.3+i/100} end
+  local function paletteIndex(color)
+    for i=0,15 do if color==2^i then return i+1 end end
+    return 1
+  end
+  function m.getSize()
+    return math.floor(m.baseW/m.scale+0.001),math.floor(m.baseH/m.scale+0.001)
+  end
   function m.setTextScale(s) m.scale=s end
   function m.getTextScale() return m.scale end
+  function m.getPaletteColor(color)
+    local rgb=m.palette[paletteIndex(color)]
+    return rgb[1],rgb[2],rgb[3]
+  end
+  function m.setPaletteColor(color,r,g,b)
+    m.palette[paletteIndex(color)]={r,g,b}
+    m.paletteWrites=m.paletteWrites+1
+  end
   function m.setCursorBlink(_) end
   function m.setBackgroundColor(_) end
   function m.setTextColor(_) end
@@ -133,14 +152,18 @@ local function monitor(w,h)
   return m
 end
 
-objects["monitor_7"]=monitor(167,55); types["monitor_7"]="monitor"
-objects["left"]=monitor(57,24); types["left"]="monitor"
-objects["right"]=monitor(72,48); types["right"]="monitor"
+objects["monitor_7"]=monitor(167,55,2.0); types["monitor_7"]="monitor"
+objects["left"]=monitor(57,24,1.0); types["left"]="monitor"
+objects["right"]=monitor(72,48,1.0); types["right"]="monitor"
 
+speaker_calls={}
 for id=0,21 do
   local name="speaker_"..id
   local s={}
-  function s.playAudio(_,_) return true end
+  function s.playAudio(audio,volume)
+    speaker_calls[#speaker_calls+1]={name=name,volume=volume,first=audio[1],samples=#audio}
+    return true
+  end
   function s.stop() end
   objects[name]=s;types[name]="speaker"
 end
@@ -288,6 +311,10 @@ assert(saved_state.hardware.speakers_present==22)
 assert(saved_state.hardware.main_present==true)
 assert(saved_state.hardware.transport_present==true)
 assert(saved_state.hardware.control_present==true)
+assert(saved_state.hardware.main_size[1]==222 and saved_state.hardware.main_size[2]==73,
+  ("expected 222x73 theater wall, got %dx%d"):format(
+    saved_state.hardware.main_size[1],saved_state.hardware.main_size[2]))
+assert(saved_state.hardware.speaker_output_volume==3.0)
 assert(count_lights()==55)
 
 kind=drive("cclua_theater_command","scene",{scene="feature"})
@@ -325,7 +352,10 @@ assert(count_lights()==27,("50 percent fixture count %d"):format(count_lights())
 
 -- Playback uses finite two-second A/V segments. Requests are asynchronous:
 -- the first request may fail/retry without blocking theaterd, and the next
--- segment is prefetched while the current one is playing.
+-- segment is prefetched while the current one is playing. Master volume scales
+-- PCM samples while the speaker API stays at full theater output range.
+kind=drive("cclua_theater_command","volume",{value=0.5})
+assert(kind=="wait_event")
 kind=drive("cclua_theater_command","play",{id="movie1"})
 assert(kind=="wait_event")
 assert(saved_state.state=="BUFFERING")
@@ -342,9 +372,10 @@ end
 local firstUrl=latest_segment_url(0)
 assert(firstUrl,"segment 0 request missing")
 assert(firstUrl:find("seconds=2.000",1,true))
-assert(firstUrl:find("cols=167",1,true))
-assert(firstUrl:find("rows=55",1,true))
+assert(firstUrl:find("cols=222",1,true))
+assert(firstUrl:find("rows=73",1,true))
 assert(firstUrl:find("fps=20.000",1,true))
+assert(firstUrl:find("color=adaptive16",1,true))
 
 run_children_once()
 assert(processes[child_order[1]].state=="sleeping","player should wait for first segment")
@@ -362,17 +393,39 @@ assert(secondUrl,"segment 1 was not prefetched")
 mock_now=mock_now+20
 run_children_once()
 assert(processes[child_order[1]].state=="sleeping","player should wait for synchronized start")
+
+local moviePalette=objects["monitor_7"].palette[1]
+assert(math.abs(moviePalette[1]-(0x10/255))<0.001)
+assert(math.abs(moviePalette[2]-(0x20/255))<0.001)
+assert(math.abs(moviePalette[3]-(0x30/255))<0.001)
+
 mock_now=mock_now+125
 run_children_once()
+
+assert(#speaker_calls==22,("expected 22 speaker submissions, got %d"):format(#speaker_calls))
+local expected_first={"speaker_7","speaker_2","speaker_8","speaker_15","speaker_20","speaker_18","speaker_0","speaker_1"}
+for i,name in ipairs(expected_first) do
+  assert(speaker_calls[i].name==name,
+    ("speaker order %d expected %s got %s"):format(i,name,tostring(speaker_calls[i].name)))
+end
+for _,call in ipairs(speaker_calls) do
+  assert(call.volume==3.0,"speaker output volume must stay at theater range")
+  assert(call.first==32,("PCM master gain expected sample 32 got %s"):format(tostring(call.first)))
+end
 
 assert(last_refresh_timer~=nil)
 kind=drive("timer",last_refresh_timer)
 assert(kind=="wait_event")
 assert(saved_state.state=="PLAYING","segmented playback did not leave BUFFERING")
 assert(saved_state.streams.av.ready==true)
-assert(saved_state.streams.av.cols==167)
-assert(saved_state.streams.av.rows==55)
+assert(saved_state.streams.av.cols==222)
+assert(saved_state.streams.av.rows==73)
 assert(saved_state.streams.av.audio_bytes==2400)
+assert(saved_state.streams.av.color_mode=="adaptive16-bayer4")
+assert(saved_state.streams.av.speaker_submit_ok==22)
+assert(saved_state.streams.av.speaker_submit_failed==0)
+assert(saved_state.streams.av.speaker_submit_total==22)
+assert(saved_state.streams.av.speaker_output_volume==3.0)
 assert(saved_state.streams.av.inflight_index==1)
 
 kind=drive("http_success",secondUrl,make_segment_handle(4),nil)
@@ -391,6 +444,13 @@ for _,url in ipairs(http_requests) do
 end
 assert(segmentRequests>=3,"segment retry/prefetch did not issue expected requests")
 
+kind=drive("cclua_theater_command","pause",{})
+assert(kind=="wait_event")
+local restored=objects["monitor_7"].palette[1]
+assert(math.abs(restored[1]-0.1)<0.001)
+assert(math.abs(restored[2]-0.2)<0.001)
+assert(math.abs(restored[3]-0.3)<0.001)
+
 print("THEATER_RUNTIME_OK")
 print("MONITORS_3_OF_3_PASS")
 print("SPEAKERS_22_OF_22_PASS")
@@ -401,5 +461,8 @@ print("PRESHOW_33_FIXTURES_PASS")
 print("DIMMER_50_PERCENT_27_SYMMETRIC_FIXTURES_PASS")
 print("ASYNC_SEGMENT_PREBUFFER_PASS")
 print("SEGMENT_RETRY_AND_PREFETCH_PASS")
-print("FULL_WALL_167X55_20FPS_SEGMENT_REQUEST_PASS")
+print("FULL_WALL_222X73_20FPS_SEGMENT_REQUEST_PASS")
+print("ADAPTIVE_24BIT_PALETTE_PASS")
+print("MASTER_PCM_GAIN_AND_22_SPEAKER_SUBMIT_PASS")
+print("MOVIE_PALETTE_RESTORE_PASS")
 ''')

@@ -13,6 +13,7 @@ return function(ctx)
   local fps=math.max(2,math.min(20,tonumber(machine.theater_video_fps) or 20))
   local targetCols=tonumber(machine.theater_video_cols) or 0
   local targetRows=tonumber(machine.theater_video_rows) or 0
+  local speakerOutputVolume=math.max(0.1,math.min(3.0,tonumber(machine.theater_speaker_output_volume) or 3.0))
   local segmentSeconds=math.max(1,math.min(4,tonumber(machine.theater_segment_seconds) or 2))
   local segmentPrefetch=math.max(1,math.min(3,tonumber(machine.theater_segment_prefetch) or 2))
 
@@ -107,6 +108,8 @@ return function(ctx)
   local lightAnimation=nil
   local lastRenderKey={}
   local monitorCache={}
+  local mainDefaultPalette=nil
+  local activeMainPalette=nil
 
   local function now_ms()
     return os.epoch and os.epoch("utc") or math.floor(os.clock()*1000)
@@ -188,9 +191,55 @@ return function(ctx)
     end
     return m
   end
+  local function capture_main_palette(mon)
+    if mainDefaultPalette or not mon or not mon.getPaletteColor then return end
+    local palette={}
+    for i=0,15 do
+      local ok,r,g,b=pcall(mon.getPaletteColor,2^i)
+      if not ok then return end
+      palette[i+1]={r,g,b}
+    end
+    mainDefaultPalette=palette
+  end
+
+  local function restore_main_palette()
+    if not mainDefaultPalette then return end
+    local mon=wrap_monitor(mainName)
+    if not mon or not mon.setPaletteColor then return end
+    if activeMainPalette==nil then return end
+    for i,rgb in ipairs(mainDefaultPalette) do
+      pcall(mon.setPaletteColor,2^(i-1),rgb[1],rgb[2],rgb[3])
+    end
+    activeMainPalette=nil
+  end
+
+  local function apply_main_palette(mon,palette,key)
+    if not mon or not mon.setPaletteColor or type(palette)~="table" or #palette~=16 then
+      return false
+    end
+    key=tostring(key or "")
+    if activeMainPalette==key and key~="" then return true end
+    for i,rgb in ipairs(palette) do
+      pcall(mon.setPaletteColor,2^(i-1),
+        clamp((rgb[1] or 0)/255,0,1),
+        clamp((rgb[2] or 0)/255,0,1),
+        clamp((rgb[3] or 0)/255,0,1))
+    end
+    activeMainPalette=key~="" and key or true
+    return true
+  end
+
+  -- Physical speaker order from the saved theater build. The first eight are
+  -- deliberately spread across front/side and high/low positions. If the
+  -- Minecraft client exhausts its streaming-source pool, the surviving eight
+  -- still provide balanced room coverage instead of just speaker_0..7.
+  local speakerOrder={
+    7,2,8,15,20,18,0,1,
+    6,5,4,3,9,10,11,12,13,14,16,17,19,21,
+  }
   local function room_speakers()
     local out={}
-    for id=0,21 do
+    for _,id in ipairs(speakerOrder) do
       local name="speaker_"..id
       if name~=boothSpeaker and peripheral_ok(name,"speaker") then
         out[#out+1]={name=name,obj=peripheral.wrap(name),id=id}
@@ -220,6 +269,7 @@ return function(ctx)
       transport_monitor=transportName,transport_present=north~=nil,transport_size=north and {tw,th} or nil,
       control_monitor=controlName,control_present=south~=nil,control_size=south and {cw,ch} or nil,
       speakers_present=speakers,speakers_expected=22,
+      speaker_output_volume=speakerOutputVolume,
       relays_present=relays,relays_expected=#fixtures,
       booth_speaker=boothSpeaker,booth_speaker_present=peripheral_ok(boothSpeaker,"speaker"),
     }
@@ -352,9 +402,10 @@ return function(ctx)
   local function configure_monitors()
     local main=wrap_monitor(mainName)
     if main then
+      capture_main_palette(main)
       monitorLayout.fit(main,{
         min_width=144,min_height=54,
-        fixed_scale=tonumber(machine.theater_main_text_scale) or 2.0,
+        fixed_scale=tonumber(machine.theater_main_text_scale) or 1.5,
       })
       pcall(main.setCursorBlink,false)
       pcall(main.setBackgroundColor,colors.black)
@@ -496,6 +547,7 @@ return function(ctx)
 
   local function render_main_idle()
     if session and session.active and state.state=="PLAYING" then return end
+    restore_main_palette()
     local mon=wrap_monitor(mainName)
     if not mon then return end
     local key=table.concat({
@@ -551,11 +603,14 @@ return function(ctx)
     return table.concat(parts)
   end
 
-  local function pcm_decode(raw)
+  local function pcm_decode(raw,gain)
+    gain=clamp(gain==nil and 1 or gain,0,1)
     local out={}
     for i=1,#raw do
       local b=string.byte(raw,i)
-      out[i]=b>=128 and b-256 or b
+      local sample=b>=128 and b-256 or b
+      sample=math.floor(sample*gain+(sample>=0 and 0.5 or -0.5))
+      out[i]=math.max(-128,math.min(127,sample))
     end
     return out
   end
@@ -661,14 +716,14 @@ return function(ctx)
         while s.active do
           local raw=h.read(32*1024)
           if not raw then break end
-          local audio=pcm_decode(raw)
+          local audio=pcm_decode(raw,s.volume)
           local pending={}
           for _,sp in ipairs(speakers) do pending[#pending+1]=sp end
 
           while s.active and #pending>0 do
             for i=#pending,1,-1 do
               local sp=pending[i]
-              local okPlay,accepted=pcall(sp.obj.playAudio,audio,s.volume)
+              local okPlay,accepted=pcall(sp.obj.playAudio,audio,speakerOutputVolume)
               if not okPlay then
                 ctx.kernel.log.write("warning","theaterd","speaker playback failed",
                   {speaker=sp.name,error=tostring(accepted)},proc.pid)
@@ -919,13 +974,13 @@ return function(ctx)
             s.dropped_frames=(s.dropped_frames or 0)+1
           end
 
-          local audio=pcm_decode(audioRaw)
+          local audio=pcm_decode(audioRaw,s.volume)
           local pending={}
           for _,sp in ipairs(speakers) do pending[#pending+1]=sp end
           while s.active and #pending>0 do
             for i=#pending,1,-1 do
               local sp=pending[i]
-              local okPlay,accepted=pcall(sp.obj.playAudio,audio,s.volume)
+              local okPlay,accepted=pcall(sp.obj.playAudio,audio,speakerOutputVolume)
               if not okPlay then
                 ctx.kernel.log.write("warning","theaterd","speaker playback failed",
                   {speaker=sp.name,error=tostring(accepted)},proc.pid)
@@ -971,6 +1026,21 @@ return function(ctx)
     return nil
   end
 
+  local function parse_palette_hex(raw)
+    raw=tostring(raw or ""):lower()
+    if #raw~=96 or raw:find("[^0-9a-f]") then return nil end
+    local palette={}
+    for i=0,15 do
+      local off=i*6+1
+      local r=tonumber(raw:sub(off,off+1),16)
+      local g=tonumber(raw:sub(off+2,off+3),16)
+      local b=tonumber(raw:sub(off+4,off+5),16)
+      if not r or not g or not b then return nil end
+      palette[i+1]={r,g,b}
+    end
+    return palette
+  end
+
   local function request_segment(s,index)
     if not s or not s.active then return nil,"session stopped" end
     index=math.max(0,math.floor(tonumber(index) or 0))
@@ -985,7 +1055,7 @@ return function(ctx)
     end
 
     local url=ORIGIN.."/v1/movies/"..tostring(s.movie.id).."/av.segment"..
-      ("?start=%.3f&seconds=%.3f&cols=%d&rows=%d&fps=%.3f&session=%d&seq=%d"):format(
+      ("?start=%.3f&seconds=%.3f&cols=%d&rows=%d&fps=%.3f&color=adaptive16&session=%d&seq=%d"):format(
         start,s.segment_seconds,s.video_cols,s.video_rows,fps,s.token,index)
 
     local ok,err=http.request{
@@ -1060,6 +1130,9 @@ return function(ctx)
       or math.floor(48000/fps+0.5)
     local sampleRate=tonumber(segment_header(headers,"X-CCLUA-Sample-Rate")) or 48000
     local packets=tonumber(segment_header(headers,"X-CCLUA-Packets")) or 0
+    local paletteHex=segment_header(headers,"X-CCLUA-Palette-RGB")
+    local colorMode=segment_header(headers,"X-CCLUA-Color-Mode") or "stock16"
+    local palette=paletteHex and parse_palette_hex(paletteHex) or nil
     local raw=h.readAll() or ""
     if h.close then pcall(h.close) end
 
@@ -1084,6 +1157,9 @@ return function(ctx)
       error(("segment length mismatch: got %d expected %d"):format(
         #raw,packets*packetBytes),0)
     end
+    if colorMode=="adaptive16-bayer4" and not palette then
+      error("adaptive theater segment is missing a valid 16-color RGB palette",0)
+    end
 
     s.segment_requested[req.index]=nil
     s.segment_retries[req.index]=nil
@@ -1091,9 +1167,11 @@ return function(ctx)
       raw=raw,index=req.index,start=req.start,
       packets=packets,frame_bytes=frameBytes,audio_bytes=audioBytes,
       packet_bytes=packetBytes,duration=packets/gotFps,
+      palette=palette,palette_hex=paletteHex,color_mode=colorMode,
       received_at=now_ms(),request_ms=now_ms()-(req.requested_at or now_ms()),
     }
     s.audio_bytes=audioBytes
+    s.color_mode=colorMode
     s.av_ready=true
     s.av_stage=req.index==0 and "ready" or ("buffered segment "..req.index)
     ensure_segment_prefetch(s)
@@ -1160,6 +1238,9 @@ return function(ctx)
           else
             s.segments[index]=nil
             s.segment_consumed[index]=true
+            if seg.palette then
+              apply_main_palette(mon,seg.palette,seg.palette_hex)
+            end
 
             local audioParts={}
             local offset=1
@@ -1168,7 +1249,7 @@ return function(ctx)
               audioParts[#audioParts+1]=seg.raw:sub(offset,offset+seg.audio_bytes-1)
               offset=offset+seg.audio_bytes
             end
-            local audio=pcm_decode(table.concat(audioParts))
+            local audio=pcm_decode(table.concat(audioParts),s.volume)
 
             if not s.go then
               s.start_epoch=now_ms()+120
@@ -1186,23 +1267,33 @@ return function(ctx)
 
             local pending={}
             for _,sp in ipairs(speakers) do pending[#pending+1]=sp end
+            local acceptedCount=0
+            local failedCount=0
             while s.active and #pending>0 do
-              for i=#pending,1,-1 do
+              local remaining={}
+              for i=1,#pending do
                 local sp=pending[i]
-                local okPlay,accepted=pcall(sp.obj.playAudio,audio,s.volume)
+                local okPlay,accepted=pcall(sp.obj.playAudio,audio,speakerOutputVolume)
                 if not okPlay then
+                  failedCount=failedCount+1
                   ctx.kernel.log.write("warning","theaterd","speaker playback failed",
                     {speaker=sp.name,error=tostring(accepted)},proc.pid)
-                  table.remove(pending,i)
                 elseif accepted then
-                  table.remove(pending,i)
+                  acceptedCount=acceptedCount+1
+                else
+                  remaining[#remaining+1]=sp
                 end
               end
+              pending=remaining
               if #pending>0 then
                 local ev=coroutine.yield("wait_event",{"speaker_audio_empty","terminate"})
                 if ev=="terminate" then return 0 end
               end
             end
+            s.speaker_submit_ok=acceptedCount
+            s.speaker_submit_failed=failedCount
+            s.speaker_submit_total=#speakers
+            s.speaker_output_volume=speakerOutputVolume
 
             local packetOffset=1
             for packet=0,seg.packets-1 do
@@ -1475,6 +1566,11 @@ return function(ctx)
             buffered_segments=buffered,
             inflight_index=session.segment_inflight and session.segment_inflight.index or nil,
             segment_seconds=session.segment_seconds,
+            color_mode=session.color_mode,
+            speaker_submit_ok=session.speaker_submit_ok,
+            speaker_submit_failed=session.speaker_submit_failed,
+            speaker_submit_total=session.speaker_submit_total,
+            speaker_output_volume=session.speaker_output_volume,
           },
         }
         if session.go then

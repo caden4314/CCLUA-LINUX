@@ -104,7 +104,7 @@ with tempfile.TemporaryDirectory(prefix="cclua-theater-test-") as td:
         packet=r.read(frame_bytes+audio_bytes)
     assert len(packet)==frame_bytes+2400
 
-    segment_url=origin+f"/v1/movies/{item['id']}/av.segment?start=0&seconds=2&cols={cols}&rows={rows}&fps=20"
+    segment_url=origin+f"/v1/movies/{item['id']}/av.segment?start=0&seconds=2&cols={cols}&rows={rows}&fps=20&color=adaptive16"
     with urllib.request.urlopen(segment_url,timeout=30) as r:
         assert r.headers.get("X-CCLUA-Format")=="av-segment-v1"
         assert int(r.headers.get("X-CCLUA-Cols"))==cols
@@ -114,7 +114,13 @@ with tempfile.TemporaryDirectory(prefix="cclua-theater-test-") as td:
         assert int(r.headers.get("X-CCLUA-Audio-Bytes"))==2400
         packets=int(r.headers.get("X-CCLUA-Packets"))
         content_length=int(r.headers.get("Content-Length"))
+        palette_hex=r.headers.get("X-CCLUA-Palette-RGB")
+        color_mode=r.headers.get("X-CCLUA-Color-Mode")
         body=r.read()
+    assert color_mode=="adaptive16-bayer4"
+    assert palette_hex and len(palette_hex)==96
+    assert all(c in "0123456789abcdef" for c in palette_hex.lower())
+    assert palette_hex[-6:]=="000000"
     assert 39<=packets<=40
     assert content_length==packets*(frame_bytes+2400)
     assert len(body)==content_length
@@ -128,3 +134,4 @@ print("BLIT_FULL_WALL_334X165_20FPS_FRAME_PASS")
 print("VECTORIZED_ENCODER_EQUIVALENCE_PASS")
 print("MUX_AV_PACKET_20FPS_PASS")
 print("FINITE_SEGMENT_2S_CONTENT_LENGTH_PASS")
+print("ADAPTIVE_SCENE_PALETTE_16X24BIT_PASS")
