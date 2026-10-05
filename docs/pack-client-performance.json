@@ -1,0 +1,112 @@
+{
+  "schema": 1,
+  "minecraft": "1.20.1",
+  "fabric_loader": "0.19.5",
+  "count": 8,
+  "mods": [
+    {
+      "file": "entityculling-fabric-1.11.2-mc1.20.1.jar",
+      "bytes": 1516669,
+      "sha256": "637b6f30d8c7d51f107eddce095ab205f5768751aa3f9bd9ad11577da04dbbd0",
+      "environment": "*",
+      "id": "entityculling",
+      "version": "1.11.2",
+      "depends": [
+        "fabric-api",
+        "minecraft"
+      ]
+    },
+    {
+      "file": "ferritecore-6.0.1-fabric.jar",
+      "bytes": 125197,
+      "sha256": "c7ba1118a05b2da900d1c369fbe1017a3e3ec3cafe5e51398b851279b9becf24",
+      "environment": "*",
+      "id": "ferritecore",
+      "version": "6.0.1",
+      "depends": [
+        "fabricloader",
+        "minecraft"
+      ]
+    },
+    {
+      "file": "ImmediatelyFast-Fabric-1.5.5+1.20.4.jar",
+      "bytes": 348818,
+      "sha256": "5eea426af467564618e017e8f3a62f1c5c4224ab32a0a1726313de130a2d783d",
+      "environment": "client",
+      "id": "immediatelyfast",
+      "version": "1.5.5+1.20.4",
+      "depends": [
+        "fabricloader",
+        "java",
+        "minecraft"
+      ]
+    },
+    {
+      "file": "indium-1.0.36+mc1.20.1.jar",
+      "bytes": 105382,
+      "sha256": "8434d0abc8826e2540c26741fea45a1ab9d48f650746de282b36850fa1d01999",
+      "environment": "client",
+      "id": "indium",
+      "version": "1.0.36+mc1.20.1",
+      "depends": [
+        "fabric-renderer-api-v1",
+        "fabric-resource-loader-v0",
+        "fabricloader",
+        "minecraft",
+        "sodium"
+      ]
+    },
+    {
+      "file": "lithium-fabric-mc1.20.1-0.11.4.jar",
+      "bytes": 691483,
+      "sha256": "76133efe92aea907cf75562d9e26517deb170e2580e1ecd4979da2c8902de782",
+      "environment": "*",
+      "id": "lithium",
+      "version": "0.11.4",
+      "depends": [
+        "fabricloader",
+        "minecraft"
+      ]
+    },
+    {
+      "file": "reeses_sodium_options-1.7.2+mc1.20.1-build.101.jar",
+      "bytes": 77304,
+      "sha256": "627b6b90e30d18de49dd8960afd5c8b530cf2c6f21b248d14a848d1023ff0bec",
+      "environment": "client",
+      "id": "reeses-sodium-options",
+      "version": "1.7.2+mc1.20.1-build.101",
+      "depends": [
+        "minecraft",
+        "sodium"
+      ]
+    },
+    {
+      "file": "sodium-extra-0.5.9+mc1.20.1.jar",
+      "bytes": 370701,
+      "sha256": "5cae656838b595e27d5133264374e5d90f5f35a39e343bfc5a76b908fec97c9f",
+      "environment": "client",
+      "id": "sodium-extra",
+      "version": "0.5.9+mc1.20.1",
+      "depends": [
+        "fabric-api",
+        "fabricloader",
+        "minecraft",
+        "sodium"
+      ]
+    },
+    {
+      "file": "sodium-fabric-0.5.13+mc1.20.1.jar",
+      "bytes": 971552,
+      "sha256": "688c26029ce69f0b1f7cf936866656ca6723228ac46c4aef5b5f793b1e6abd22",
+      "environment": "client",
+      "id": "sodium",
+      "version": "0.5.13+mc1.20.1",
+      "depends": [
+        "fabric-rendering-data-attachment-v1",
+        "fabric-rendering-fluids-v1",
+        "fabricloader",
+        "minecraft"
+      ]
+    }
+  ]
+}

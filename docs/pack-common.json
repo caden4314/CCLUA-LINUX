@@ -1,0 +1,597 @@
+{
+  "schema": 1,
+  "minecraft": "1.20.1",
+  "fabric_loader": "0.19.5",
+  "count": 41,
+  "mods": [
+    {
+      "file": "Adorn-5.0.1+1.20.1-fabric.jar",
+      "bytes": 4128916,
+      "sha256": "87888d0cae87d8e7c64bfdbeb56376a81710931d717d05028434313f2588fcb5",
+      "environment": "*",
+      "id": "adorn",
+      "version": "5.0.1+1.20.1",
+      "depends": [
+        "fabric-api",
+        "fabric-language-kotlin",
+        "fabricloader",
+        "minecraft"
+      ]
+    },
+    {
+      "file": "another_furniture-fabric-1.20.1-3.0.5.jar",
+      "bytes": 2291815,
+      "sha256": "76c2cbef2437733b8c16fc83fded76ae8166747c088b2a09709bfdb18b202fe3",
+      "environment": "*",
+      "id": "another_furniture",
+      "version": "1.20.1-3.0.5",
+      "depends": [
+        "fabricloader",
+        "minecraft"
+      ]
+    },
+    {
+      "file": "architectury-9.2.14-fabric.jar",
+      "bytes": 585207,
+      "sha256": "bd7a7032bedb2ff96c6991a846a44c857336a51442a105f5859017e8ba9d1321",
+      "environment": "*",
+      "id": "architectury",
+      "version": "9.2.14",
+      "depends": [
+        "fabric-api",
+        "fabricloader",
+        "minecraft"
+      ]
+    },
+    {
+      "file": "athena-fabric-1.20.1-3.1.2.jar",
+      "bytes": 74370,
+      "sha256": "da18e81a3b72263a67c40e325537c587b48fff2fabb625c612ca4d7c2f386ecd",
+      "environment": "*",
+      "id": "athena",
+      "version": "3.1.2",
+      "depends": [
+        "fabric",
+        "minecraft"
+      ]
+    },
+    {
+      "file": "cc-tweaked-1.20.1-fabric-1.120.2.jar",
+      "bytes": 3610994,
+      "sha256": "98381cbe1160f92a30297d042bd0e2a3c0ff7040532ffe4cbda693b35c643eeb",
+      "environment": "*",
+      "id": "computercraft",
+      "version": "1.120.2",
+      "depends": [
+        "fabric-api",
+        "fabricloader",
+        "minecraft"
+      ]
+    },
+    {
+      "file": "cclua-ccperf-0.3.6.jar",
+      "bytes": 25763,
+      "sha256": "0ada352683818da66f468590e188f9c014081dafcf604f3d1374def55dccd76d",
+      "environment": "*",
+      "id": "cclua_ccperf",
+      "version": "0.3.6",
+      "depends": [
+        "computercraft",
+        "fabric-api",
+        "fabricloader",
+        "java",
+        "minecraft"
+      ]
+    },
+    {
+      "file": "chipped-fabric-1.20.1-3.0.7.jar",
+      "bytes": 15057458,
+      "sha256": "b1af1f1a653a65b200c5fd547c59a97e176f6d5b2e41519596f7a30394d4f330",
+      "environment": "*",
+      "id": "chipped",
+      "version": "3.0.7",
+      "depends": [
+        "athena",
+        "fabric-api",
+        "minecraft",
+        "resourcefullib"
+      ]
+    },
+    {
+      "file": "chisel-fabric-2.0.0+mc1.20.1.jar",
+      "bytes": 8268711,
+      "sha256": "c328a6a27dd174463721de02fdd292db029eb42a51d6979ef50e71b97c2caac8",
+      "environment": "*",
+      "id": "chisel",
+      "version": "2.0.0+mc1.20.1",
+      "depends": [
+        "architectury",
+        "cryonicconfig",
+        "fabric",
+        "fabricloader",
+        "java",
+        "minecraft"
+      ]
+    },
+    {
+      "file": "cloth-config-11.1.136-fabric.jar",
+      "bytes": 1172214,
+      "sha256": "844f49c339c8f3144e167ab21b7d0059f0d571054e26285a0749348da25c49fa",
+      "environment": "*",
+      "id": "cloth-config",
+      "version": "11.1.136",
+      "depends": [
+        "fabricloader",
+        "minecraft"
+      ]
+    },
+    {
+      "file": "create-fabric-6.0.8.1+build.1744-mc1.20.1.jar",
+      "bytes": 32189889,
+      "sha256": "a613603fb08d967c5a4138d1adb7374c4a347b91e489fe21579a4cff4f40105a",
+      "environment": "*",
+      "id": "create",
+      "version": "6.0.8.1+build.1744-mc1.20.1",
+      "depends": [
+        "fabric-api",
+        "fabricloader",
+        "flywheel",
+        "forgeconfigapiport",
+        "milk",
+        "minecraft",
+        "ponder",
+        "porting_lib_accessors",
+        "porting_lib_base",
+        "porting_lib_client_events",
+        "porting_lib_entity",
+        "porting_lib_extensions",
+        "porting_lib_models",
+        "porting_lib_networking",
+        "porting_lib_obj_loader",
+        "porting_lib_tags",
+        "porting_lib_transfer",
+        "reach-entity-attributes",
+        "registrate-fabric"
+      ]
+    },
+    {
+      "file": "create_connected-fabric-1.2.3-mc1.20.1.jar",
+      "bytes": 6617833,
+      "sha256": "992f66c64d8e2412ceb61a978d87ec6ce9e210a980115b70baea67e8984fadab",
+      "environment": "*",
+      "id": "create_connected",
+      "version": "1.2.3-mc1.20.1",
+      "depends": [
+        "create",
+        "fabric-api",
+        "fabricloader",
+        "java",
+        "minecraft"
+      ]
+    },
+    {
+      "file": "createdeco-2.1.1-1.20.1-fabric.jar",
+      "bytes": 3492044,
+      "sha256": "7a72ee9c8da0b478256263c1e75ad4541b902cffb3c314bdb91850ead6fcfd4a",
+      "environment": "*",
+      "id": "createdeco",
+      "version": "2.1.1-1.20.1-fabric",
+      "depends": [
+        "create",
+        "fabric-api",
+        "fabricloader",
+        "minecraft"
+      ]
+    },
+    {
+      "file": "cryonicconfig-fabric-1.0.0+mc1.20.1.jar",
+      "bytes": 21404,
+      "sha256": "7d8026ecedf5e48690382b3b00311ec02027b145f4f1cd713f3ec3e6276ec9b4",
+      "environment": "*",
+      "id": "cryonicconfig",
+      "version": "1.0.0+mc1.20.1",
+      "depends": [
+        "fabricloader",
+        "java",
+        "minecraft"
+      ]
+    },
+    {
+      "file": "decorative_blocks-fabric-1.20.1-4.1.3.jar",
+      "bytes": 546719,
+      "sha256": "9273e91494670ddab6feaa6151df5a65c05966fe14306476e67ab77af37f4f72",
+      "environment": "*",
+      "id": "decorative_blocks",
+      "version": "4.1.3",
+      "depends": [
+        "fabric",
+        "fabricloader",
+        "java",
+        "minecraft"
+      ]
+    },
+    {
+      "file": "fabric-api-0.92.12+1.20.1.jar",
+      "bytes": 2137232,
+      "sha256": "4197ff4fbdac13cffccd267c1bc59e9fbabb2b5683a9d5f8023f4b5ea16a1c1e",
+      "environment": "*",
+      "id": "fabric-api",
+      "version": "0.92.12+1.20.1",
+      "depends": [
+        "fabricloader",
+        "java",
+        "minecraft"
+      ]
+    },
+    {
+      "file": "fabric-language-kotlin-1.14.1+kotlin.2.4.20.jar",
+      "bytes": 8142858,
+      "sha256": "620c2709be2a262b837cf976f6f85f6eda80a56af2ba4242e0bdc83a60fee7a5",
+      "environment": "*",
+      "id": "fabric-language-kotlin",
+      "version": "1.14.1+kotlin.2.4.20",
+      "depends": [
+        "fabricloader"
+      ]
+    },
+    {
+      "file": "factory_blocks-fabric-1.4.0+mc1.20.1.jar",
+      "bytes": 807679,
+      "sha256": "433614a6499e45cbcc715014e4b12e52b10527255f5908196ae1f98f440fc079",
+      "environment": "*",
+      "id": "factory_blocks",
+      "version": "1.4.0+mc1.20.1",
+      "depends": [
+        "architectury",
+        "fabric-api",
+        "fabricloader",
+        "minecraft"
+      ]
+    },
+    {
+      "file": "fusion-1.3.15b-fabric-mc1.20.1.jar",
+      "bytes": 931034,
+      "sha256": "e60fc72d8b563558173c64644b39c776d3c88a2ba45ed74187934148d825b277",
+      "environment": "*",
+      "id": "fusion",
+      "version": "1.3.15+b",
+      "depends": [
+        "fabric",
+        "fabricloader",
+        "java",
+        "minecraft"
+      ]
+    },
+    {
+      "file": "handcrafted-fabric-1.20.1-3.0.6.jar",
+      "bytes": 7106384,
+      "sha256": "aa82c95a7394c5fd7278c8b89e3554bb24dae0c3e6e73282a7f19d8bb6bf4a71",
+      "environment": "*",
+      "id": "handcrafted",
+      "version": "3.0.6",
+      "depends": [
+        "fabric",
+        "minecraft",
+        "resourcefullib"
+      ]
+    },
+    {
+      "file": "infinitybuttons-4.0.5-mc1.20.1.jar",
+      "bytes": 1362285,
+      "sha256": "d7d6e1d1520adb6555704bf3a9a1e4db17752767283ebaa0bf327c809ee45c97",
+      "environment": "*",
+      "id": "infinitybuttons",
+      "version": "4.0.5-mc1.20.1",
+      "depends": [
+        "fabric",
+        "fabricloader",
+        "java",
+        "minecraft"
+      ]
+    },
+    {
+      "file": "mcw-bridges-3.1.2-mc1.20.1fabric.jar",
+      "bytes": 672903,
+      "sha256": "7c6c48a1bb5c8dc9c00e5b4ca95a27c759e39d99ce4f3cb858c281645e40a1a5",
+      "environment": "*",
+      "id": "mcwbridges",
+      "version": "3.1.2",
+      "depends": [
+        "fabric-api",
+        "fabricloader",
+        "java",
+        "minecraft"
+      ]
+    },
+    {
+      "file": "mcw-doors-1.1.5-mc1.20.1fabric.jar",
+      "bytes": 1226772,
+      "sha256": "cb7d88f7fbf2172207aff0ec9af11684ea7b7062723af1b71b2c59ba09e7ca75",
+      "environment": "*",
+      "id": "mcwdoors",
+      "version": "1.1.5",
+      "depends": [
+        "fabric-api",
+        "fabricloader",
+        "java",
+        "minecraft"
+      ]
+    },
+    {
+      "file": "mcw-furniture-3.4.1-mc1.20.1fabric.jar",
+      "bytes": 2102784,
+      "sha256": "b0fb123b9fcc5fc6a4d6f432bbcd0689da2484fcc6c86372171f46638f7fc732",
+      "environment": "*",
+      "id": "mcwfurnitures",
+      "version": "3.4.1",
+      "depends": [
+        "fabric-api",
+        "fabricloader",
+        "java",
+        "minecraft"
+      ]
+    },
+    {
+      "file": "mcw-lights-1.1.5-mc1.20.1fabric.jar",
+      "bytes": 516313,
+      "sha256": "3b9a152fdb94c79f7fdfe2502f514ad9d289c66340d412a5081dfa8bb3f8d3cf",
+      "environment": "*",
+      "id": "mcwlights",
+      "version": "1.1.5",
+      "depends": [
+        "fabric-api",
+        "fabricloader",
+        "java",
+        "minecraft"
+      ]
+    },
+    {
+      "file": "mcw-mcwfences-1.2.1-mc1.20.1fabric.jar",
+      "bytes": 659511,
+      "sha256": "0d9e4b03246de9364b85adfce6fee3354a31f822aec1bca2c8306ebbe09a89c8",
+      "environment": "*",
+      "id": "mcwfences",
+      "version": "1.2.1",
+      "depends": [
+        "fabric-api",
+        "fabricloader",
+        "java",
+        "minecraft"
+      ]
+    },
+    {
+      "file": "mcw-mcwstairs-1.0.2-mc1.20.1fabric.jar",
+      "bytes": 523788,
+      "sha256": "ec8c1529f746cb46a55bd3c5a4974da6c8c720deabd45620ebc014e5b3c7d99e",
+      "environment": "*",
+      "id": "mcwstairs",
+      "version": "1.0.2",
+      "depends": [
+        "fabric-api",
+        "fabricloader",
+        "java",
+        "minecraft"
+      ]
+    },
+    {
+      "file": "mcw-mcwwindows-2.4.2-mc1.20.1fabric.jar",
+      "bytes": 1273261,
+      "sha256": "1cc53835b3a669aa15ec0845665401bf469999d7b307b4c8c22028a69d64f66e",
+      "environment": "*",
+      "id": "mcwwindows",
+      "version": "2.4.2",
+      "depends": [
+        "fabric-api",
+        "fabricloader",
+        "java",
+        "minecraft"
+      ]
+    },
+    {
+      "file": "mcw-paintings-1.1.0-mc1.20.1fabric.jar",
+      "bytes": 155072,
+      "sha256": "2272bf384a45607a8d065685bfff2774646834d5089b7a2dfd5c1c132a68e57a",
+      "environment": "*",
+      "id": "mcwpaintings",
+      "version": "1.1.0",
+      "depends": [
+        "fabric-api",
+        "fabricloader",
+        "java",
+        "minecraft"
+      ]
+    },
+    {
+      "file": "mcw-paths-1.1.2-mc1.20.1fabric.jar",
+      "bytes": 769476,
+      "sha256": "ac6b50c7907d2b7527f140ff15cf692482f6d5c611b4252e9106fd881c5ced65",
+      "environment": "*",
+      "id": "mcwpaths",
+      "version": "1.1.2",
+      "depends": [
+        "fabric-api",
+        "fabricloader",
+        "java",
+        "minecraft"
+      ]
+    },
+    {
+      "file": "mcw-roofs-2.3.2-mc1.20.1fabric.jar",
+      "bytes": 1796110,
+      "sha256": "efdd2df129d71bb35aa123c46811bf568b833887af32d72d21540176c6255a41",
+      "environment": "*",
+      "id": "mcwroofs",
+      "version": "2.3.2",
+      "depends": [
+        "fabric-api",
+        "fabricloader",
+        "java",
+        "minecraft"
+      ]
+    },
+    {
+      "file": "mcw-trapdoors-1.1.5-mc1.20.1fabric.jar",
+      "bytes": 572942,
+      "sha256": "5a709d84933d0add533898a33aaf1dfd898a021c650be54d5791ea067f3ba0ba",
+      "environment": "*",
+      "id": "mcwtrpdoors",
+      "version": "1.1.5",
+      "depends": [
+        "fabric-api",
+        "fabricloader",
+        "java",
+        "minecraft"
+      ]
+    },
+    {
+      "file": "owo-lib-0.11.2+1.20.jar",
+      "bytes": 905421,
+      "sha256": "1c249c30d3e50bba5cb35e0c3acebf4bd5f969bd33402de2f3a6a619fd688d12",
+      "environment": "*",
+      "id": "owo",
+      "version": "0.11.2+1.20",
+      "depends": [
+        "fabric",
+        "fabricloader",
+        "minecraft"
+      ]
+    },
+    {
+      "file": "rechiseled-1.2.6-fabric-mc1.20.1.jar",
+      "bytes": 11954943,
+      "sha256": "d6ed25c5ca2d4e0a1766edcc61b025a35065b5eb450c7c4c674c098abc5de00f",
+      "environment": "*",
+      "id": "rechiseled",
+      "version": "1.2.6",
+      "depends": [
+        "fabric",
+        "fabricloader",
+        "fusion",
+        "java",
+        "minecraft",
+        "supermartijn642configlib",
+        "supermartijn642corelib"
+      ]
+    },
+    {
+      "file": "rechiseledcreate-1.1.1-fabric-mc1.20.1.jar",
+      "bytes": 1006855,
+      "sha256": "d8f5e414e140ba48768e5d64e04947d204df6771403901e2f61c7dc52afe0d01",
+      "environment": "*",
+      "id": "rechiseledcreate",
+      "version": "1.1.1",
+      "depends": [
+        "create",
+        "fabric",
+        "fabricloader",
+        "java",
+        "minecraft",
+        "rechiseled",
+        "supermartijn642corelib"
+      ]
+    },
+    {
+      "file": "resourcefullib-fabric-1.20.1-2.1.29.jar",
+      "bytes": 431646,
+      "sha256": "2543d76f4f440d4401dccf7675f836381260919f0ac884e2696ae67e600adeeb",
+      "environment": "*",
+      "id": "resourcefullib",
+      "version": "2.1.29",
+      "depends": [
+        "fabric",
+        "minecraft"
+      ]
+    },
+    {
+      "file": "roadworks-1.0.0-beta5.jar",
+      "bytes": 1225465,
+      "sha256": "a4f20f3d8528e858e02bd4236d08a31920a1bde650e2d9fcdfcde7a428f8a412",
+      "environment": "*",
+      "id": "roadworks",
+      "version": "1.0.0-beta5",
+      "depends": [
+        "cloth-config",
+        "fabric-api",
+        "fabric-language-kotlin",
+        "fabricloader",
+        "java",
+        "minecraft"
+      ]
+    },
+    {
+      "file": "supermartijn642configlib-1.1.8a-fabric-mc1.20.jar",
+      "bytes": 207990,
+      "sha256": "fe76c8cf001878109adbdd2f4ef877b76ddfdefdca91ff9b90353c2e8af8022c",
+      "environment": "*",
+      "id": "supermartijn642configlib",
+      "version": "1.1.8+a",
+      "depends": [
+        "fabric",
+        "fabricloader",
+        "java",
+        "minecraft"
+      ]
+    },
+    {
+      "file": "supermartijn642corelib-1.1.24a-fabric-mc1.20.1.jar",
+      "bytes": 608104,
+      "sha256": "0a93c1844d37282adb511a6e5276917ab2ca8f774418e8d2206ad0918859d34c",
+      "environment": "*",
+      "id": "supermartijn642corelib",
+      "version": "1.1.24+a",
+      "depends": [
+        "fabric",
+        "fabricloader",
+        "java",
+        "minecraft"
+      ]
+    },
+    {
+      "file": "trafficcraft-fabric-1.20.1-1.1.3.jar",
+      "bytes": 6500548,
+      "sha256": "dfc2e9aaf9f81a3e4bc0c340c9df951a5730c3f667cb2bb46344c2cf191e34b2",
+      "environment": "*",
+      "id": "trafficcraft",
+      "version": "1.20.1-1.1.3",
+      "depends": [
+        "dragonlib",
+        "fabric-api",
+        "fabricloader",
+        "java",
+        "minecraft"
+      ]
+    },
+    {
+      "file": "underlay-1.0.5-fabric-mc1.20.1.jar",
+      "bytes": 299122,
+      "sha256": "732cfbb8de123d42bd2732f9ec43785090bd48b86288944f126365828649202a",
+      "environment": "*",
+      "id": "underlay",
+      "version": "1.0.5",
+      "depends": [
+        "fabric-api",
+        "fabricloader",
+        "java",
+        "minecraft"
+      ]
+    },
+    {
+      "file": "wired-redstone-0.7.8+1.20.1.jar",
+      "bytes": 4104691,
+      "sha256": "f7bb5bc8d596871634e5548acbca33acd919a23535bc446accecdea758890677",
+      "environment": "*",
+      "id": "wiredredstone",
+      "version": "0.7.8+1.20.1",
+      "depends": [
+        "fabric",
+        "fabric-language-kotlin",
+        "fabricloader",
+        "graphlib",
+        "java",
+        "libmultipart",
+        "libnetworkstack",
+        "minecraft"
+      ]
+    }
+  ]
+}

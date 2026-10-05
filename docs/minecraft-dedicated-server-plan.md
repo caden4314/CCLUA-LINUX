@@ -6,6 +6,28 @@ Move COMPUTERS2 from Minecraft's integrated server to a dedicated Fabric 1.20.1 
 
 The server should do as much simulation, generation, storage, networking, and LOD generation as practical so weaker clients primarily render and handle UI/input.
 
+## Deployment status — 2026-10-05
+
+The first production-capable copied-world deployment is complete on NEWMAIN:
+
+- server root: `E:\Minecraft\CCLUA-Server`
+- source singleplayer world remains untouched after the clean migration snapshot
+- rollback archive: `E:\Minecraft\CCLUA-Backups\COMPUTERS2-pre-dedicated-20261005-143537.zip`
+- Minecraft 1.20.1 / Fabric Loader 0.19.5 / Java 17
+- exact server pack: 48 jars
+- exact full client pack: 59 jars
+- Tailscale listener: `100.76.188.26:25565`
+- MagicDNS endpoint: `desktop-1r77lod.tail4ae277.ts.net:25565`
+- manager ID 0: CURRENT
+- copied CCLUA fleet: 20/20 CURRENT, 20/20 POST PASSED, 20/20 HEALTHY
+- theater: 223x73 main display, 55/55 relays, 22/22 speakers, bridge ONLINE
+- supervisor: clean-stop controls, crash restart with loop protection, logon auto-start
+- backup policy: daily 04:00 clean stop -> archive -> restart, newest 10 retained
+- client pack was Taildropped to CYBER-PC (`desktop-6hid6ll`)
+
+Known non-fatal startup warnings remain around legacy datapack recipes and Wired Redstone's
+Create integration API. The server reaches `Done`, stays running, and the CCLUA fleet remains healthy.
+
 ## Current host baseline
 
 - CPU: AMD Ryzen 7 5800X, 8 cores / 16 threads

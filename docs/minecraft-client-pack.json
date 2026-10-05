@@ -1,0 +1,9 @@
+{
+  "schema": 1,
+  "file": "CCLUA-COMPUTERS2-Tailscale-v2.zip",
+  "bytes": 158420827,
+  "sha256": "a5cef329f57a0579491c70cff34bb5a73fe080f8d16374b81f5666185e64802f",
+  "taildrop_name": "CCLUA-COMPUTERS2-Tailscale-1455.zip",
+  "server": "desktop-1r77lod.tail4ae277.ts.net:25565",
+  "fallback": "100.76.188.26:25565"
+}
