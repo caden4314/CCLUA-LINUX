@@ -88,6 +88,14 @@ function http.request(opts,post,headers,binary)
   return true
 end
 
+function make_catalog_handle()
+  return {
+    getResponseCode=function() return 200 end,
+    readAll=function() return "CATALOG" end,
+    close=function() end,
+  }
+end
+
 test_palette_hex="102030"..string.rep("406080",14).."000000"
 test_palette_hex_2="a0b0c0"..string.rep("806040",14).."000000"
 test_palette_sequence=test_palette_hex..test_palette_hex_2
@@ -309,6 +317,13 @@ end
 
 local kind=drive()
 assert(kind=="wait_event","service did not enter event loop")
+local catalogUrl=nil
+for i=#http_requests,1,-1 do
+  if http_requests[i]:find("/catalog",1,true) then catalogUrl=http_requests[i];break end
+end
+assert(catalogUrl,"asynchronous catalog request missing")
+kind=drive("http_success",catalogUrl,make_catalog_handle(),nil)
+assert(kind=="wait_event")
 assert(saved_state.state=="IDLE")
 assert(saved_state.hardware.relays_present==55)
 assert(saved_state.hardware.speakers_present==22)

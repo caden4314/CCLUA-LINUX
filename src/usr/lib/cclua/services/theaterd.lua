@@ -105,6 +105,8 @@ return function(ctx)
   state.video_fps=fps
 
   local catalog={}
+  local catalogUrl=BRIDGE.."/catalog"
+  local catalogInflight=false
   local session=nil
   local sessionSeq=0
   local fixtureOn={}
@@ -125,28 +127,8 @@ return function(ctx)
     return v
   end
 
-  local function get_json(url)
-    if not http or not http.get then return nil,"HTTP API unavailable" end
-    local h,err=http.get(url,{
-      ["Accept"]="application/json",
-      ["User-Agent"]="CCLUA-Theater/0.1",
-    })
-    if not h then return nil,tostring(err or "HTTP request failed") end
-    local code=h.getResponseCode and h.getResponseCode() or 200
-    local raw=h.readAll();h.close()
-    if tonumber(code)~=200 then return nil,"HTTP "..tostring(code) end
-    local ok,data=pcall(textutils.unserializeJSON,raw)
-    if not ok or type(data)~="table" then return nil,"invalid bridge JSON" end
-    return data
-  end
-
-  local function refresh_catalog()
-    local data,err=get_json(BRIDGE.."/catalog")
-    if not data then
-      state.bridge="OFFLINE"
-      state.bridge_error=err
-      return nil,err
-    end
+  local function apply_catalog(data)
+    if type(data)~="table" then return nil,"invalid bridge JSON" end
     catalog=type(data.movies)=="table" and data.movies or {}
     config.write_json("/var/lib/cclua/theater-catalog.json",{
       schema=1,updated_at=now_ms(),movies=catalog,
@@ -156,6 +138,38 @@ return function(ctx)
     state.bridge_error=nil
     state.selected_index=math.max(1,math.min(math.max(1,#catalog),state.selected_index or 1))
     return catalog
+  end
+
+  local function load_cached_catalog()
+    local cached=config.read_json("/var/lib/cclua/theater-catalog.json",nil)
+    if type(cached)=="table" and type(cached.movies)=="table" then
+      catalog=cached.movies
+      state.catalog_count=#catalog
+      state.selected_index=math.max(1,math.min(math.max(1,#catalog),state.selected_index or 1))
+    end
+  end
+
+  local function refresh_catalog()
+    if #catalog==0 then load_cached_catalog() end
+    if catalogInflight then return catalog end
+    if not http or not http.request then
+      state.bridge="OFFLINE"
+      state.bridge_error="HTTP API unavailable"
+      return catalog,state.bridge_error
+    end
+    local ok,err=http.request{
+      url=catalogUrl,method="GET",
+      headers={["Accept"]="application/json",["User-Agent"]="CCLUA-Theater/0.3"},
+      binary=false,timeout=5,
+    }
+    if ok then
+      catalogInflight=true
+      if state.bridge~="ONLINE" then state.bridge="CHECKING" end
+      return catalog
+    end
+    state.bridge="OFFLINE"
+    state.bridge_error=tostring(err or "HTTP request failed")
+    return catalog,state.bridge_error
   end
 
   local function find_movie(id)
@@ -1760,7 +1774,25 @@ return function(ctx)
 
     elseif ev=="http_success" then
       local url=tostring(a or "")
-      if session and session.active and session.segment_inflight
+      if url==catalogUrl then
+        catalogInflight=false
+        local h=b
+        local code=h and h.getResponseCode and h.getResponseCode() or 200
+        local raw=h and h.readAll and h.readAll() or ""
+        if h and h.close then pcall(h.close) end
+        if tonumber(code)==200 then
+          local ok,data=pcall(textutils.unserializeJSON,raw)
+          if ok and type(data)=="table" then
+            apply_catalog(data)
+          else
+            state.bridge="OFFLINE"
+            state.bridge_error="invalid bridge JSON"
+          end
+        else
+          state.bridge="OFFLINE"
+          state.bridge_error="HTTP "..tostring(code)
+        end
+      elseif session and session.active and session.segment_inflight
         and session.segment_inflight.url==url then
         local ok,err=pcall(accept_segment_response,session,url,b)
         if not ok then
@@ -1774,7 +1806,11 @@ return function(ctx)
 
     elseif ev=="http_failure" then
       local url=tostring(a or "")
-      if session and session.active and session.segment_inflight
+      if url==catalogUrl then
+        catalogInflight=false
+        state.bridge="OFFLINE"
+        state.bridge_error=tostring(b or "Could not connect")
+      elseif session and session.active and session.segment_inflight
         and session.segment_inflight.url==url then
         fail_segment_response(session,url,b,c)
       end
