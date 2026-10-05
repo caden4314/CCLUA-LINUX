@@ -231,14 +231,13 @@ return function(ctx)
     return true
   end
 
-  -- Physical speaker order from the saved theater build. The first eight are
-  -- deliberately spread across front/side and high/low positions. If the
-  -- Minecraft client exhausts its streaming-source pool, the surviving eight
-  -- still provide balanced room coverage instead of just speaker_0..7.
-  local speakerOrder={
-    7,2,8,15,20,18,0,1,
-    6,5,4,3,9,10,11,12,13,14,16,17,19,21,
-  }
+  -- Four-speaker theater mode. These are deliberately spread across the
+  -- existing physical speaker ordering to retain room coverage while avoiding
+  -- the independent OpenAL stream drift seen with the full 22-speaker array.
+  -- The remaining speakers stay physically installed and can be restored once
+  -- CCPerf provides sample-aligned multi-source playback.
+  local speakerOrder={7,8,20,0}
+  local expectedRoomSpeakers=#speakerOrder
   local function room_speakers()
     local out={}
     for _,id in ipairs(speakerOrder) do
@@ -278,7 +277,7 @@ return function(ctx)
       main_text_scale=mainScale,
       transport_monitor=transportName,transport_present=north~=nil,transport_size=north and {tw,th} or nil,
       control_monitor=controlName,control_present=south~=nil,control_size=south and {cw,ch} or nil,
-      speakers_present=speakers,speakers_expected=22,
+      speakers_present=speakers,speakers_expected=expectedRoomSpeakers,
       speaker_output_volume=speakerOutputVolume,
       relays_present=relays,relays_expected=#fixtures,
       booth_speaker=boothSpeaker,booth_speaker_present=peripheral_ok(boothSpeaker,"speaker"),
@@ -515,7 +514,7 @@ return function(ctx)
       line(mon,h-1," Touch L / CENTER / R for transport",colors.gray)
     end
     line(mon,h,("AUDIO %d/%d  SCREEN %s"):format(
-      tonumber((state.hardware or {}).speakers_present) or 0,22,
+      tonumber((state.hardware or {}).speakers_present) or 0,expectedRoomSpeakers,
       (state.hardware or {}).main_present and "READY" or "MISSING"
     ),(state.hardware or {}).main_present and colors.lime or colors.red)
   end
@@ -1606,7 +1605,7 @@ return function(ctx)
   ctx.unit.details={
     bridge=BRIDGE,main_monitor=mainName,
     transport_monitor=transportName,control_monitor=controlName,
-    speakers=22,fixtures=#fixtures,video={cols=targetCols,rows=targetRows,fps=fps}
+    speakers=expectedRoomSpeakers,fixtures=#fixtures,video={cols=targetCols,rows=targetRows,fps=fps}
   }
   ctx.kernel.log.write("info","theaterd","theater controller online",ctx.unit.details,ctx.process.pid)
 
