@@ -112,6 +112,7 @@ function http.get(url,headers,binary)
     return {
       getResponseCode=function() return 200 end,
       read=function(n)
+        pcm_read_size=n
         if done then return nil end
         done=true
         return string.char(0,127,128,255)
@@ -226,6 +227,7 @@ assert(music.now_playing() and music.now_playing().state=="playing")
 local remoteCo=coroutine.create(procs[remotePlayer.pid].worker)
 local okRemote,remoteYield=coroutine.resume(remoteCo)
 assert(okRemote and remoteYield=="wait_event","remote PCM worker failed before audio drain")
+assert(pcm_read_size==128*1024,"PCM stream must fill CC speaker buffers")
 assert(#speaker.last==4)
 assert(speaker.last[1]==0 and speaker.last[2]==127 and speaker.last[3]==-128 and speaker.last[4]==-1)
 assert(math.abs((speaker.last_volume or 0)-0.8)<0.001)

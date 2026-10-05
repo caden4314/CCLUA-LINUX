@@ -480,7 +480,11 @@ function M.play_remote(ctx,track,speakerName,volume,opts)
 
           local samples=0
           while true do
-            local chunk=h.read(12*1024)
+            -- CC:Tweaked buffers one playAudio call at a time. Feed the
+            -- documented maximum (128 Ki samples ~= 2.73 s) so both the
+            -- server and client audio queues stay comfortably ahead of
+            -- Minecraft/CC tick jitter.
+            local chunk=h.read(128*1024)
             if not chunk then break end
             local audio=pcm_s8_decode(chunk)
             samples=samples+#audio

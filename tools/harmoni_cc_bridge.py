@@ -402,7 +402,14 @@ class HarmoniBridge:
                     "-i", str(source),
                     "-t", f"{segment_seconds:.6f}",
                     "-vn", "-map", "0:a:0",
-                    "-ac", "1", "-ar", "48000",
+                    "-ac", "1",
+                    # Keep a little headroom before the 8-bit quantizer. Modern
+                    # mastered sources commonly touch full scale, and CC's
+                    # speaker path is especially unforgiving of hard clipping.
+                    # High-pass triangular dither turns low-level 8-bit
+                    # quantization distortion into much less objectionable noise.
+                    "-af", "volume=0.92,aresample=48000:dither_method=triangular_hp",
+                    "-ar", "48000",
                     "-acodec", "pcm_s8", "-f", "s8", "pipe:1",
                 ]
 

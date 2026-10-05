@@ -173,7 +173,12 @@ try:
             assert response.headers.get("X-CCLUA-Audio-Format")=="pcm_s8"
             assert response.headers.get("X-CCLUA-Sample-Rate")=="48000"
         assert len(pcm)>=11000
-        assert set(pcm)=={0}
+        # HQ PCM uses high-pass triangular dither before 8-bit quantization.
+        # Digital silence should therefore sit within a tiny +/-2 LSB noise
+        # floor instead of being forced to exact zero samples.
+        signed=[b if b<128 else b-256 for b in pcm]
+        assert max(abs(v) for v in signed)<=2
+        assert (sum(abs(v) for v in signed)/len(signed))<1.0
 
         with urllib.request.urlopen(track["pcm_stream_url"]+"?start=0.10",timeout=3) as response:
             seeked=response.read()
