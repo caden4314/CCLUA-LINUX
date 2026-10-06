@@ -2,6 +2,7 @@ return function(ctx)
   local config=dofile("/usr/lib/cclua/config.lua")
   local net=dofile("/usr/lib/cclua/net.lua")
   local drivers=dofile("/usr/lib/cclua/drivers.lua")
+  local sdkModule=dofile("/usr/lib/cclua/sdk.lua")
   local machine=config.machine()
   local protocol="cclua-apphost-v1"
   local managerProtocol="cclua-manager-v1"
@@ -237,6 +238,7 @@ return function(ctx)
         kernel=ctx.kernel,process=proc,app=name,
         manifest=manifest,drivers=drivers,
       }
+      appCtx.sdk=sdkModule.open(appCtx,manifest)
       if type(mod)=="table" and type(mod.main)=="function" then
         okRun,res=pcall(mod.main,appCtx,{})
       elseif type(mod)=="function" then

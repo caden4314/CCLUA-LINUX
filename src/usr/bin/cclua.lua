@@ -1,7 +1,9 @@
 local api=dofile("/usr/lib/cclua/api/system.lua")
+local drivers=dofile("/usr/lib/cclua/drivers.lua")
+local pkgdb=dofile("/usr/lib/cclua/package_db.lua")
 
 local function usage()
-  print("Usage: cclua <status|services|network|update|apps|api> [--json]")
+  print("Usage: cclua <status|services|network|update|apps|native|drivers|capabilities|packages|api> [--json]")
   print("       cclua services [failed|active]")
 end
 
@@ -84,9 +86,46 @@ local function print_apps(s)
     tostring(s.apps and s.apps.hostname or s.host.hostname),#apps))
   if #apps==0 then print("  (no hosted apps reported)") return end
   for _,app in ipairs(apps) do
-    print(("  %-24s %-9s pid=%s  version=%s"):format(
+    local compat=app.compatible==false and " !incompatible" or ""
+    print(("  %-24s %-9s pid=%s  version=%s%s"):format(
       tostring(app.name or "-"),tostring(app.state or "-"),
-      tostring(app.pid or "-"),tostring(app.version or "-")))
+      tostring(app.pid or "-"),tostring(app.version or "-"),compat))
+  end
+end
+
+local function print_native(s)
+  print("NATIVE RUNTIME")
+  print("Available: "..tostring(s.native and s.native.available==true))
+  print("Version:   "..tostring(s.native and s.native.version or "-"))
+  local caps=s.native and s.native.capabilities or {}
+  for k,v in pairs(caps) do
+    print(("  %-28s %s"):format(tostring(k),tostring(v)))
+  end
+end
+
+local function print_drivers()
+  local rows=drivers.scan()
+  print(("DRIVERS  %d devices"):format(#rows))
+  for _,d in ipairs(rows) do
+    print(("  %-18s %-20s %-10s"):format(d.name,d.driver,d.class))
+  end
+end
+
+local function print_capabilities()
+  local caps,providers=drivers.capabilities()
+  print(("CAPABILITIES  %d"):format(#caps))
+  for _,cap in ipairs(caps) do
+    print(("  %-30s %s"):format(cap,table.concat(providers[cap] or {},", ")))
+  end
+end
+
+local function print_packages()
+  local meta=pkgdb.load()
+  print(("PACKAGES  %d native implementations / %d Ubuntu reference entries"):format(
+    meta.implemented_count or 0,meta.reference_count or 0))
+  for _,p in ipairs(pkgdb.implemented()) do
+    print(("  %-24s %-18s %s"):format(
+      p.name,tostring(p.version or "-"),table.concat(p.commands or {},", ")))
   end
 end
 
@@ -110,6 +149,14 @@ return {main=function(ctx,args)
     print_update(snapshot)
   elseif command=="apps" then
     print_apps(snapshot)
+  elseif command=="native" then
+    print_native(snapshot)
+  elseif command=="drivers" then
+    print_drivers()
+  elseif command=="capabilities" then
+    print_capabilities()
+  elseif command=="packages" then
+    print_packages()
   else
     usage()
     return 2

@@ -1,13 +1,15 @@
 local M={}
 local config=dofile("/usr/lib/cclua/config.lua")
 local systemApi=dofile("/usr/lib/cclua/api/system.lua")
+local drivers=dofile("/usr/lib/cclua/drivers.lua")
+local pkgdb=dofile("/usr/lib/cclua/package_db.lua")
 local Theme=dofile("/usr/lib/cclua/desktop/theme.lua")
 
 function M.new(ctx)
   return {title="Settings",icon="S",section=1}
 end
 
-local sections={"About","Network","Updates","Display"}
+local sections={"About","Network","Updates","Display","Platform"}
 
 local function fit(value,width)
   local s=tostring(value or "")
@@ -52,6 +54,23 @@ local function value_rows(ctx,section)
       {"External monitor",m.external_monitor_enabled and "Enabled" or "Disabled"},
       {"Desktop","CCLUA compositor"},
       {"Session","ubuntu"},
+    }
+  elseif section==5 then
+    local caps=drivers.capabilities()
+    local nativeInfo=drivers.native()
+    local packages=pkgdb.load()
+    local apps=snapshot.apps and snapshot.apps.items or {}
+    local incompatible=0
+    for _,app in ipairs(apps) do if app.compatible==false then incompatible=incompatible+1 end end
+    return {
+      {"Runtime",nativeInfo.available and ("CCPerf "..tostring(nativeInfo.version or "")) or "Stock CC:Tweaked"},
+      {"Native API","v"..tostring(nativeInfo.driver_version or 0)},
+      {"Drivers",tostring(#drivers.scan()).." devices"},
+      {"Capabilities",tostring(#caps)},
+      {"Native software",tostring(packages.implemented_count or 0).." packages"},
+      {"Ubuntu reference",tostring(packages.reference_count or 0).." packages"},
+      {"Hosted apps",tostring(#apps)},
+      {"App issues",incompatible==0 and "None" or tostring(incompatible).." incompatible"},
     }
   end
   return {

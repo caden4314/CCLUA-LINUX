@@ -1,4 +1,6 @@
 local config=dofile("/usr/lib/cclua/config.lua")
+local native=dofile("/usr/lib/cclua/native.lua")
+local drivers=dofile("/usr/lib/cclua/drivers.lua")
 
 local function read(path)
   return config.read_json(path,{}) or {}
@@ -17,6 +19,8 @@ local function collect(ctx)
   local status=read("/var/lib/cclua/status.json")
   local update=read("/var/lib/cclua/update-state.json")
   local session=read("/var/lib/cclua/session-health.json")
+  local apphost=read("/var/lib/cclua/apphost.json")
+  local driverState=read("/var/lib/cclua/drivers.json")
 
   local services={}
   local failed={}
@@ -34,6 +38,7 @@ local function collect(ctx)
   end
 
   local problems={}
+  local warnings={}
   if post.fatal==true or tostring(post.state):upper()=="FAILED" then
     problems[#problems+1]="fatal POST failure"
   elseif tostring(post.state):upper()=="DEGRADED" then
@@ -49,6 +54,24 @@ local function collect(ctx)
   if tostring(update.state or ""):upper()=="FAILED" then problems[#problems+1]="update failed" end
   if session.recovery==true then problems[#problems+1]="session is in recovery mode" end
 
+  local nativeInfo=drivers.native()
+  if not nativeInfo.available then
+    warnings[#warnings+1]="CCPerf native runtime unavailable; using stock compatibility paths"
+  end
+
+  local incompatibleApps={}
+  for _,app in ipairs(apphost.apps or {}) do
+    if app.compatible==false then incompatibleApps[#incompatibleApps+1]=app.name end
+  end
+  if #incompatibleApps>0 then
+    warnings[#warnings+1]=#incompatibleApps.." hosted app(s) have unsatisfied role/capability requirements"
+  end
+
+  local driverCaps=driverState.capabilities or {}
+  if #driverCaps==0 and count_devices(ctx)>0 then
+    warnings[#warnings+1]="driver capability inventory has not been published yet"
+  end
+
   return {
     schema=1,
     hostname=machine.hostname,
@@ -63,6 +86,16 @@ local function collect(ctx)
     failed_services=failed,
     service_restarts=restarts,
     peripherals=count_devices(ctx),
+    native=nativeInfo,
+    drivers={
+      devices=driverState.devices or {},
+      capabilities=driverCaps,
+    },
+    apps={
+      total=#(apphost.apps or {}),
+      incompatible=incompatibleApps,
+    },
+    warnings=warnings,
     problems=problems,
     healthy=#problems==0,
   }
@@ -91,6 +124,18 @@ local function display(data)
   ))
   print(("Modems:      %s"):format(data.network.modem_count or 0))
   print(("Peripherals: %s"):format(data.peripherals or 0))
+  print(("Drivers:     %d devices / %d capabilities"):format(
+    #(data.drivers and data.drivers.devices or {}),
+    #(data.drivers and data.drivers.capabilities or {})
+  ))
+  print(("Native:      %s %s"):format(
+    data.native and data.native.available and "CCPerf" or "stock",
+    tostring(data.native and data.native.version or "")
+  ))
+  print(("Apps:        %d total / %d incompatible"):format(
+    data.apps and data.apps.total or 0,
+    #(data.apps and data.apps.incompatible or {})
+  ))
   print(("Services:    %d total / %d failed / %d restarts"):format(
     #(data.services or {}),#(data.failed_services or {}),data.service_restarts or 0
   ))
@@ -102,6 +147,14 @@ local function display(data)
     data.session.mode or "-",
     data.session.recovery and " (RECOVERY)" or ""
   ))
+
+  if #(data.warnings or {})>0 then
+    term.setTextColor(colors.yellow)
+    print("")
+    print("Warnings:")
+    for _,warning in ipairs(data.warnings) do print("  - "..warning) end
+    term.setTextColor(colors.white)
+  end
 
   if #(data.problems or {})==0 then
     term.setTextColor(colors.lime)
