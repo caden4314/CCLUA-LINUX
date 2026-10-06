@@ -1152,6 +1152,14 @@ return function(ctx)
     if tonumber(code)~=200 then
       if h.close then pcall(h.close) end
       s.segment_requested[req.index]=nil
+      if tonumber(code)==416 then
+        -- The bridge returns 416 when the requested segment starts at/after
+        -- EOF. Treat that as a clean end-of-stream, not a playback failure.
+        s.segment_retries[req.index]=nil
+        s.segment_eof=math.min(s.segment_eof or req.index,req.index)
+        s.av_stage="end of movie"
+        return true
+      end
       s.segment_retries[req.index]=(s.segment_retries[req.index] or 0)+1
       if s.segment_retries[req.index]<=3 then
         ensure_segment_prefetch(s)
