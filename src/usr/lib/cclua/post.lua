@@ -1,5 +1,6 @@
 local config=dofile("/usr/lib/cclua/config.lua")
 local monitorLayout=dofile("/usr/lib/cclua/monitor_layout.lua")
+local native=dofile("/usr/lib/cclua/native.lua")
 local M={}
 
 local function now()
@@ -243,6 +244,24 @@ local function checks_for(ctx,machine)
     local ok=k and k.version and k.process and k.scheduler and k.services and k.vfs and k.device
     if not ok then return false,"kernel subsystem missing" end
     return true,(k.version.version or "?").." ABI "..tostring(k.version.kernel_abi or "?")
+  end)
+
+  add("native","Native runtime",false,function()
+    local available=native.available()
+    local version=native.version()
+    local caps=native.capabilities()
+    config.write_json("/var/lib/cclua/native.json",{
+      schema=1,
+      available=available,
+      version=version,
+      capabilities=caps,
+      computer=native.computer(),
+      checked_at=now(),
+    })
+    if not available then return true,"stock CC:Tweaked fallback" end
+    return true,("CCPerf %s API %s / %s timer"):format(
+      tostring(version or "?"),tostring(caps.api or "?"),
+      caps.native_timer and "native" or "stock")
   end)
 
   add("filesystem","Filesystem read/write",true,function()
