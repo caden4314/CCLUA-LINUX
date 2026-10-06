@@ -1,6 +1,6 @@
 -- Remote theater speaker diagnostics for Audio Engine v2.
 local M={}
-local RATE,BLOCK=48000,2400
+local RATE,BLOCK=48000,131072
 
 local function tone_block(freq,level,startSample,count,total)
   local out={}
