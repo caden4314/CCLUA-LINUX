@@ -421,14 +421,25 @@ assert(secondUrl,"segment 1 was not prefetched")
 
 mock_now=mock_now+20
 run_children_once()
-assert(processes[child_order[1]].state=="sleeping","player should wait for second startup segment")
-assert(#speaker_calls==0,"audio started before the two-segment buffer was ready")
+assert(processes[child_order[1]].state=="sleeping","player should wait for startup prebuffer")
+assert(#speaker_calls==0,"audio started before the six-segment buffer was ready")
 
-kind=drive("http_success",secondUrl,make_segment_handle(4),nil)
-assert(kind=="wait_event")
-run_children_once()
-local thirdUrl=latest_segment_url(2)
-assert(thirdUrl,"segment 2 was not prefetched")
+for seq=1,5 do
+  local url=latest_segment_url(seq)
+  assert(url,("startup segment %d was not prefetched"):format(seq))
+  kind=drive("http_success",url,make_segment_handle(4),nil)
+  assert(kind=="wait_event")
+  run_children_once()
+  if seq<5 then
+    mock_now=mock_now+20
+    run_children_once()
+    assert(#speaker_calls==0,
+      ("audio started before startup segment %d/5 completed"):format(seq))
+  end
+end
+
+local seventhUrl=latest_segment_url(6)
+assert(seventhUrl,"segment 6 was not prefetched after startup buffer")
 
 mock_now=mock_now+20
 run_children_once()
@@ -466,18 +477,19 @@ assert(saved_state.streams.av.speaker_submit_ok==22)
 assert(saved_state.streams.av.speaker_submit_failed==0)
 assert(saved_state.streams.av.speaker_submit_total==22)
 assert(saved_state.streams.av.speaker_output_volume==3.0)
-assert(saved_state.streams.av.initial_buffer_segments==2)
-assert(saved_state.streams.av.inflight_index==2)
-assert(saved_state.streams.av.buffered_segments>=1,
-  "second startup segment was not retained ahead of playback")
+assert(saved_state.streams.av.initial_buffer_segments==6)
+assert(saved_state.streams.av.prefetch_segments==8)
+assert(saved_state.streams.av.inflight_index==6)
+assert(saved_state.streams.av.buffered_segments>=5,
+  "startup playback cushion was not retained")
 
-kind=drive("http_success",thirdUrl,make_segment_handle(4),nil)
+kind=drive("http_success",seventhUrl,make_segment_handle(4),nil)
 assert(kind=="wait_event")
 run_children_once()
 kind=drive("timer",last_refresh_timer)
 assert(kind=="wait_event")
-assert(saved_state.streams.av.buffered_segments>=2,
-  "two-segment playback cushion was not retained")
+assert(saved_state.streams.av.buffered_segments>=6,
+  "deep playback cushion was not retained")
 
 local segmentRequests=0
 for _,url in ipairs(http_requests) do

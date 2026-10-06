@@ -15,9 +15,11 @@ return function(ctx)
   local targetRows=tonumber(machine.theater_video_rows) or 0
   local speakerOutputVolume=math.max(0.1,math.min(3.0,tonumber(machine.theater_speaker_output_volume) or 3.0))
   local segmentSeconds=math.max(0.25,math.min(2,tonumber(machine.theater_segment_seconds) or 0.5))
-  local segmentPrefetch=math.max(1,math.min(3,tonumber(machine.theater_segment_prefetch) or 2))
-  local initialBufferSegments=math.max(1,math.min(segmentPrefetch,
-    tonumber(machine.theater_initial_buffer_segments) or 2))
+  -- RGB24 transport runs close to real time at full-wall resolution. Keep a
+  -- few seconds buffered so normal HTTP/FFmpeg jitter never reaches playback.
+  local segmentPrefetch=math.max(2,math.min(10,tonumber(machine.theater_segment_prefetch) or 8))
+  local initialBufferSegments=math.max(2,math.min(segmentPrefetch,
+    tonumber(machine.theater_initial_buffer_segments) or 6))
 
   local scenes={
     house={label="HOUSE",level=100},
@@ -499,7 +501,11 @@ return function(ctx)
   end
   local function current_position()
     if session and session.active and session.go and session.start_epoch then
-      return math.max(0,(session.start_position or 0)+(now_ms()-session.start_epoch)/1000)
+      -- Hold the media clock during a real buffer underrun. Audio and video
+      -- both stop advancing until the missing segment arrives, so neither
+      -- stream has to race/drop data to catch up afterwards.
+      local clockNow=session.rebuffer_started or now_ms()
+      return math.max(0,(session.start_position or 0)+(clockNow-session.start_epoch)/1000)
     end
     return tonumber(state.position) or 0
   end
@@ -1401,10 +1407,20 @@ return function(ctx)
           local seg=s.segments[index]
           if not seg then
             if s.segment_eof and index>=s.segment_eof then break end
+            if s.go and not s.rebuffer_started then
+              s.rebuffer_started=now_ms()
+              s.rebuffer_count=(s.rebuffer_count or 0)+1
+            end
             s.av_stage=index==0 and "buffering first segment"
-              or ("waiting segment "..index)
+              or ("rebuffering segment "..index)
             coroutine.yield("sleep",now_ms()+15)
           else
+            if s.rebuffer_started then
+              local stalled=math.max(0,now_ms()-s.rebuffer_started)
+              s.start_epoch=(s.start_epoch or now_ms())+stalled
+              s.rebuffer_ms=(s.rebuffer_ms or 0)+stalled
+              s.rebuffer_started=nil
+            end
             s.segments[index]=nil
             s.segment_consumed[index]=true
             if seg.palette then
@@ -1573,6 +1589,8 @@ return function(ctx)
       volume=state.volume,
       movie=movie,
       dropped_frames=0,
+      rebuffer_count=0,
+      rebuffer_ms=0,
       segment_seconds=segmentSeconds,
       play_index=0,
       segments={},
@@ -1804,6 +1822,10 @@ return function(ctx)
             inflight_index=session.segment_inflight and session.segment_inflight.index or nil,
             segment_seconds=session.segment_seconds,
             initial_buffer_segments=initialBufferSegments,
+            prefetch_segments=segmentPrefetch,
+            rebuffer_count=session.rebuffer_count or 0,
+            rebuffer_ms=session.rebuffer_ms or 0,
+            rebuffering=session.rebuffer_started~=nil,
             color_mode=session.color_mode,
             speaker_submit_ok=session.speaker_submit_ok,
             speaker_submit_failed=session.speaker_submit_failed,
