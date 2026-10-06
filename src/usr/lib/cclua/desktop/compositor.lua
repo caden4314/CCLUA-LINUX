@@ -451,6 +451,18 @@ function M.run(ctx)
     spec.mod.draw(ctx,win.state,ui,cx,cy,cw,ch,isActive)
   end
 
+  local function apply_cursor()
+    if ui.cursor and active and not overview and not systemMenu then
+      term.setCursorPos(
+        math.max(1,math.min(W,ui.cursor)),
+        math.max(1,math.min(H,ui.cursor_y))
+      )
+      term.setCursorBlink(true)
+    else
+      term.setCursorBlink(false)
+    end
+  end
+
   local function render(force)
     ui.cursor=nil;ui.cursor_y=nil
     draw_wallpaper()
@@ -469,15 +481,13 @@ function M.run(ctx)
     if systemMenu then draw_system_menu() else systemMenuBox=nil end
 
     Canvas.flush(canvas,term.current(),force)
-    if ui.cursor and active and not overview and not systemMenu then
-      term.setCursorPos(
-        math.max(1,math.min(W,ui.cursor)),
-        math.max(1,math.min(H,ui.cursor_y))
-      )
-      term.setCursorBlink(true)
-    else
-      term.setCursorBlink(false)
-    end
+    apply_cursor()
+  end
+
+  local function render_panel_only()
+    draw_panel()
+    Canvas.flush(canvas,term.current(),false)
+    apply_cursor()
   end
 
   local function hit_window(x,y)
@@ -555,7 +565,7 @@ function M.run(ctx)
         return 75
       end
       clockTimer=os.startTimer(1)
-      render(false)
+      render_panel_only()
 
     elseif ev=="key" then
       if a==keys.leftCtrl or a==keys.rightCtrl then ctrl=true end
