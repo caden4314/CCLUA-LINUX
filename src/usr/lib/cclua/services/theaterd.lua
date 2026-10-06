@@ -1618,6 +1618,7 @@ return function(ctx)
 
             local packetOffset=1
             local activePaletteIndex=nil
+            local audioQueuedPacket=-1
             for packet=0,seg.packets-1 do
               if not s.active then break end
 
@@ -1636,37 +1637,36 @@ return function(ctx)
               end
 
               local target=segmentTarget+(packet/fps)*1000
+
+              -- Maintain a real 250 ms audio lead. OpenAL streaming sources
+              -- cannot survive ordinary network/scheduler jitter if PCM is
+              -- submitted at the same instant its matching video is due.
+              -- Queue this packet plus the next four 50 ms epochs before
+              -- waiting for the current frame's presentation timestamp.
+              local leadEnd=math.min(seg.packets-1,packet+4)
+              while audioQueuedPacket<leadEnd do
+                local aq=audioQueuedPacket+1
+                local aqOffset=1+aq*(seg.frame_bytes+seg.audio_bytes)
+                local audioStart=aqOffset+seg.frame_bytes
+                local audioEnd=audioStart+seg.audio_bytes-1
+                local audioRaw=seg.raw:sub(audioStart,audioEnd)
+                if #audioRaw~=seg.audio_bytes then
+                  error(("audio packet %d has %d bytes; expected %d"):format(
+                    aq,#audioRaw,seg.audio_bytes),0)
+                end
+                audioEpoch=audioEpoch+1
+                local pending={}
+                for _,sp in ipairs(speakers) do pending[#pending+1]=sp end
+                audioQueue[#audioQueue+1]={
+                  id=audioEpoch,audio=pcm_decode(audioRaw,s.volume),pending=pending,
+                  target=segmentTarget+(aq/fps)*1000,
+                }
+                audioQueuedPacket=aq
+              end
+              s.audio_queue_depth=#audioQueue
+
               if now_ms()<target then coroutine.yield("sleep",math.floor(target)) end
               local late=now_ms()-target
-
-              -- Keep the bridge's native 50 ms / 2400-sample packetization.
-              -- Giant segment-sized playAudio buffers cause poor OpenAL
-              -- streaming behaviour and make individual sources fall behind.
-              -- Audio bytes are interleaved with every video frame:
-              -- [frame][2400 PCM bytes][frame][2400 PCM bytes]...
-              -- seg.audio_bytes is therefore the per-frame block size, not
-              -- the whole segment. Keep this guard explicit so a malformed
-              -- bridge response can never turn into multi-second playAudio.
-              local audioStart=packetOffset+seg.frame_bytes
-              local audioEnd=audioStart+seg.audio_bytes-1
-              local audioRaw=seg.raw:sub(audioStart,audioEnd)
-              if #audioRaw~=seg.audio_bytes then
-                error(("audio packet %d has %d bytes; expected %d"):format(
-                  packet,#audioRaw,seg.audio_bytes),0)
-              end
-              local audio=pcm_decode(audioRaw,s.volume)
-              -- Keep audio epochs strictly ordered across all 22 speakers.
-              -- Video remains independent: enqueue this 50 ms PCM block and
-              -- retry only the speakers which have not accepted the oldest
-              -- epoch yet. Never advance a speaker to epoch N+1 while another
-              -- speaker is still missing epoch N.
-              audioEpoch=audioEpoch+1
-              local pending={}
-              for _,sp in ipairs(speakers) do pending[#pending+1]=sp end
-              audioQueue[#audioQueue+1]={
-                id=audioEpoch,audio=audio,pending=pending,target=target,
-              }
-              s.audio_queue_depth=#audioQueue
               s.audio_late_ms=late
 
               -- Audio is the media clock. Present only a frame that is still

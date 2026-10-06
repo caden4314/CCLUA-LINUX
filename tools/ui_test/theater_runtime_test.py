@@ -463,7 +463,7 @@ assert(math.abs(moviePalette[1]-(0x10/255))<0.001)
 assert(math.abs(moviePalette[2]-(0x20/255))<0.001)
 assert(math.abs(moviePalette[3]-(0x30/255))<0.001)
 
-assert(#speaker_calls==88,("expected 66 calibration + 22 feature submissions, got %d"):format(#speaker_calls))
+assert(#speaker_calls==154,("expected 66 calibration + four 22-speaker prebuffer epochs, got %d"):format(#speaker_calls))
 local expected_first={"speaker_7","speaker_2","speaker_8","speaker_15","speaker_20","speaker_18","speaker_0","speaker_1","speaker_6","speaker_5","speaker_4","speaker_3","speaker_9","speaker_10","speaker_11","speaker_12","speaker_13","speaker_14","speaker_16","speaker_17","speaker_19","speaker_21"}
 local expected_set={}
 for _,name in ipairs(expected_first) do expected_set[name]=true end
