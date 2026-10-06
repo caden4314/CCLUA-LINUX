@@ -1,5 +1,6 @@
 local M={}
 local perfs=dofile("/usr/lib/cclua/peripherals.lua")
+local drivers=dofile("/usr/lib/cclua/drivers.lua")
 local Theme=dofile("/usr/lib/cclua/desktop/theme.lua")
 
 local tabs={"Devices","Printer","Audio"}
@@ -44,17 +45,37 @@ function M.draw(ctx,st,ui,x,y,w,h)
   clamp(st,list)
 
   if st.tab==1 then
-    ui.text(x+1,y+1,"DEVICE             TYPE          STATUS",colors.gray,colors.black)
-    local maxRows=math.max(1,h-3)
+    ui.text(x+1,y+1,"DEVICE             DRIVER/CLASS           STATUS",colors.gray,colors.black)
+    local detailRows=h>=14 and 3 or 1
+    local maxRows=math.max(1,h-3-detailRows)
     for i=1,math.min(maxRows,#list) do
       local d=list[i]
       local yy=y+1+i
-      local line=("%-18s %-12s %s"):format(
+      local desc=drivers.describe(d.name) or {}
+      local driver=tostring(desc.driver or d.type or "peripheral")
+      local class=tostring(desc.class or "")
+      local label=class~="" and (driver.."/"..class) or driver
+      local line=("%-18s %-22s %s"):format(
         tostring(d.name):sub(1,18),
-        tostring(d.type or "peripheral"):sub(1,12),
+        label:sub(1,22),
         status_text(d)
       )
       Theme.list_row(ui,x,yy,w,line,i==st.selected,i==st.selected and nil or "muted")
+    end
+    local selected=list[st.selected]
+    if selected and h>=14 then
+      local desc=drivers.describe(selected.name)
+      if desc then
+        local base=y+h-4
+        ui.text(x+1,base,"Selected: "..tostring(desc.name).."  |  "..tostring(desc.driver),
+          colors.orange,colors.black)
+        local caps=table.concat(desc.capabilities or {},", ")
+        ui.text(x+1,base+1,Theme.fit("Capabilities: "..caps,math.max(1,w-2)),
+          colors.lightGray,colors.black)
+        ui.text(x+1,base+2,Theme.fit(("Methods: %d  Types: %s"):format(
+          #(desc.methods or {}),table.concat(desc.types or {},", ")),math.max(1,w-2)),
+          colors.gray,colors.black)
+      end
     end
 
   elseif st.tab==2 then

@@ -49,6 +49,7 @@ local function host(path)
 end
 
 local function command_exists(name)
+  if type(fs)~="table" or type(fs.exists)~="function" then return false end
   return fs.exists(host("/usr/bin/"..tostring(name)..".lua"))
 end
 
@@ -60,6 +61,9 @@ local function reference_path()
 end
 
 local function load_reference()
+  if type(fs)~="table" or type(fs.open)~="function" then
+    return {schema=1,role=role(),packages={}}
+  end
   local path=host(reference_path())
   local h=fs.open(path,"r")
   if not h then return {schema=1,role=role(),packages={}} end

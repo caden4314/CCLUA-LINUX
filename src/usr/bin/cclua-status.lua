@@ -1,4 +1,6 @@
 local config=dofile("/usr/lib/cclua/config.lua")
+local drivers=dofile("/usr/lib/cclua/drivers.lua")
+local pkgdb=dofile("/usr/lib/cclua/package_db.lua")
 local ui=dofile("/usr/lib/cclua/cli_ui.lua")
 
 local function short(v)
@@ -63,6 +65,13 @@ return {main=function(ctx,args)
   label("Session",(session.mode or "-")..(session.recovery and " (recovery)" or ""))
   label("Uptime",("%ds"):format(math.floor(os.clock())))
   label("Peripherals",peripheralCount)
+  local nativeInfo=drivers.native()
+  local caps=drivers.capabilities()
+  local packages=pkgdb.load()
+  label("Runtime",nativeInfo.available and ("CCPerf "..tostring(nativeInfo.version or "")) or "Stock CC:Tweaked")
+  label("Drivers",("%d devices / %d caps"):format(#drivers.scan(),#caps))
+  label("Software",("%d native / %d reference"):format(
+    packages.implemented_count or 0,packages.reference_count or 0))
 
   print("")
   heading("Network")

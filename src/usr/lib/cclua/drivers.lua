@@ -51,8 +51,15 @@ local function sorted_keys(map)
   return out
 end
 
+local function peripheral_names()
+  if type(peripheral)~="table" or type(peripheral.getNames)~="function" then return {} end
+  local ok,list=pcall(peripheral.getNames)
+  return ok and type(list)=="table" and list or {}
+end
+
 local function types_for(name)
   local out={}
+  if type(peripheral)~="table" then return out end
   if peripheral.getType then
     local ok,a,b,c=pcall(peripheral.getType,name)
     if ok then
@@ -61,7 +68,7 @@ local function types_for(name)
       end
     end
   end
-  if #out==0 then
+  if #out==0 and type(peripheral.hasType)=="function" then
     for kind in pairs(descriptors) do
       local ok,v=pcall(peripheral.hasType,name,kind)
       if ok and v then out[#out+1]=kind end
@@ -72,7 +79,7 @@ local function types_for(name)
 end
 
 local function methods_for(name)
-  if not peripheral.getMethods then return {} end
+  if type(peripheral)~="table" or type(peripheral.getMethods)~="function" then return {} end
   local ok,methods=pcall(peripheral.getMethods,name)
   if not ok or type(methods)~="table" then return {} end
   table.sort(methods)
@@ -111,7 +118,7 @@ end
 function M.describe(name)
   if type(name)~="string" or name=="" then return nil,"invalid peripheral name" end
   local present=false
-  for _,n in ipairs(peripheral.getNames()) do
+  for _,n in ipairs(peripheral_names()) do
     if n==name then present=true;break end
   end
   if not present then return nil,"peripheral not present" end
@@ -127,7 +134,7 @@ end
 
 function M.scan()
   local out={}
-  for _,name in ipairs(peripheral.getNames()) do
+  for _,name in ipairs(peripheral_names()) do
     local d=M.describe(name)
     if d then out[#out+1]=d end
   end
