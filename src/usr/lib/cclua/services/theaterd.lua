@@ -1272,13 +1272,26 @@ return function(ctx)
   end
 
   local function fail_segment_response(s,url,err,h)
+    local code=h and h.getResponseCode and h.getResponseCode() or nil
     if h and h.close then pcall(h.close) end
     local req=s and s.segment_inflight
     if not req or req.url~=url then return false end
     s.segment_inflight=nil
     s.segment_requested[req.index]=nil
+
+    local errorText=tostring(err or "segment request failed")
+    if tonumber(code)==416 or errorText:find("Requested Range Not Satisfiable",1,true) then
+      -- CC:Tweaked delivers non-2xx responses through http_failure. The bridge
+      -- uses 416 to signal that the next requested segment begins beyond EOF.
+      s.segment_retries[req.index]=nil
+      s.segment_eof=math.min(s.segment_eof or req.index,req.index)
+      s.av_last_error=nil
+      s.av_stage="end of movie"
+      return true
+    end
+
     s.segment_retries[req.index]=(s.segment_retries[req.index] or 0)+1
-    s.av_last_error=tostring(err or "segment request failed")
+    s.av_last_error=errorText
     if s.segment_retries[req.index]<=3 then
       ensure_segment_prefetch(s)
     elseif os.queueEvent then
@@ -1497,14 +1510,20 @@ return function(ctx)
                     mon.framebufferCreate(s.rgb_width,s.rgb_height)
                     s.rgb_initialized=true
                   end
-                  local chunkBytes=24576
-                  local off=1
-                  while off<=#video do
-                    local last=math.min(#video,off+chunkBytes-1)
-                    mon.framebufferWrite(off-1,video:sub(off,last))
-                    off=last+1
+                  if type(mon.framebufferSubmit)=="function" then
+                    -- CCPerf fast path: one Lua->Java crossing copies and
+                    -- presents the complete RGB frame.
+                    mon.framebufferSubmit(video)
+                  else
+                    local chunkBytes=24576
+                    local off=1
+                    while off<=#video do
+                      local last=math.min(#video,off+chunkBytes-1)
+                      mon.framebufferWrite(off-1,video:sub(off,last))
+                      off=last+1
+                    end
+                    mon.framebufferPresent()
                   end
-                  mon.framebufferPresent()
                 else
                   local voff=1
                   for row=0,rows-1 do

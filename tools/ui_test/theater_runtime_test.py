@@ -96,6 +96,13 @@ function make_catalog_handle()
   }
 end
 
+function make_error_handle(code)
+  return {
+    getResponseCode=function() return tonumber(code) or 500 end,
+    close=function() end,
+  }
+end
+
 test_palette_hex="102030"..string.rep("406080",14).."000000"
 test_palette_hex_2="a0b0c0"..string.rep("806040",14).."000000"
 test_palette_sequence=test_palette_hex..test_palette_hex_2
@@ -487,6 +494,19 @@ local restored=objects["monitor_7"].palette[1]
 assert(math.abs(restored[1]-0.1)<0.001)
 assert(math.abs(restored[2]-0.2)<0.001)
 assert(math.abs(restored[3]-0.3)<0.001)
+
+-- CC:Tweaked delivers bridge HTTP 416 as http_failure. It is an EOF signal,
+-- not a playback error.
+kind=drive("cclua_theater_command","play",{id="movie1"})
+assert(kind=="wait_event")
+local eofUrl=latest_segment_url(0)
+assert(eofUrl,"EOF test segment request missing")
+kind=drive("http_failure",eofUrl,"Requested Range Not Satisfiable",make_error_handle(416))
+assert(kind=="wait_event")
+kind=drive("timer",last_refresh_timer)
+assert(kind=="wait_event")
+assert(saved_state.state~="ERROR","HTTP 416 EOF incorrectly changed playback to error")
+assert(saved_state.error==nil,"HTTP 416 EOF left an error in theater state")
 
 print("THEATER_RUNTIME_OK")
 print("MONITORS_3_OF_3_PASS")
