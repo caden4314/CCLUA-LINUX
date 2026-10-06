@@ -20,6 +20,8 @@ return function(ctx)
   local segmentPrefetch=math.max(2,math.min(10,tonumber(machine.theater_segment_prefetch) or 8))
   local initialBufferSegments=math.max(2,math.min(segmentPrefetch,
     tonumber(machine.theater_initial_buffer_segments) or 6))
+  local segmentRequestTimeoutMs=math.max(750,math.min(5000,
+    tonumber(machine.theater_segment_request_timeout_ms) or 1500))
 
   local scenes={
     house={label="HOUSE",level=100},
@@ -1105,9 +1107,10 @@ return function(ctx)
     end
 
     local colorRequest=s.rgb24 and "rgb24" or "adaptive16x4"
+    local attempt=tonumber(s.segment_retries[index]) or 0
     local url=ORIGIN.."/v1/movies/"..tostring(s.movie.id).."/av.segment"..
-      ("?start=%.3f&seconds=%.3f&cols=%d&rows=%d&fps=%.3f&color=%s&session=%d&seq=%d"):format(
-        start,s.segment_seconds,s.video_cols,s.video_rows,fps,colorRequest,s.token,index)
+      ("?start=%.3f&seconds=%.3f&cols=%d&rows=%d&fps=%.3f&color=%s&session=%d&seq=%d&attempt=%d"):format(
+        start,s.segment_seconds,s.video_cols,s.video_rows,fps,colorRequest,s.token,index,attempt)
 
     local ok,err=http.request{
       url=url,
@@ -1144,6 +1147,29 @@ return function(ctx)
         return
       end
     end
+  end
+
+  local function check_segment_timeout(s)
+    if not s or not s.active or not s.segment_inflight then return false end
+    local req=s.segment_inflight
+    local age=now_ms()-(tonumber(req.requested_at) or now_ms())
+    if age<segmentRequestTimeoutMs then return false end
+
+    if http and type(http.cancel)=="function" then pcall(http.cancel,req.url) end
+    s.segment_inflight=nil
+    s.segment_requested[req.index]=nil
+    s.segment_retries[req.index]=(s.segment_retries[req.index] or 0)+1
+    s.av_last_error=("segment %d request timed out after %d ms"):format(req.index,age)
+    ctx.kernel.log.write("warning","theaterd","segment request watchdog retry",{
+      index=req.index,age_ms=age,retry=s.segment_retries[req.index]
+    },ctx.process.pid)
+
+    if s.segment_retries[req.index]<=6 then
+      ensure_segment_prefetch(s)
+    elseif os.queueEvent then
+      os.queueEvent("cclua_theater_stream_error",s.token,"av",s.av_last_error)
+    end
+    return true
   end
 
   local function accept_segment_response(s,url,h)
@@ -1804,6 +1830,7 @@ return function(ctx)
         end
       end
       if session and session.active then
+        check_segment_timeout(session)
         local avp=session.av_pid and ctx.kernel.process.get(session.av_pid) or nil
         local buffered=0
         for _ in pairs(session.segments or {}) do buffered=buffered+1 end
@@ -1891,6 +1918,10 @@ return function(ctx)
             os.queueEvent("cclua_theater_stream_error",session.token,"av",tostring(err))
           end
         end
+      elseif url:find("/av.segment",1,true) and b and b.close then
+        -- A timed-out request may finish after its retry has already moved on.
+        -- Close stale response handles immediately so they cannot leak buffers.
+        pcall(b.close)
       end
 
     elseif ev=="http_failure" then

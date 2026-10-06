@@ -6,6 +6,8 @@ local function usage()
   print("  driverctl show <device>")
   print("  driverctl caps")
   print("  driverctl find <capability>")
+  print("  driverctl registry")
+  print("  driverctl plugins")
   print("  driverctl native")
 end
 
@@ -48,6 +50,21 @@ return {main=function(ctx,args)
     local found=drivers.find(cap)
     if #found==0 then print("No provider for "..cap);return 1 end
     for _,d in ipairs(found) do print(d.name.."  "..d.driver) end
+    return 0
+  elseif op=="registry" then
+    for _,d in ipairs(drivers.registry()) do
+      print(("%-18s %-20s %-12s %s"):format(
+        d.type,d.driver,d.class,tostring(d.source or "builtin")))
+      for _,cap in ipairs(d.capabilities or {}) do print("  "..cap) end
+    end
+    return 0
+  elseif op=="plugins" then
+    local rows=drivers.plugins()
+    if #rows==0 then print("(no external driver modules)");return 0 end
+    for _,p in ipairs(rows) do
+      local status=p.error and ("ERROR "..p.error) or (tostring(p.loaded).." type(s)")
+      print(("%-28s %s"):format(p.file,status))
+    end
     return 0
   elseif op=="native" then
     local n=drivers.native()

@@ -38,10 +38,47 @@ local descriptors={
   },
 }
 
-local function clone(list)
+local pluginsLoaded=false
+local pluginFiles={}
+local DRIVER_DIR="/usr/lib/cclua/drivers.d"
+
+local function copy_list(list)
   local out={}
   for i,v in ipairs(list or {}) do out[i]=v end
   return out
+end
+
+local function load_plugins()
+  if pluginsLoaded then return end
+  pluginsLoaded=true
+  if type(fs)~="table" or type(fs.exists)~="function"
+    or type(fs.list)~="function" or not fs.exists(DRIVER_DIR) then return end
+
+  for _,file in ipairs(fs.list(DRIVER_DIR)) do
+    if file:match("%.lua$") then
+      local path=DRIVER_DIR.."/"..file
+      local ok,mod=pcall(dofile,path)
+      if ok and type(mod)=="table" then
+        local entries=type(mod.types)=="table" and mod.types or mod
+        local loaded=0
+        for kind,desc in pairs(entries) do
+          if type(kind)=="string" and type(desc)=="table"
+            and type(desc.driver)=="string" then
+            descriptors[kind]={
+              driver=desc.driver,
+              class=tostring(desc.class or "peripheral"),
+              capabilities=copy_list(desc.capabilities),
+              source=file,
+            }
+            loaded=loaded+1
+          end
+        end
+        pluginFiles[#pluginFiles+1]={file=file,loaded=loaded,error=nil}
+      else
+        pluginFiles[#pluginFiles+1]={file=file,loaded=0,error=tostring(mod)}
+      end
+    end
+  end
 end
 
 local function sorted_keys(map)
@@ -58,6 +95,7 @@ local function peripheral_names()
 end
 
 local function types_for(name)
+  load_plugins()
   local out={}
   if type(peripheral)~="table" then return out end
   if peripheral.getType then
@@ -87,6 +125,7 @@ local function methods_for(name)
 end
 
 local function capabilities_for(types,methods)
+  load_plugins()
   local caps={}
   local seen={}
   local driver=nil
@@ -133,12 +172,36 @@ function M.describe(name)
 end
 
 function M.scan()
+  load_plugins()
   local out={}
   for _,name in ipairs(peripheral_names()) do
     local d=M.describe(name)
     if d then out[#out+1]=d end
   end
   table.sort(out,function(a,b)return a.name<b.name end)
+  return out
+end
+
+function M.registry()
+  load_plugins()
+  local out={}
+  for kind,desc in pairs(descriptors) do
+    out[#out+1]={
+      type=kind,driver=desc.driver,class=desc.class or "peripheral",
+      capabilities=copy_list(desc.capabilities),
+      source=desc.source or "builtin",
+    }
+  end
+  table.sort(out,function(a,b)return a.type<b.type end)
+  return out
+end
+
+function M.plugins()
+  load_plugins()
+  local out={}
+  for i,item in ipairs(pluginFiles) do
+    out[i]={file=item.file,loaded=item.loaded,error=item.error}
+  end
   return out
 end
 

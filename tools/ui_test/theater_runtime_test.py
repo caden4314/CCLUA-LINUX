@@ -411,7 +411,8 @@ assert(processes[child_order[1]].state=="sleeping","player should wait for first
 kind=drive("http_failure",firstUrl,"Could not connect",nil)
 assert(kind=="wait_event")
 local retryUrl=latest_segment_url(0)
-assert(retryUrl==firstUrl,"segment 0 retry URL changed unexpectedly")
+assert(retryUrl~=firstUrl,"segment 0 retry URL should carry a new attempt id")
+assert(retryUrl:find("attempt=1",1,true),"segment 0 retry attempt id missing")
 
 kind=drive("http_success",retryUrl,make_segment_handle(4),nil)
 assert(kind=="wait_event")
