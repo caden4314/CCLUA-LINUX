@@ -31,6 +31,7 @@ return {main=function(ctx,args)
     if not d then print(err);return 1 end
     print("Device: "..d.name)
     print("Driver: "..d.driver.." v"..tostring(d.driver_version))
+    print("Source: "..tostring(d.source or "builtin"))
     print("Class:  "..d.class)
     print("Types:  "..join(d.types))
     print("Capabilities:")

@@ -130,11 +130,13 @@ local function capabilities_for(types,methods)
   local seen={}
   local driver=nil
   local class=nil
+  local source="builtin"
   for _,kind in ipairs(types or {}) do
     local d=descriptors[kind]
     if d then
       driver=driver or d.driver
       class=class or d.class
+      if d.source then source=d.source end
       for _,cap in ipairs(d.capabilities or {}) do
         if not seen[cap] then seen[cap]=true;caps[#caps+1]=cap end
       end
@@ -151,7 +153,7 @@ local function capabilities_for(types,methods)
     if not seen["audio.stream"] then seen["audio.stream"]=true;caps[#caps+1]="audio.stream" end
   end
   table.sort(caps)
-  return driver or "cc.peripheral",class or "peripheral",caps
+  return driver or "cc.peripheral",class or "peripheral",caps,source
 end
 
 function M.describe(name)
@@ -164,10 +166,11 @@ function M.describe(name)
 
   local types=types_for(name)
   local methods=methods_for(name)
-  local driver,class,caps=capabilities_for(types,methods)
+  local driver,class,caps,source=capabilities_for(types,methods)
   return {
     schema=1,name=name,driver=driver,driver_version=DRIVER_VERSION,
     class=class,types=types,methods=methods,capabilities=caps,
+    source=source,
   }
 end
 

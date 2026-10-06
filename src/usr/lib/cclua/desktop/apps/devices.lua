@@ -72,8 +72,8 @@ function M.draw(ctx,st,ui,x,y,w,h)
         local caps=table.concat(desc.capabilities or {},", ")
         ui.text(x+1,base+1,Theme.fit("Capabilities: "..caps,math.max(1,w-2)),
           colors.lightGray,colors.black)
-        ui.text(x+1,base+2,Theme.fit(("Methods: %d  Types: %s"):format(
-          #(desc.methods or {}),table.concat(desc.types or {},", ")),math.max(1,w-2)),
+        ui.text(x+1,base+2,Theme.fit(("Methods: %d  Types: %s  Source: %s"):format(
+          #(desc.methods or {}),table.concat(desc.types or {},", "),tostring(desc.source or "builtin")),math.max(1,w-2)),
           colors.gray,colors.black)
       end
     end
