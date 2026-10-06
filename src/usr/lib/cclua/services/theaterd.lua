@@ -609,10 +609,14 @@ return function(ctx)
       spread<=96 and colors.lime or spread<=480 and colors.yellow or colors.red)
     line(mon,6,("QUEUE SPREAD  %d   PROC %d"):format(
       tonumber(status.queue_spread) or 0,tonumber(status.processed_spread) or 0),colors.lightGray)
-    line(mon,7,("SERVO ACTIVE  %d source(s)"):format(tonumber(status.adjusted_sources) or 0),colors.cyan)
-    line(mon,8,("CORRECTIONS   %d"):format(tonumber(status.servo_corrections) or 0),colors.cyan)
+    line(mon,7,("DIRECT PLAY   %2d/%2d"):format(playing,sources),
+      playing==sources and sources>0 and colors.lime or colors.yellow)
+    line(mon,8,("COMMON QUEUE  spread %d"):format(tonumber(status.queue_spread) or 0),
+      (tonumber(status.queue_spread) or 0)==0 and colors.lime or colors.yellow)
     line(mon,9,("UNDERRUNS     %d"):format(tonumber(status.underruns) or 0),colors.orange)
-    line(mon,10,("NATURAL RESUME %d"):format(tonumber(status.natural_restarts) or 0),colors.orange)
+    line(mon,10,("TELEMETRY AGE %d ms"):format(
+      tonumber(status.telemetry_age_ms) or -1),
+      (tonumber(status.telemetry_age_ms) or 9999)<1000 and colors.cyan or colors.yellow)
     if session and session.active then
       local mediaMs=math.max(0,(current_position()-(session.start_position or 0))*1000)
       line(mon,12,("MEDIA CLOCK   %9.1f ms"):format(mediaMs),colors.white)
