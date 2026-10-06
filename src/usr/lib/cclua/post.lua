@@ -403,6 +403,22 @@ local function checks_for(ctx,machine)
     end)
   end
 
+  if machine.role=="theater-controller" then
+    add("theater-av","Theater audio/video",false,function()
+      local av=dofile("/usr/lib/cclua/theater_selftest.lua")
+      local report=av.run(ctx,{post=true})
+      if report.state=="FAILED" then
+        local details={}
+        for _,r in ipairs(report.checks or {}) do
+          if r.state=="FAIL" then details[#details+1]=r.id..": "..tostring(r.detail) end
+        end
+        return "WARN",table.concat(details,"; ")
+      end
+      if report.state=="DEGRADED" then return "WARN","A/V self-test degraded" end
+      return true,"RGB video + 22-speaker PCM passed"
+    end)
+  end
+
   add("display","POST display",false,function()
     local targets=monitor_targets(machine)
     if #targets==0 then
