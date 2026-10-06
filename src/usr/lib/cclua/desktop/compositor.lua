@@ -83,6 +83,7 @@ function M.run(ctx)
   local overviewCards={}
   local systemMenu=false
   local systemMenuBox=nil
+  local notification=nil
   local ctrl,alt=false,false
   local restoring=true
   local updateCache={}
@@ -413,6 +414,39 @@ function M.run(ctx)
     systemMenuBox={x1=x1,x2=x2,y1=y1,y2=y2,reloadY=y2-1}
   end
 
+  local function draw_notification()
+    if not notification then return end
+    local now=os.epoch and os.epoch("utc") or 0
+    if notification.expires_at and now>=notification.expires_at then
+      notification=nil
+      return
+    end
+
+    local title=tostring(notification.title or notification.app or "Notification")
+    local message=tostring(notification.message or "")
+    local level=tostring(notification.level or "info")
+    local width=math.min(math.max(24,#title+4,math.min(46,#message+4)),math.max(16,W-6))
+    local x2=W-1
+    local x1=math.max(4,x2-width+1)
+    local y1=3
+    local y2=math.min(H-1,y1+3)
+    local accent=level=="error" and colors.red
+      or level=="warning" and colors.yellow
+      or level=="success" and colors.lime
+      or colors.orange
+
+    ui.fill(x1,y1,x2,y2,colors.black,colors.white)
+    ui.fill(x1,y1,x2,y1,colors.gray,colors.white)
+    ui.text(x1+1,y1,Theme.fit(title,math.max(1,width-2)),accent,colors.gray)
+    if y1+1<=y2 then
+      ui.text(x1+1,y1+1,Theme.fit(message,math.max(1,width-2)),colors.white,colors.black)
+    end
+    if y1+2<=y2 then
+      ui.text(x1+1,y1+2,Theme.fit(tostring(notification.app or "CCLUA"),math.max(1,width-2)),
+        colors.gray,colors.black)
+    end
+  end
+
   local function draw_window(win,isActive)
     local spec=APP[win.app]
     local displayTitle=win.title
@@ -479,6 +513,7 @@ function M.run(ctx)
     end
 
     if systemMenu then draw_system_menu() else systemMenuBox=nil end
+    draw_notification()
 
     Canvas.flush(canvas,term.current(),force)
     apply_cursor()
@@ -534,12 +569,22 @@ function M.run(ctx)
     local ev,a,b,c=coroutine.yield("wait_event",{
       "mouse_click","mouse_drag","mouse_up","mouse_scroll",
       "key","key_up","char","paste","term_resize","timer","terminate",
-      "cclua_pty_output","cclua_process_exit"
+      "cclua_pty_output","cclua_process_exit","cclua_notification"
     })
 
     if ev=="terminate" then
       save_session()
       return 0
+
+    elseif ev=="cclua_notification" and type(a)=="table" then
+      notification={
+        app=tostring(a.app or "CCLUA"),
+        title=tostring(a.title or a.app or "Notification"),
+        message=tostring(a.message or ""),
+        level=tostring(a.level or "info"),
+        expires_at=(os.epoch and os.epoch("utc") or 0)+5000,
+      }
+      render(false)
 
     elseif ev=="term_resize" then
       W,H=term.getSize()
@@ -565,7 +610,13 @@ function M.run(ctx)
         return 75
       end
       clockTimer=os.startTimer(1)
-      render_panel_only()
+      if notification and notification.expires_at
+        and (os.epoch and os.epoch("utc") or 0)>=notification.expires_at then
+        notification=nil
+        render(false)
+      else
+        render_panel_only()
+      end
 
     elseif ev=="key" then
       if a==keys.leftCtrl or a==keys.rightCtrl then ctrl=true end

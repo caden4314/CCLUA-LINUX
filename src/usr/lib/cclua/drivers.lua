@@ -40,7 +40,10 @@ local descriptors={
 
 local pluginsLoaded=false
 local pluginFiles={}
-local DRIVER_DIR="/usr/lib/cclua/drivers.d"
+local DRIVER_DIRS={
+  {path="/usr/lib/cclua/drivers.d",source="vendor"},
+  {path="/etc/cclua/drivers.d",source="local"},
+}
 
 local function copy_list(list)
   local out={}
@@ -52,30 +55,38 @@ local function load_plugins()
   if pluginsLoaded then return end
   pluginsLoaded=true
   if type(fs)~="table" or type(fs.exists)~="function"
-    or type(fs.list)~="function" or not fs.exists(DRIVER_DIR) then return end
+    or type(fs.list)~="function" then return end
 
-  for _,file in ipairs(fs.list(DRIVER_DIR)) do
-    if file:match("%.lua$") then
-      local path=DRIVER_DIR.."/"..file
-      local ok,mod=pcall(dofile,path)
-      if ok and type(mod)=="table" then
-        local entries=type(mod.types)=="table" and mod.types or mod
-        local loaded=0
-        for kind,desc in pairs(entries) do
-          if type(kind)=="string" and type(desc)=="table"
-            and type(desc.driver)=="string" then
-            descriptors[kind]={
-              driver=desc.driver,
-              class=tostring(desc.class or "peripheral"),
-              capabilities=copy_list(desc.capabilities),
-              source=file,
+  for _,dir in ipairs(DRIVER_DIRS) do
+    if fs.exists(dir.path) and fs.isDir(dir.path) then
+      for _,file in ipairs(fs.list(dir.path)) do
+        if file:match("%.lua$") then
+          local path=dir.path.."/"..file
+          local ok,mod=pcall(dofile,path)
+          if ok and type(mod)=="table" then
+            local entries=type(mod.types)=="table" and mod.types or mod
+            local loaded=0
+            for kind,desc in pairs(entries) do
+              if type(kind)=="string" and type(desc)=="table"
+                and type(desc.driver)=="string" then
+                descriptors[kind]={
+                  driver=desc.driver,
+                  class=tostring(desc.class or "peripheral"),
+                  capabilities=copy_list(desc.capabilities),
+                  source=dir.source..":"..file,
+                }
+                loaded=loaded+1
+              end
+            end
+            pluginFiles[#pluginFiles+1]={
+              file=file,path=path,source=dir.source,loaded=loaded,error=nil
             }
-            loaded=loaded+1
+          else
+            pluginFiles[#pluginFiles+1]={
+              file=file,path=path,source=dir.source,loaded=0,error=tostring(mod)
+            }
           end
         end
-        pluginFiles[#pluginFiles+1]={file=file,loaded=loaded,error=nil}
-      else
-        pluginFiles[#pluginFiles+1]={file=file,loaded=0,error=tostring(mod)}
       end
     end
   end
