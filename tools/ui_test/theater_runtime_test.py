@@ -399,7 +399,7 @@ end
 
 local firstUrl=latest_segment_url(0)
 assert(firstUrl,"segment 0 request missing")
-assert(firstUrl:find("seconds=0.500",1,true))
+assert(firstUrl:find("seconds=1.000",1,true))
 assert(firstUrl:find("cols=223",1,true))
 assert(firstUrl:find("rows=73",1,true))
 assert(firstUrl:find("fps=20.000",1,true))
@@ -423,7 +423,7 @@ assert(secondUrl,"segment 1 was not prefetched")
 mock_now=mock_now+20
 run_children_once()
 assert(processes[child_order[1]].state=="sleeping","player should wait for startup prebuffer")
-assert(#speaker_calls==0,"audio started before the six-segment buffer was ready")
+assert(#speaker_calls==0,"audio started before the four-segment buffer was ready")
 
 for seq=1,5 do
   local url=latest_segment_url(seq)
@@ -478,8 +478,8 @@ assert(saved_state.streams.av.speaker_submit_ok==22)
 assert(saved_state.streams.av.speaker_submit_failed==0)
 assert(saved_state.streams.av.speaker_submit_total==22)
 assert(saved_state.streams.av.speaker_output_volume==3.0)
-assert(saved_state.streams.av.initial_buffer_segments==6)
-assert(saved_state.streams.av.prefetch_segments==8)
+assert(saved_state.streams.av.initial_buffer_segments==4)
+assert(saved_state.streams.av.prefetch_segments==6)
 assert(saved_state.streams.av.inflight_index==6)
 assert(saved_state.streams.av.buffered_segments>=5,
   "startup playback cushion was not retained")

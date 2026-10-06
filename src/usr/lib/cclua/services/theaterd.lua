@@ -14,14 +14,18 @@ return function(ctx)
   local targetCols=tonumber(machine.theater_video_cols) or 0
   local targetRows=tonumber(machine.theater_video_rows) or 0
   local speakerOutputVolume=math.max(0.1,math.min(3.0,tonumber(machine.theater_speaker_output_volume) or 3.0))
-  local segmentSeconds=math.max(0.25,math.min(2,tonumber(machine.theater_segment_seconds) or 0.5))
-  -- RGB24 transport runs close to real time at full-wall resolution. Keep a
-  -- few seconds buffered so normal HTTP/FFmpeg jitter never reaches playback.
-  local segmentPrefetch=math.max(2,math.min(10,tonumber(machine.theater_segment_prefetch) or 8))
+  -- One-second segments cut HTTP/event churn in half versus the previous
+  -- 500 ms transport while keeping each RGB24 response bounded (~5.9 MiB at
+  -- the full 223x73 wall). The receiver yields every 128 KiB, so this no
+  -- longer blocks the cooperative scheduler like the old readAll path did.
+  local segmentSeconds=math.max(0.25,math.min(2,tonumber(machine.theater_segment_seconds) or 1.0))
+  -- Maintain roughly six seconds of lookahead. Fewer, larger requests are
+  -- substantially less likely to lose an http_success transition under load.
+  local segmentPrefetch=math.max(2,math.min(10,tonumber(machine.theater_segment_prefetch) or 6))
   local initialBufferSegments=math.max(2,math.min(segmentPrefetch,
-    tonumber(machine.theater_initial_buffer_segments) or 6))
-  local segmentRequestTimeoutMs=math.max(750,math.min(5000,
-    tonumber(machine.theater_segment_request_timeout_ms) or 1500))
+    tonumber(machine.theater_initial_buffer_segments) or 4))
+  local segmentRequestTimeoutMs=math.max(1000,math.min(6000,
+    tonumber(machine.theater_segment_request_timeout_ms) or 2500))
 
   local scenes={
     house={label="HOUSE",level=100},
