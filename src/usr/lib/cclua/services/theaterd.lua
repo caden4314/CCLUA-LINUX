@@ -1406,6 +1406,21 @@ return function(ctx)
     elseif op=="stop" then return stop_movie(true)
     elseif op=="seek" then return seek_movie(payload.delta)
     elseif op=="volume" then return set_volume(payload)
+    elseif op=="sound_test" then
+      if session and session.active then return nil,"stop movie before audio diagnostic" end
+      local speakers=room_speakers()
+      local target=tonumber(payload.index)
+      local accepted,errors=0,{}
+      for i,sp in ipairs(speakers) do
+        if not target or target==i then
+          pcall(sp.obj.stop)
+          local ok,res=pcall(sp.obj.playSound,payload.sound or "minecraft:block.note_block.pling",payload.volume or 1,payload.pitch or 1)
+          if ok and res then accepted=accepted+1 else errors[sp.name]=ok and "busy" or tostring(res) end
+        end
+      end
+      state.sound_diag={started=os.epoch("utc"),selected=target and 1 or #speakers,accepted=accepted,errors=errors}
+      save_state()
+      return accepted>0
     elseif op=="audio_test" then
       if session and session.active then return nil,"stop movie before audio diagnostic" end
       local speakers=room_speakers()
