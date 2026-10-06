@@ -1181,26 +1181,31 @@ return function(ctx)
 
               local target=segmentTarget+(packet/fps)*1000
 
-              -- Maintain a real 250 ms audio lead. OpenAL streaming sources
-              -- cannot survive ordinary network/scheduler jitter if PCM is
-              -- submitted at the same instant its matching video is due.
-              -- Queue this packet plus the next four 50 ms epochs before
-              -- waiting for the current frame's presentation timestamp.
+              -- CC:Tweaked's speaker has a single streaming buffer and small
+              -- playAudio calls can stutter or halt before the client stream
+              -- establishes. Coalesce about one second of frame PCM into one
+              -- common 22-speaker epoch. Video still presents frame-by-frame;
+              -- only the speaker submission granularity is enlarged.
               local leadEnd=math.min(seg.packets-1,packet+4)
               while audioQueuedPacket<leadEnd do
-                local aq=audioQueuedPacket+1
-                local aqOffset=1+aq*(seg.frame_bytes+seg.audio_bytes)
-                local audioStart=aqOffset+seg.frame_bytes
-                local audioEnd=audioStart+seg.audio_bytes-1
-                local audioRaw=seg.raw:sub(audioStart,audioEnd)
-                if #audioRaw~=seg.audio_bytes then
-                  error(("audio packet %d has %d bytes; expected %d"):format(
-                    aq,#audioRaw,seg.audio_bytes),0)
+                local groupStart=audioQueuedPacket+1
+                local groupEnd=math.min(seg.packets-1,groupStart+19)
+                local audio={}
+                for aq=groupStart,groupEnd do
+                  local aqOffset=1+aq*(seg.frame_bytes+seg.audio_bytes)
+                  local audioStart=aqOffset+seg.frame_bytes
+                  local audioEnd=audioStart+seg.audio_bytes-1
+                  local audioRaw=seg.raw:sub(audioStart,audioEnd)
+                  if #audioRaw~=seg.audio_bytes then
+                    error(("audio packet %d has %d bytes; expected %d"):format(
+                      aq,#audioRaw,seg.audio_bytes),0)
+                  end
+                  local decoded=pcm_decode(audioRaw,s.volume)
+                  for i=1,#decoded do audio[#audio+1]=decoded[i] end
                 end
-                local audio=pcm_decode(audioRaw,s.volume)
                 local epochId,enqueueErr=theaterAudio.enqueue(audioEngine,audio,#audio)
                 if not epochId then error(tostring(enqueueErr),0) end
-                audioQueuedPacket=aq
+                audioQueuedPacket=groupEnd
               end
               local audioStatus=theaterAudio.status(audioEngine)
               s.audio_queue_depth=audioStatus.queue_depth
