@@ -5,6 +5,7 @@ local protocol="cclua-apphost-v1"
 local function usage()
   print("Usage:")
   print("  cclua-appctl status|list")
+  print("  cclua-appctl info <app>")
   print("  cclua-appctl start <app>")
   print("  cclua-appctl stop <app>")
   print("  cclua-appctl restart <app>")
@@ -22,12 +23,29 @@ local function print_state(state)
   if #apps==0 then print("(no apps installed)") end
   for _,a in ipairs(apps) do
     local version=a.version and (" version="..tostring(a.version)) or ""
-    print(("  %-24s %-8s pid=%s%s"):format(a.name or "-",a.state or "-",a.pid or "-",version))
+    local compat=a.compatible==false and " incompatible" or ""
+    print(("  %-24s %-8s pid=%s%s%s"):format(
+      a.name or "-",a.state or "-",a.pid or "-",version,compat))
   end
   for _,d in ipairs(state.deployments or {}) do
     print(("  [deploying] %-16s %s/%s files  %s/%s bytes"):format(
       d.app or "-",d.files or 0,d.expected_files or 0,d.bytes or 0,d.expected_bytes or 0
     ))
+  end
+end
+
+local function print_app(app)
+  if type(app)~="table" then return end
+  print("App: "..tostring(app.name or "-"))
+  print("State: "..tostring(app.state or "-").."  PID: "..tostring(app.pid or "-"))
+  print("Version: "..tostring(app.version or "-"))
+  print("Entrypoint: "..tostring(app.entrypoint or "app.lua"))
+  print("Description: "..tostring(app.description or "-"))
+  print("Roles: "..table.concat(app.roles or {},", "))
+  print("Requires: "..(#(app.requires or {})>0 and table.concat(app.requires,", ") or "(none)"))
+  print("Compatible: "..tostring(app.compatible~=false))
+  if #(app.missing_capabilities or {})>0 then
+    print("Missing: "..table.concat(app.missing_capabilities,", "))
   end
 end
 
@@ -89,12 +107,30 @@ local function deploy(target,app,source,autostart)
   if not files then return nil,err end
   if #files==0 then return nil,"source directory is empty" end
 
-  local hasMain=false
-  for _,f in ipairs(files) do if f.path=="app.lua" then hasMain=true end end
-  if not hasMain then return nil,"source is missing app.lua" end
+  local manifest=nil
+  local manifestPath=host(source.."/app.json")
+  if fs.exists(manifestPath) and not fs.isDir(manifestPath) then
+    local h=fs.open(manifestPath,"r")
+    local raw=h and h.readAll() or nil
+    if h then h.close() end
+    local ok,data=pcall(textutils.unserializeJSON,raw or "")
+    if not ok or type(data)~="table" then return nil,"invalid app.json manifest" end
+    manifest=data
+    if manifest.name and tostring(manifest.name)~=app then
+      return nil,"app.json name does not match deployment name"
+    end
+  end
+
+  local entry=tostring(manifest and manifest.entrypoint or "app.lua"):gsub("\\","/")
+  if entry:sub(1,1)=="/" or entry:find("..",1,true) then
+    return nil,"invalid manifest entrypoint"
+  end
+  local hasEntry=false
+  for _,f in ipairs(files) do if f.path==entry then hasEntry=true;break end end
+  if not hasEntry then return nil,"source is missing entrypoint "..entry end
 
   local bytes=total_bytes(files)
-  local version=tostring(os.epoch and os.epoch("utc") or 0)
+  local version=tostring(manifest and manifest.version or (os.epoch and os.epoch("utc") or 0))
 
   local begin,begErr=rpc(target,{
     protocol=protocol,op="deploy_begin",app=app,
@@ -180,7 +216,7 @@ return {main=function(ctx,args)
   local msg={protocol=protocol,op=cmd}
 
   if cmd=="start" or cmd=="stop" or cmd=="restart"
-    or cmd=="rollback" or cmd=="remove" then
+    or cmd=="rollback" or cmd=="remove" or cmd=="info" then
     if not args[2] then usage();return 1 end
     msg.app=args[2]
   elseif cmd~="status" and cmd~="list" then
@@ -189,6 +225,6 @@ return {main=function(ctx,args)
 
   local res,err=rpc(target,msg,5)
   if not res then print("Command failed: "..tostring(err));return 1 end
-  print_state(res.state)
+  if cmd=="info" then print_app(res.app) else print_state(res.state) end
   return 0
 end}

@@ -1,6 +1,7 @@
 return function(ctx)
   local config=dofile("/usr/lib/cclua/config.lua")
   local net=dofile("/usr/lib/cclua/net.lua")
+  local drivers=dofile("/usr/lib/cclua/drivers.lua")
   local machine=config.machine()
   local protocol="cclua-apphost-v1"
   local managerProtocol="cclua-manager-v1"
@@ -54,6 +55,69 @@ return function(ctx)
     return config.write_json(path,value)
   end
 
+  local function role_class()
+    local image=tostring(machine.image or "")
+    if machine.role=="desktop-client" or image:find("desktop",1,true) then return "desktop" end
+    return "server"
+  end
+
+  local function manifest_for(name,base)
+    base=base or app_root(name)
+    local manifest=read_json(base.."/app.json",nil)
+    if type(manifest)~="table" then
+      manifest={
+        schema=1,name=name,entrypoint="app.lua",
+        description="Legacy CCLUA application",roles={"server","desktop"},
+        requires={},
+      }
+    end
+    manifest.name=tostring(manifest.name or name)
+    manifest.entrypoint=safe_rel(manifest.entrypoint or "app.lua") or "app.lua"
+    manifest.roles=type(manifest.roles)=="table" and manifest.roles or {"server","desktop"}
+    manifest.requires=type(manifest.requires)=="table" and manifest.requires or {}
+    return manifest
+  end
+
+  local function role_allowed(manifest)
+    local class=role_class()
+    for _,r in ipairs(manifest.roles or {}) do
+      r=tostring(r)
+      if r=="*" or r==class or r==tostring(machine.role) then return true end
+    end
+    return false
+  end
+
+  local function missing_capabilities(manifest)
+    local caps=drivers.capabilities()
+    local have={}
+    for _,cap in ipairs(caps or {}) do have[cap]=true end
+    local missing={}
+    for _,cap in ipairs(manifest.requires or {}) do
+      cap=tostring(cap)
+      if not have[cap] then missing[#missing+1]=cap end
+    end
+    table.sort(missing)
+    return missing
+  end
+
+  local function validate_manifest(name,base)
+    local manifest=manifest_for(name,base)
+    if manifest.name~=name then return nil,"manifest name does not match deployment name" end
+    if not role_allowed(manifest) then
+      return nil,("application does not support role %s (%s)"):format(
+        tostring(machine.role),role_class())
+    end
+    local entry=host((base or app_root(name)).."/"..manifest.entrypoint)
+    if not fs.exists(entry) or fs.isDir(entry) then
+      return nil,"manifest entrypoint missing: "..manifest.entrypoint
+    end
+    local missing=missing_capabilities(manifest)
+    if #missing>0 then
+      return nil,"missing capabilities: "..table.concat(missing,", ")
+    end
+    return manifest
+  end
+
   local function dir_stats(path)
     path=host(path)
     local files,bytes=0,0
@@ -80,20 +144,31 @@ return function(ctx)
     ensure(root)
     local out={}
     for _,name in ipairs(fs.list(host(root))) do
-      local path=app_path(name)
-      if fs.isDir(fs.combine(host(root),name)) and fs.exists(host(path)) then
-        local pid=running[name]
-        local proc=pid and ctx.kernel.process.get(pid) or nil
-        if not proc or proc.state=="exited" or proc.state=="killed" or proc.state=="crashed" then
-          running[name]=nil
-          pid=nil
+      local base=app_root(name)
+      if fs.isDir(host(base)) then
+        local manifest=manifest_for(name,base)
+        local entry=host(base.."/"..manifest.entrypoint)
+        if fs.exists(entry) and not fs.isDir(entry) then
+          local pid=running[name]
+          local proc=pid and ctx.kernel.process.get(pid) or nil
+          if not proc or proc.state=="exited" or proc.state=="killed" or proc.state=="crashed" then
+            running[name]=nil
+            pid=nil
+          end
+          local meta=deployment_meta(name)
+          local missing=missing_capabilities(manifest)
+          local compatible=role_allowed(manifest) and #missing==0
+          out[#out+1]={
+            name=name,pid=pid,state=pid and "running" or "stopped",
+            version=manifest.version or meta.version,
+            description=manifest.description,
+            entrypoint=manifest.entrypoint,
+            roles=manifest.roles,requires=manifest.requires,
+            compatible=compatible,missing_capabilities=missing,
+            commit=meta.commit,deployed_at=meta.deployed_at,
+            files=meta.files,bytes=meta.bytes
+          }
         end
-        local meta=deployment_meta(name)
-        out[#out+1]={
-          name=name,pid=pid,state=pid and "running" or "stopped",
-          version=meta.version,commit=meta.commit,deployed_at=meta.deployed_at,
-          files=meta.files,bytes=meta.bytes
-        }
       end
     end
     table.sort(out,function(a,b)return a.name<b.name end)
@@ -136,8 +211,9 @@ return function(ctx)
       running[name]=nil
     end
 
-    local path=app_path(name)
-    if not fs.exists(host(path)) then return nil,"app not installed: "..name end
+    local manifest,manifestErr=validate_manifest(name,app_root(name))
+    if not manifest then return nil,manifestErr or ("app not installed: "..name) end
+    local path=app_root(name).."/"..manifest.entrypoint
 
     local proc,err=ctx.kernel.process.create{
       ppid=ctx.process.pid,
@@ -157,10 +233,14 @@ return function(ctx)
         return 1
       end
       local okRun,res
+      local appCtx={
+        kernel=ctx.kernel,process=proc,app=name,
+        manifest=manifest,drivers=drivers,
+      }
       if type(mod)=="table" and type(mod.main)=="function" then
-        okRun,res=pcall(mod.main,{kernel=ctx.kernel,process=proc,app=name},{})
+        okRun,res=pcall(mod.main,appCtx,{})
       elseif type(mod)=="function" then
-        okRun,res=pcall(mod,{kernel=ctx.kernel,process=proc,app=name})
+        okRun,res=pcall(mod,appCtx)
       else
         okRun,res=true,0
       end
@@ -297,7 +377,8 @@ return function(ctx)
     end
 
     local stage=host(stage_root(name))
-    if not fs.exists(fs.combine(stage,"app.lua")) then return nil,"deployment missing app.lua" end
+    local manifest,manifestErr=validate_manifest(name,stage_root(name))
+    if not manifest then return nil,"manifest validation failed: "..tostring(manifestErr) end
 
     stop_app(name)
     local target=host(app_root(name))
@@ -310,7 +391,9 @@ return function(ctx)
     fs.move(stage,target)
 
     local meta={
-      schema=1,app=name,version=d.version,commit=d.commit,
+      schema=2,app=name,version=manifest.version or d.version,commit=d.commit,
+      entrypoint=manifest.entrypoint,roles=manifest.roles,requires=manifest.requires,
+      description=manifest.description,
       files=d.receivedFiles,bytes=d.receivedBytes,
       deployed_at=os.epoch and os.epoch("utc") or 0,
       deployed_by=managerId
@@ -319,7 +402,7 @@ return function(ctx)
 
     deployments[name]=nil
     local pid=nil
-    if d.autostart then
+    if d.autostart or manifest.autostart==true then
       local ok,res=start_app(name)
       if not ok then
         ctx.kernel.log.write("error","apphostd","deployment committed but autostart failed",{app=name,error=res},ctx.process.pid)
@@ -397,6 +480,24 @@ return function(ctx)
 
     if msg.op=="status" or msg.op=="list" then
       reply(sender,{protocol=protocol,op=msg.op,ok=true,state=state()})
+      return
+    end
+
+    if msg.op=="info" then
+      local wanted=safe_app(msg.app)
+      if not wanted then
+        reply(sender,{protocol=protocol,op=msg.op,ok=false,error="invalid app name"})
+        return
+      end
+      local found=nil
+      for _,app in ipairs(list_apps()) do
+        if app.name==wanted then found=app;break end
+      end
+      if not found then
+        reply(sender,{protocol=protocol,op=msg.op,ok=false,error="app not installed"})
+      else
+        reply(sender,{protocol=protocol,op=msg.op,ok=true,app=found,state=state()})
+      end
       return
     end
 

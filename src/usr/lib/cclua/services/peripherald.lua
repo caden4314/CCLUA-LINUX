@@ -1,5 +1,7 @@
 return function(ctx)
   local kernel=ctx.kernel
+  local config=dofile("/usr/lib/cclua/config.lua")
+  local drivers=dofile("/usr/lib/cclua/drivers.lua")
 
   local function device_count()
     local n=0
@@ -10,6 +12,16 @@ return function(ctx)
   local function refresh(reason,count,lastName)
     kernel.device.scan(kernel)
     kernel.device.snapshot()
+    local devices=drivers.scan()
+    local caps,providers=drivers.capabilities()
+    config.write_json("/var/lib/cclua/drivers.json",{
+      schema=1,timestamp=os.epoch and os.epoch("utc") or 0,
+      devices=devices,native=drivers.native(),
+      capabilities=caps,providers=providers,
+    })
+    if os.queueEvent then
+      os.queueEvent("cclua_driver_changed",reason or "refresh",lastName)
+    end
     kernel.log.write("info","peripherald","peripheral inventory refreshed",{
       reason=reason or "event-batch",
       batched_events=count or 0,
@@ -18,9 +30,8 @@ return function(ctx)
     },ctx.process.pid)
   end
 
-  kernel.device.scan(kernel)
-  kernel.device.snapshot()
-  kernel.log.write("info","peripherald","initial peripheral inventory complete",{
+  refresh("startup",0,nil)
+  kernel.log.write("info","peripherald","initial driver inventory complete",{
     count=device_count()
   },ctx.process.pid)
 
