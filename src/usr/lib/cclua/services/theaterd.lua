@@ -2,6 +2,7 @@ return function(ctx)
   local config=dofile("/usr/lib/cclua/config.lua")
   local monitorLayout=dofile("/usr/lib/cclua/monitor_layout.lua")
   local theaterAudio=dofile("/usr/lib/cclua/services/theater_audio.lua")
+  local theaterAudioDiag=dofile("/usr/lib/cclua/services/theater_audio_diag.lua")
   local machine=config.machine()
 
   local STATE_PATH="/var/lib/cclua/theater-state.json"
@@ -1405,6 +1406,19 @@ return function(ctx)
     elseif op=="stop" then return stop_movie(true)
     elseif op=="seek" then return seek_movie(payload.delta)
     elseif op=="volume" then return set_volume(payload)
+    elseif op=="audio_test" then
+      if session and session.active then return nil,"stop movie before audio diagnostic" end
+      local speakers=room_speakers()
+      local result,err=theaterAudioDiag.start(ctx,state,speakers,{
+        index=payload.index,frequency=payload.frequency or 880,
+        seconds=payload.seconds or 1.0,level=payload.level or 36,
+        volume=payload.volume or speakerOutputVolume,
+      },function(r)
+        state.audio_diag=r
+        save_state()
+      end)
+      if not result then return nil,err end
+      state.audio_diag=result;save_state();return true
     elseif op=="select" then
       state.selected_index=math.max(1,math.min(math.max(1,#catalog),tonumber(payload.index) or state.selected_index or 1))
       save_state();render_all();return true
