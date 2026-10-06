@@ -53,4 +53,32 @@ function M.epoch_ms()
   return os.epoch and os.epoch("utc") or math.floor(os.clock()*1000)
 end
 
+function M.crc32(data)
+  local p=api()
+  if not p or type(p.crc32)~="function" then return nil,"native crc32 unavailable" end
+  local ok,value=pcall(p.crc32,tostring(data or ""))
+  return ok and value or nil,ok and nil or tostring(value)
+end
+
+function M.sha256(data)
+  local p=api()
+  if not p or type(p.sha256)~="function" then return nil,"native sha256 unavailable" end
+  local ok,value=pcall(p.sha256,tostring(data or ""))
+  return ok and value or nil,ok and nil or tostring(value)
+end
+
+function M.deflate(data,level)
+  local p=api()
+  if not p or type(p.deflate)~="function" then return nil,"native deflate unavailable" end
+  local ok,value=pcall(p.deflate,tostring(data or ""),math.floor(tonumber(level) or 6))
+  return ok and value or nil,ok and nil or tostring(value)
+end
+
+function M.inflate(data,max_bytes)
+  local p=api()
+  if not p or type(p.inflate)~="function" then return nil,"native inflate unavailable" end
+  local ok,value=pcall(p.inflate,data,math.floor(tonumber(max_bytes) or 8388608))
+  return ok and value or nil,ok and nil or tostring(value)
+end
+
 return M

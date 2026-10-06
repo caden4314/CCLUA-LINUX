@@ -259,6 +259,22 @@ local function checks_for(ctx,machine)
       checked_at=now(),
     })
     if not available then return true,"stock CC:Tweaked fallback" end
+
+    if caps.native_crc32 and caps.native_sha256 and caps.native_deflate then
+      local crc,crcErr=native.crc32("123456789")
+      if crc~=3421780262 then return "WARN","native CRC32 self-test failed: "..tostring(crcErr or crc) end
+      local sha,shaErr=native.sha256("abc")
+      if sha~="ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad" then
+        return "WARN","native SHA-256 self-test failed: "..tostring(shaErr or sha)
+      end
+      local packed,packErr=native.deflate("CCLUA native codec self-test",6)
+      if not packed then return "WARN","native deflate failed: "..tostring(packErr) end
+      local unpacked,unpackErr=native.inflate(packed,1024)
+      if unpacked~="CCLUA native codec self-test" then
+        return "WARN","native inflate failed: "..tostring(unpackErr or "round-trip mismatch")
+      end
+    end
+
     return true,("CCPerf %s API %s / %s timer"):format(
       tostring(version or "?"),tostring(caps.api or "?"),
       caps.native_timer and "native" or "stock")
