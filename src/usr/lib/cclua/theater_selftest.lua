@@ -26,6 +26,19 @@ local function main_monitor(machine)
   return name,obj
 end
 
+local function analyze_signal(samples)
+  local peak,sumSq,sum,zc=0,0,0,0
+  local prev=samples[1] or 0
+  for i,v in ipairs(samples) do
+    local a=math.abs(v);if a>peak then peak=a end
+    sumSq=sumSq+v*v;sum=sum+v
+    if i>1 and (v>=0)~=(prev>=0) then zc=zc+1 end
+    prev=v
+  end
+  local n=math.max(1,#samples)
+  return {peak=peak,rms=math.sqrt(sumSq/n),dc=sum/n,zero_crossings=zc}
+end
+
 local function audio_test(ctx,machine)
   local list=speakers()
   if #list~=22 then return result("audio","FAIL",("expected 22 speakers, found %d"):format(#list)) end
@@ -51,10 +64,22 @@ local function audio_test(ctx,machine)
   end
   local st=theaterAudio.status(engine)
   theaterAudio.stop(ctx,engine)
+  local signal=analyze_signal(block)
+  st.signal=signal
+  st.sync_model={
+    same_epoch=true,same_pcm=true,samples=#block,sample_rate=48000,
+    duration_ms=#block/48,maximum_submission_skew_ms=0,
+  }
+  st.loudness={
+    digital_peak=signal.peak,digital_rms=signal.rms,
+    headroom_db=signal.peak>0 and 20*math.log(127/signal.peak,10) or 99,
+    note="digital loudness only; acoustic SPL requires captured client output or microphone",
+  }
   if st.committed_epoch~=epoch then
     return result("audio","FAIL",("22-speaker commit timeout; pending=%d"):format(st.head_pending or -1),st)
   end
-  return result("audio","PASS","22/22 accepted deterministic 48 kHz PCM epoch",st)
+  return result("audio","PASS",
+    ("22/22 synchronized PCM; RMS %.1f peak %d"):format(signal.rms,signal.peak),st)
 end
 
 local function video_test(machine)
@@ -72,22 +97,30 @@ local function video_test(machine)
     return result("video","FAIL","RGB888 framebuffer capability invalid")
   end
 
-  local fw,fh=math.max(32,math.min(w*2,192)),math.max(18,math.min(h*3,108))
+  -- Exercise the full physical wall: CCPerf maps every terminal cell to a 2x3
+  -- RGB pixel tile, so 223x73 is commissioned as 446x219 native RGB pixels.
+  local fw,fh=w*2,h*3
   local bytes={}
   for y=0,fh-1 do for x=0,fw-1 do
-    bytes[#bytes+1]=string.char(
-      math.floor(x*255/math.max(1,fw-1)),
-      math.floor(y*255/math.max(1,fh-1)),
-      ((math.floor(x/12)+math.floor(y/12))%2)*255)
+    local border=x==0 or y==0 or x==fw-1 or y==fh-1
+    local cross=x==math.floor(fw/2) or y==math.floor(fh/2)
+    local grid=(x%16==0) or (y%16==0)
+    local r,g,b=math.floor(x*255/math.max(1,fw-1)),math.floor(y*255/math.max(1,fh-1)),0
+    if border then r,g,b=255,255,255
+    elseif cross then r,g,b=255,0,255
+    elseif grid then r,g,b=0,255,255
+    else b=((math.floor(x/8)+math.floor(y/8))%2)*96 end
+    bytes[#bytes+1]=string.char(r,g,b)
   end end
   local frame=table.concat(bytes)
   local okFrame,frameErr=pcall(function()
     mon.framebufferCreate(fw,fh)
     mon.framebufferSubmit(frame)
   end)
-  if not okFrame then return result("video","FAIL","RGB frame submit: "..tostring(frameErr)) end
-  return result("video","PASS",("%s RGB888 %dx%d frame submitted (%d bytes)"):format(name,fw,fh,#frame),
-    {monitor=name,width=fw,height=fh,bytes=#frame,format=info.format})
+  if not okFrame then return result("video","FAIL","full-wall RGB pixel test: "..tostring(frameErr)) end
+  return result("video","PASS",("%s full-wall RGB888 %dx%d pixel/grid test (%d bytes)"):format(name,fw,fh,#frame),
+    {monitor=name,cells={w,h},width=fw,height=fh,bytes=#frame,format=info.format,
+     tests={"native-resolution","border","center-cross","16px-grid","gradient","checker"}})
 end
 
 function M.run(ctx,opts)
@@ -97,6 +130,16 @@ function M.run(ctx,opts)
   local checks={}
   checks[#checks+1]=video_test(machine)
   checks[#checks+1]=audio_test(ctx,machine)
+  local map=config.read_json("/etc/cclua/theater-speakers.json",{})
+  local mapped=0
+  for _,section in ipairs(map.sections or {}) do mapped=mapped+#(section.members or {}) end
+  if mapped==22 then
+    checks[#checks+1]=result("speaker-map","PASS","22/22 speakers assigned to physical sections",map.sections)
+  else
+    checks[#checks+1]=result("speaker-map","WARN",
+      ("physical section map incomplete: %d/22 assigned; EQ recommendations not auto-applied"):format(mapped),
+      map.sections)
+  end
 
   local pass,warn,fail=0,0,0
   for _,r in ipairs(checks) do

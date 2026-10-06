@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "expected": 22,
+  "status": "needs-positive-identification",
+  "sections": [
+    {"id":"top_center","label":"Top Center","members":[],"eq":{"low_db":-1.5,"mid_db":1.0,"high_db":0.5}},
+    {"id":"top_center_lr","label":"Top Center R/L","members":[],"eq":{"low_db":-1.0,"mid_db":0.5,"high_db":0.5}},
+    {"id":"top_lr","label":"Top R/L","members":[],"eq":{"low_db":0.0,"mid_db":0.0,"high_db":0.5}},
+    {"id":"bottom_center","label":"Bottom Center","members":[],"eq":{"low_db":1.5,"mid_db":0.5,"high_db":-0.5}},
+    {"id":"bottom_lr","label":"Bottom R/L","members":[],"eq":{"low_db":1.0,"mid_db":0.0,"high_db":-0.5}},
+    {"id":"bottom_center_lr","label":"Bottom Center R/L","members":[],"optional":true,"eq":{"low_db":1.0,"mid_db":0.0,"high_db":-0.5}},
+    {"id":"left_top_bottom","label":"Left Top/Bottom","members":[],"eq":{"low_db":0.0,"mid_db":0.0,"high_db":0.0}},
+    {"id":"right_top_bottom","label":"Right Top/Bottom","members":[],"eq":{"low_db":0.0,"mid_db":0.0,"high_db":0.0}}
+  ]
+}
