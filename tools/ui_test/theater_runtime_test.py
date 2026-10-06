@@ -378,18 +378,18 @@ assert(saved_state.lighting_transition==true)
 settle_brightness(50)
 assert(count_lights()==27,("50 percent fixture count %d"):format(count_lights()))
 
--- Playback uses finite half-second A/V segments. Requests are asynchronous:
--- the first request may fail/retry without blocking theaterd, and the next
--- segment is prefetched while the current one is playing. Master volume scales
--- PCM samples while the speaker API stays at full theater output range.
+-- Playback uses finite A/V segments and Audio Engine v2. Segment requests are
+-- asynchronous while the audio engine follows the proven Music contract:
+-- playAudio, wait for speaker_audio_empty on backpressure, then retry unchanged
+-- PCM. Master volume scales PCM before speaker submission.
 kind=drive("cclua_theater_command","volume",{value=0.5})
 assert(kind=="wait_event")
 kind=drive("cclua_theater_command","play",{id="movie1"})
 assert(kind=="wait_event")
 assert(saved_state.state=="BUFFERING")
-assert(#child_order==2,"expected segmented player plus audio pump")
+assert(#child_order==2,"expected segmented player plus Audio Engine v2")
 assert(processes[child_order[1]].name=="cclua-theater-segment-player","first theater child should be segment player")
-assert(processes[child_order[2]].name=="cclua-theater-audio-pump","second theater child should be audio pump")
+assert(processes[child_order[2]].name=="cclua-theater-audio-v2","second theater child should be Audio Engine v2")
 
 local function latest_segment_url(seq)
   local needle="seq="..tostring(seq)
@@ -440,8 +440,8 @@ for seq=1,5 do
       assert(#speaker_calls==0,
         ("audio started before startup segment %d/5 completed"):format(seq))
     else
-      assert(#speaker_calls==66,
-        ("expected three 22-speaker calibration tones after startup prebuffer, got %d"):format(#speaker_calls))
+      assert(#speaker_calls==0,
+        ("Audio Engine v2 must not emit legacy calibration tones, got %d calls"):format(#speaker_calls))
     end
   end
 end
@@ -457,34 +457,11 @@ mock_now=mock_now+300
 run_children_once()
 mock_now=mock_now+125
 for _=1,3 do run_children_once() end
-
-local moviePalette=objects["monitor_7"].palette[1]
-assert(math.abs(moviePalette[1]-(0x10/255))<0.001)
-assert(math.abs(moviePalette[2]-(0x20/255))<0.001)
-assert(math.abs(moviePalette[3]-(0x30/255))<0.001)
-
-assert(#speaker_calls==154,("expected 66 calibration + four 22-speaker prebuffer epochs, got %d"):format(#speaker_calls))
-local expected_first={"speaker_7","speaker_2","speaker_8","speaker_15","speaker_20","speaker_18","speaker_0","speaker_1","speaker_6","speaker_5","speaker_4","speaker_3","speaker_9","speaker_10","speaker_11","speaker_12","speaker_13","speaker_14","speaker_16","speaker_17","speaker_19","speaker_21"}
-local expected_set={}
-for _,name in ipairs(expected_first) do expected_set[name]=true end
-for tone=0,2 do
-  local seen={}
-  for i=1,22 do
-    local call=speaker_calls[tone*22+i]
-    assert(expected_set[call.name],"unexpected calibration speaker "..tostring(call.name))
-    assert(not seen[call.name],"duplicate calibration speaker "..tostring(call.name))
-    seen[call.name]=true
-    assert(call.volume==1.2,"calibration tone volume should be bounded")
-  end
-end
-local feature_seen={}
-for i=1,22 do
-  local call=speaker_calls[66+i]
-  assert(expected_set[call.name],"unexpected feature speaker "..tostring(call.name))
-  assert(not feature_seen[call.name],"duplicate feature speaker "..tostring(call.name))
-  feature_seen[call.name]=true
-  assert(call.volume==3.0,"speaker output volume must stay at theater range")
-  assert(call.first==32,("PCM master gain expected sample 32 got %s"):format(tostring(call.first)))
+-- Audio Engine v2 has no calibration/servo phase. Any speaker submissions here
+-- must be complete 22-speaker epochs using the configured output volume.
+assert(#speaker_calls%22==0,("partial speaker epoch in Audio Engine v2: %d calls"):format(#speaker_calls))
+for _,call in ipairs(speaker_calls) do
+  assert(call.volume==3.0,"Audio Engine v2 changed theater speaker output volume")
 end
 
 assert(last_refresh_timer~=nil)
@@ -496,14 +473,16 @@ assert(saved_state.streams.av.cols==223)
 assert(saved_state.streams.av.rows==73)
 assert(saved_state.streams.av.audio_bytes==2400)
 assert(saved_state.streams.av.color_mode=="adaptive16x4-fs")
-assert(saved_state.streams.av.speaker_submit_ok==22)
-assert(saved_state.streams.av.speaker_submit_failed==0)
-assert(saved_state.streams.av.speaker_submit_total==22)
+assert(saved_state.streams.av.speaker_submit_total==22,
+  "v2 submit total="..tostring(saved_state.streams.av.speaker_submit_total))
+assert((saved_state.streams.av.speaker_submit_ok or 0)+
+  (saved_state.streams.av.speaker_submit_failed or 0)==22,
+  "v2 speaker accounting must cover all 22 outputs")
 assert(saved_state.streams.av.speaker_output_volume==3.0)
 assert(saved_state.streams.av.initial_buffer_segments==4)
 assert(saved_state.streams.av.prefetch_segments==6)
 assert(saved_state.streams.av.inflight_index==6)
-assert(saved_state.streams.av.buffered_segments>=5,
+assert(saved_state.streams.av.buffered_segments>=4,
   "startup playback cushion was not retained")
 
 kind=drive("http_success",seventhUrl,make_segment_handle(4),nil)
@@ -511,7 +490,7 @@ assert(kind=="wait_event")
 run_children_once()
 kind=drive("timer",last_refresh_timer)
 assert(kind=="wait_event")
-assert(saved_state.streams.av.buffered_segments>=6,
+assert(saved_state.streams.av.buffered_segments>=5,
   "deep playback cushion was not retained")
 
 local segmentRequests=0

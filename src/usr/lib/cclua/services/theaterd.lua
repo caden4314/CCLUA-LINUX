@@ -1,6 +1,7 @@
 return function(ctx)
   local config=dofile("/usr/lib/cclua/config.lua")
   local monitorLayout=dofile("/usr/lib/cclua/monitor_layout.lua")
+  local theaterAudio=dofile("/usr/lib/cclua/services/theater_audio.lua")
   local machine=config.machine()
 
   local STATE_PATH="/var/lib/cclua/theater-state.json"
@@ -586,50 +587,25 @@ return function(ctx)
     local mon=wrap_monitor(syncName)
     if not mon then return end
     local w,h=mon.getSize()
-    local status={active=false}
-    if ccperf and type(ccperf.theaterAudioStatus)=="function" then
-      local ok,value=pcall(ccperf.theaterAudioStatus)
-      if ok and type(value)=="table" then status=value end
-    end
-    local spread=tonumber(status.spread_samples) or 0
-    local spreadMs=tonumber(status.spread_ms) or 0
-    local playing=tonumber(status.playing) or 0
-    local sources=tonumber(status.sources) or expectedRoomSpeakers
-    local lock=(status.active and playing==sources and spread<=96)
-    local stateLabel=not status.active and "WAITING"
-      or lock and "LOCKED"
-      or playing<sources and "RECOVERING"
-      or "DRIFT"
+    local a=session and theaterAudio.status(session.audio_engine) or {active=false}
     mon.setBackgroundColor(colors.black);mon.clear()
-    line(mon,1," CCLUA CINEMA // A/V SYNC",colors.white,colors.blue)
-    line(mon,3,("SYNC %-10s  SOURCES %2d/%2d"):format(stateLabel,playing,sources),
-      lock and colors.lime or status.active and colors.yellow or colors.gray)
-    line(mon,4,("AUDIO EPOCH   %d"):format(tonumber(status.epoch) or 0),colors.white)
-    line(mon,5,("SAMPLE SPREAD %d  (%.3f ms)"):format(spread,spreadMs),
-      spread<=96 and colors.lime or spread<=480 and colors.yellow or colors.red)
-    line(mon,6,("QUEUE SPREAD  %d   PROC %d"):format(
-      tonumber(status.queue_spread) or 0,tonumber(status.processed_spread) or 0),colors.lightGray)
-    line(mon,7,("DIRECT PLAY   %2d/%2d"):format(playing,sources),
-      playing==sources and sources>0 and colors.lime or colors.yellow)
-    line(mon,8,("COMMON QUEUE  spread %d"):format(tonumber(status.queue_spread) or 0),
-      (tonumber(status.queue_spread) or 0)==0 and colors.lime or colors.yellow)
-    line(mon,9,("UNDERRUNS     %d"):format(tonumber(status.underruns) or 0),colors.orange)
-    line(mon,10,("TELEMETRY AGE %d ms"):format(
-      tonumber(status.telemetry_age_ms) or -1),
-      (tonumber(status.telemetry_age_ms) or 9999)<1000 and colors.cyan or colors.yellow)
+    line(mon,1," CCLUA CINEMA // AUDIO V2",colors.white,colors.blue)
+    line(mon,3,a.active and "ENGINE         PLAYING" or "ENGINE         IDLE",
+      a.active and colors.lime or colors.gray)
+    line(mon,4,("SPEAKERS       %d"):format(tonumber(a.speakers) or 0),colors.white)
+    line(mon,5,("COMMITTED      %d"):format(tonumber(a.committed_epoch) or 0),colors.white)
+    line(mon,6,("QUEUE DEPTH    %d"):format(tonumber(a.queue_depth) or 0),colors.lightGray)
+    line(mon,7,("HEAD PENDING   %d"):format(tonumber(a.head_pending) or 0),
+      (tonumber(a.head_pending) or 0)==0 and colors.lime or colors.yellow)
     if session and session.active then
-      local mediaMs=math.max(0,(current_position()-(session.start_position or 0))*1000)
-      line(mon,12,("MEDIA CLOCK   %9.1f ms"):format(mediaMs),colors.white)
-      line(mon,13,("VIDEO FRAME   %d @ %d FPS"):format(
+      line(mon,9,("VIDEO FRAME    %d @ %d FPS"):format(
         tonumber(session.presented_frames) or 0,fps),colors.white)
-      line(mon,14,("VIDEO DROPS   %d"):format(tonumber(session.dropped_frames) or 0),
+      line(mon,10,("VIDEO DROPS    %d"):format(tonumber(session.dropped_frames) or 0),
         (tonumber(session.dropped_frames) or 0)>0 and colors.yellow or colors.lime)
-      line(mon,15,("BUFFER        %s"):format(tostring(session.av_stage or "starting")),colors.lightGray)
-      line(mon,16,("AUDIO BACKLOG %d epoch(s)"):format(tonumber(session.audio_queue_depth) or 0),
-        (tonumber(session.audio_queue_depth) or 0)>3 and colors.red or colors.lime)
-      line(mon,17,("COMMITTED     %d"):format(tonumber(session.audio_committed_epoch) or 0),colors.lightGray)
+      line(mon,11,("BUFFER         %s"):format(tostring(session.av_stage or "starting")),colors.lightGray)
     end
-    line(mon,h,"Live servo: no manual speaker restarts",colors.gray)
+    if a.error then line(mon,13,"ERROR "..fit(tostring(a.error),math.max(1,w-7)),colors.red) end
+    line(mon,h,"Music-compatible speaker transport",colors.gray)
   end
 
   local function render_main_idle()
@@ -708,31 +684,6 @@ return function(ctx)
     return out
   end
 
-  local function startup_sync_tones(speakers,s)
-    local frequencies={523.25,659.25,783.99}
-    for toneIndex,freq in ipairs(frequencies) do
-      if not s.active then return false end
-      s.av_stage=("sync tone %d/%d"):format(toneIndex,#frequencies)
-      local audio={}
-      for i=1,2400 do
-        local envelope=math.min(1,i/160,(2401-i)/160)
-        audio[i]=math.floor(math.sin((i-1)*2*math.pi*freq/48000)*28*envelope)
-      end
-      local pending={}
-      for _,sp in ipairs(speakers) do pending[#pending+1]=sp end
-      while s.active and #pending>0 do
-        for i=#pending,1,-1 do
-          local sp=pending[i]
-          local okPlay,accepted=pcall(sp.obj.playAudio,audio,math.min(1.2,speakerOutputVolume))
-          if okPlay and accepted then table.remove(pending,i) end
-        end
-        if #pending>0 then coroutine.yield("sleep",now_ms()+8) end
-      end
-    end
-    s.av_stage="sync lock"
-    return s.active
-  end
-
   local function stop_process(pid)
     if not pid then return end
     local proc=ctx.kernel.process.get(pid)
@@ -745,9 +696,9 @@ return function(ctx)
   local function stop_session(keepPosition)
     if not session then return end
     if keepPosition then state.position=current_position() end
+    theaterAudio.stop(ctx,session.audio_engine)
     session.active=false
     stop_process(session.av_pid)
-    stop_process(session.audio_pid)
     stop_process(session.video_pid)
     for pid in pairs(session.segment_receivers or {}) do stop_process(pid) end
     for _,s in ipairs(room_speakers()) do pcall(s.obj.stop) end
@@ -775,368 +726,6 @@ return function(ctx)
     return nil,lastErr or "Could not connect"
   end
 
-  local function wait_sync(s,kind)
-    if not s.active then return false end
-    s[kind.."_ready"]=true
-    s[kind.."_stage"]="ready"
-    s[kind.."_ready_at"]=now_ms()
-
-    -- The audio/video workers share the same session table. Use that as the
-    -- synchronization barrier instead of depending on custom queued events,
-    -- which may be consumed by another coroutine while native HTTP APIs yield.
-    local waitStarted=now_ms()
-    while s.active and not (s.audio_ready and s.video_ready) do
-      if now_ms()-waitStarted>15000 then
-        error(kind.." stream sync timed out waiting for peer",0)
-      end
-      coroutine.yield("sleep",now_ms()+25)
-    end
-    if not s.active then return false end
-
-    if not s.start_epoch then
-      s.start_epoch=now_ms()+250
-      s.go=true
-    end
-    while s.active and now_ms()<(s.start_epoch or 0) do
-      coroutine.yield("sleep",math.min(s.start_epoch,now_ms()+25))
-    end
-    s[kind.."_stage"]="playing"
-    return s.active
-  end
-
-  local function spawn_audio(s,movie)
-    local speakers=room_speakers()
-    if #speakers==0 then return nil,"no theater speakers present" end
-
-    local parent=ctx.process
-    local proc,err=ctx.kernel.process.create{
-      ppid=parent.pid,name="cclua-theater-audio",
-      uid=parent.uid,gid=parent.gid,groups=parent.groups,
-      cwd=parent.cwd,capabilities=parent.capabilities,
-      argv={"theater-audio",tostring(movie.id)},
-    }
-    if not proc then return nil,err end
-    s.audio_pid=proc.pid
-
-    ctx.kernel.scheduler:add(proc,function()
-      local ok,runErr=pcall(function()
-        local url=ORIGIN..tostring(movie.audio_url or "")..
-          "?start="..("%.3f"):format(s.start_position or 0)
-        local h,httpErr=open_stream(s,"audio",url,{
-          ["Accept"]="application/octet-stream",
-          ["User-Agent"]="CCLUA-Theater/0.1",
-        })
-        if not h then error(tostring(httpErr or "audio stream unavailable"),0) end
-        local code=h.getResponseCode and h.getResponseCode() or 200
-        if tonumber(code)~=200 then h.close();error("audio HTTP "..tostring(code),0) end
-
-        if not wait_sync(s,"audio") then h.close();return end
-
-        while s.active do
-          local raw=h.read(32*1024)
-          if not raw then break end
-          local audio=pcm_decode(raw,s.volume)
-          local pending={}
-          for _,sp in ipairs(speakers) do pending[#pending+1]=sp end
-
-          while s.active and #pending>0 do
-            for i=#pending,1,-1 do
-              local sp=pending[i]
-              local okPlay,accepted=pcall(sp.obj.playAudio,audio,speakerOutputVolume)
-              if not okPlay then
-                ctx.kernel.log.write("warning","theaterd","speaker playback failed",
-                  {speaker=sp.name,error=tostring(accepted)},proc.pid)
-                table.remove(pending,i)
-              elseif accepted then
-                table.remove(pending,i)
-              end
-            end
-            if #pending>0 then
-              local ev=coroutine.yield("wait_event",{"speaker_audio_empty","terminate"})
-              if ev=="terminate" then h.close();return end
-            end
-          end
-        end
-        h.close()
-      end)
-      if not ok then
-        ctx.kernel.log.write("error","theaterd","audio stream failed",{error=tostring(runErr)},proc.pid)
-        if os.queueEvent then os.queueEvent("cclua_theater_stream_error",s.token,"audio",tostring(runErr)) end
-        return 1
-      end
-      if s.active and os.queueEvent then os.queueEvent("cclua_theater_stream_end",s.token,"audio") end
-      return 0
-    end)
-    return true
-  end
-
-  local function spawn_video(s,movie)
-    local mon=wrap_monitor(mainName)
-    if not mon then return nil,"main theater monitor missing" end
-    local mw,mh=mon.getSize()
-    -- Maximum quality mode uses every logical cell exposed by the wall. FFmpeg
-    -- preserves the source aspect ratio and letterboxes inside this canvas.
-    local cols=(targetCols and targetCols>0) and math.min(targetCols,mw) or mw
-    local rows=(targetRows and targetRows>0) and math.min(targetRows,mh) or mh
-    cols=math.max(1,math.floor(cols))
-    rows=math.max(1,math.floor(rows))
-    if cols<32 or rows<12 then return nil,"main monitor is too small" end
-    s.video_cols=cols;s.video_rows=rows
-
-    local parent=ctx.process
-    local proc,err=ctx.kernel.process.create{
-      ppid=parent.pid,name="cclua-theater-video",
-      uid=parent.uid,gid=parent.gid,groups=parent.groups,
-      cwd=parent.cwd,capabilities=parent.capabilities,
-      argv={"theater-video",tostring(movie.id)},
-    }
-    if not proc then return nil,err end
-    s.video_pid=proc.pid
-
-    ctx.kernel.scheduler:add(proc,function()
-      local ok,runErr=pcall(function()
-        local url=ORIGIN..tostring(movie.video_url or "")..
-          ("?start=%.3f&cols=%d&rows=%d&fps=%.3f"):format(
-            s.start_position or 0,cols,rows,fps)
-        local h,httpErr=open_stream(s,"video",url,{
-          ["Accept"]="application/octet-stream",
-          ["User-Agent"]="CCLUA-Theater/0.1",
-        })
-        if not h then error(tostring(httpErr or "video stream unavailable"),0) end
-        local code=h.getResponseCode and h.getResponseCode() or 200
-        if tonumber(code)~=200 then h.close();error("video HTTP "..tostring(code),0) end
-
-        local rowBytes=cols*3
-        local frameBytes=rowBytes*rows
-
-        -- Validate the bridge's negotiated geometry before reading a single
-        -- frame. A stale bridge once clamped 167 columns to 160, which shifted
-        -- every frame boundary and left playback stuck in BUFFERING.
-        if h.getResponseHeaders then
-          local headers=h.getResponseHeaders() or {}
-          local function header(name)
-            local wanted=tostring(name):lower()
-            for k,v in pairs(headers) do
-              if tostring(k):lower()==wanted then return tostring(v) end
-            end
-            return nil
-          end
-          local gotCols=tonumber(header("X-CCLUA-Cols"))
-          local gotRows=tonumber(header("X-CCLUA-Rows"))
-          local gotBytes=tonumber(header("X-CCLUA-Frame-Bytes"))
-          if gotCols and gotCols~=cols then
-            h.close();error(("video geometry mismatch: bridge cols=%d client cols=%d"):format(gotCols,cols),0)
-          end
-          if gotRows and gotRows~=rows then
-            h.close();error(("video geometry mismatch: bridge rows=%d client rows=%d"):format(gotRows,rows),0)
-          end
-          if gotBytes and gotBytes~=frameBytes then
-            h.close();error(("video frame mismatch: bridge bytes=%d client bytes=%d"):format(gotBytes,frameBytes),0)
-          end
-        end
-
-        if not wait_sync(s,"video") then h.close();return end
-
-        mon.setBackgroundColor(colors.black);mon.setTextColor(colors.white);mon.clear()
-        local ox=math.floor((mw-cols)/2)+1
-        local oy=math.floor((mh-rows)/2)+1
-        local frame=0
-        while s.active do
-          local raw=read_exact(h,frameBytes)
-          if not raw then break end
-          frame=frame+1
-          local target=(s.start_epoch or now_ms())+((frame-1)/fps)*1000
-          local late=now_ms()-target
-
-          if late<120 then
-            if late<0 then coroutine.yield("sleep",math.floor(target)) end
-            local off=1
-            for row=0,rows-1 do
-              local chars=raw:sub(off,off+cols-1);off=off+cols
-              local fg=raw:sub(off,off+cols-1);off=off+cols
-              local bg=raw:sub(off,off+cols-1);off=off+cols
-              mon.setCursorPos(ox,oy+row)
-              mon.blit(chars,fg,bg)
-            end
-          else
-            s.dropped_frames=(s.dropped_frames or 0)+1
-          end
-        end
-        h.close()
-      end)
-      if not ok then
-        ctx.kernel.log.write("error","theaterd","video stream failed",{error=tostring(runErr)},proc.pid)
-        if os.queueEvent then os.queueEvent("cclua_theater_stream_error",s.token,"video",tostring(runErr)) end
-        return 1
-      end
-      if s.active and os.queueEvent then os.queueEvent("cclua_theater_stream_end",s.token,"video") end
-      return 0
-    end)
-    return true
-  end
-  local function spawn_av(s,movie)
-    local mon=wrap_monitor(mainName)
-    if not mon then return nil,"main theater monitor missing" end
-    local speakers=room_speakers()
-    if #speakers==0 then return nil,"no theater speakers present" end
-
-    local mw,mh=mon.getSize()
-    local cols=(targetCols and targetCols>0) and math.min(targetCols,mw) or mw
-    local rows=(targetRows and targetRows>0) and math.min(targetRows,mh) or mh
-    cols=math.max(1,math.floor(cols))
-    rows=math.max(1,math.floor(rows))
-    if cols<32 or rows<12 then return nil,"main monitor is too small" end
-
-    s.video_cols=cols
-    s.video_rows=rows
-
-    local parent=ctx.process
-    local proc,err=ctx.kernel.process.create{
-      ppid=parent.pid,name="cclua-theater-av",
-      uid=parent.uid,gid=parent.gid,groups=parent.groups,
-      cwd=parent.cwd,capabilities=parent.capabilities,
-      argv={"theater-av",tostring(movie.id)},
-    }
-    if not proc then return nil,err end
-    s.av_pid=proc.pid
-
-    ctx.kernel.scheduler:add(proc,function()
-      local ok,runErr=pcall(function()
-        local url=ORIGIN.."/v1/movies/"..tostring(movie.id).."/av.stream"..
-          ("?start=%.3f&cols=%d&rows=%d&fps=%.3f"):format(
-            s.start_position or 0,cols,rows,fps)
-
-        local h,httpErr=open_stream(s,"av",url,{
-          ["Accept"]="application/octet-stream",
-          ["User-Agent"]="CCLUA-Theater/0.2",
-        })
-        if not h then error(tostring(httpErr or "A/V stream unavailable"),0) end
-
-        local code=h.getResponseCode and h.getResponseCode() or 200
-        if tonumber(code)~=200 then h.close();error("A/V HTTP "..tostring(code),0) end
-
-        local headers=h.getResponseHeaders and h.getResponseHeaders() or {}
-        local function header(name)
-          local wanted=tostring(name):lower()
-          for k,v in pairs(headers) do
-            if tostring(k):lower()==wanted then return tostring(v) end
-          end
-          return nil
-        end
-
-        local format=header("X-CCLUA-Format")
-        local gotCols=tonumber(header("X-CCLUA-Cols")) or cols
-        local gotRows=tonumber(header("X-CCLUA-Rows")) or rows
-        local gotFps=tonumber(header("X-CCLUA-FPS")) or fps
-        local frameBytes=tonumber(header("X-CCLUA-Frame-Bytes")) or (cols*rows*3)
-        local audioBytes=tonumber(header("X-CCLUA-Audio-Bytes")) or math.floor(48000/fps+0.5)
-        local sampleRate=tonumber(header("X-CCLUA-Sample-Rate")) or 48000
-
-        if format and format~="av-blit-pcm-v1" then
-          h.close();error("unsupported A/V stream format: "..tostring(format),0)
-        end
-        if gotCols~=cols or gotRows~=rows then
-          h.close();error(("A/V geometry mismatch: bridge=%dx%d client=%dx%d"):format(
-            gotCols,gotRows,cols,rows),0)
-        end
-        if frameBytes~=cols*rows*3 then
-          h.close();error(("A/V frame mismatch: bridge bytes=%d client bytes=%d"):format(
-            frameBytes,cols*rows*3),0)
-        end
-        if math.abs(gotFps-fps)>0.01 then
-          h.close();error(("A/V FPS mismatch: bridge=%.3f client=%.3f"):format(gotFps,fps),0)
-        end
-        if sampleRate~=48000 or audioBytes<1 then
-          h.close();error("unsupported A/V audio geometry",0)
-        end
-
-        s.audio_bytes=audioBytes
-        s.av_stage="prebuffering"
-
-        -- Do not declare playback ready until one complete synchronized packet
-        -- has arrived. This prevents an HTTP connection with no payload from
-        -- leaving the theater in a permanent BUFFERING state.
-        local videoRaw=read_exact(h,frameBytes)
-        local audioRaw=read_exact(h,audioBytes)
-        if not videoRaw or not audioRaw then
-          h.close();error("A/V stream ended during prebuffer",0)
-        end
-
-        s.av_ready=true
-        s.av_stage="ready"
-        s.start_epoch=now_ms()+250
-        s.go=true
-
-        mon.setBackgroundColor(colors.black)
-        mon.setTextColor(colors.white)
-        mon.clear()
-        local ox=math.floor((mw-cols)/2)+1
-        local oy=math.floor((mh-rows)/2)+1
-        local frame=0
-
-        local function present(video,audioRaw)
-          frame=frame+1
-          local target=(s.start_epoch or now_ms())+((frame-1)/fps)*1000
-          if now_ms()<target then coroutine.yield("sleep",math.floor(target)) end
-          local late=now_ms()-target
-
-          if late<120 then
-            local off=1
-            for row=0,rows-1 do
-              local chars=video:sub(off,off+cols-1);off=off+cols
-              local fg=video:sub(off,off+cols-1);off=off+cols
-              local bg=video:sub(off,off+cols-1);off=off+cols
-              mon.setCursorPos(ox,oy+row)
-              mon.blit(chars,fg,bg)
-            end
-          else
-            s.dropped_frames=(s.dropped_frames or 0)+1
-          end
-
-          local audio=pcm_decode(audioRaw,s.volume)
-          local pending={}
-          for _,sp in ipairs(speakers) do pending[#pending+1]=sp end
-          while s.active and #pending>0 do
-            for i=#pending,1,-1 do
-              local sp=pending[i]
-              local okPlay,accepted=pcall(sp.obj.playAudio,audio,speakerOutputVolume)
-              if not okPlay then
-                ctx.kernel.log.write("warning","theaterd","speaker playback failed",
-                  {speaker=sp.name,error=tostring(accepted)},proc.pid)
-                table.remove(pending,i)
-              elseif accepted then
-                table.remove(pending,i)
-              end
-            end
-            if #pending>0 then
-              local ev=coroutine.yield("wait_event",{"speaker_audio_empty","terminate"})
-              if ev=="terminate" then return false end
-            end
-          end
-          return s.active
-        end
-
-        s.av_stage="playing"
-        while s.active do
-          if not present(videoRaw,audioRaw) then break end
-          videoRaw=read_exact(h,frameBytes)
-          if not videoRaw then break end
-          audioRaw=read_exact(h,audioBytes)
-          if not audioRaw then break end
-        end
-        h.close()
-      end)
-
-      if not ok then
-        ctx.kernel.log.write("error","theaterd","A/V stream failed",{error=tostring(runErr)},proc.pid)
-        if os.queueEvent then os.queueEvent("cclua_theater_stream_error",s.token,"av",tostring(runErr)) end
-        return 1
-      end
-      if s.active and os.queueEvent then os.queueEvent("cclua_theater_stream_end",s.token,"av") end
-      return 0
-    end)
-    return true
-  end
   local function segment_header(headers,name)
     local wanted=tostring(name):lower()
     for k,v in pairs(headers or {}) do
@@ -1481,12 +1070,6 @@ return function(ctx)
     s.rgb_width=cols*2
     s.rgb_height=rows*3
 
-    -- Audio delivery runs independently from the RGB presentation loop. The
-    -- video coroutine only appends ordered 50 ms epochs here; this worker
-    -- retries the oldest epoch until all 22 speakers accept it.
-    local audioQueue={}
-    local audioEpoch=0
-
     local parent=ctx.process
     local proc,err=ctx.kernel.process.create{
       ppid=parent.pid,name="cclua-theater-segment-player",
@@ -1497,49 +1080,14 @@ return function(ctx)
     if not proc then return nil,err end
     s.av_pid=proc.pid
 
-    local audioProc,audioErr=ctx.kernel.process.create{
-      ppid=parent.pid,name="cclua-theater-audio-pump",
-      uid=parent.uid,gid=parent.gid,groups=parent.groups,
-      cwd=parent.cwd,capabilities=parent.capabilities,
-      argv={"theater-audio-pump",tostring(movie.id)},
-    }
-    if not audioProc then
+    -- Audio Engine v2 is intentionally independent of the video renderer.
+    -- It uses the same playAudio/backpressure contract as the proven Music app.
+    local audioEngine,audioErr=theaterAudio.start(ctx,s,speakers,speakerOutputVolume)
+    if not audioEngine then
       ctx.kernel.process.exit(proc,143,"killed")
       return nil,audioErr
     end
-    s.audio_pid=audioProc.pid
-    ctx.kernel.scheduler:add(audioProc,function()
-      while s.active do
-        local epoch=audioQueue[1]
-        if not epoch then
-          coroutine.yield("sleep",now_ms()+8)
-        else
-          for i=#epoch.pending,1,-1 do
-            local sp=epoch.pending[i]
-            local okPlay,accepted=pcall(sp.obj.playAudio,epoch.audio,speakerOutputVolume)
-            if okPlay and accepted then
-              table.remove(epoch.pending,i)
-            elseif not okPlay then
-              ctx.kernel.log.write("warning","theaterd","speaker epoch retry failed",
-                {speaker=sp.name,epoch=epoch.id,error=tostring(accepted)},audioProc.pid)
-            end
-          end
-          s.speaker_submit_ok=#speakers-#epoch.pending
-          s.speaker_submit_failed=#epoch.pending
-          s.speaker_submit_total=#speakers
-          s.audio_queue_depth=#audioQueue
-          s.audio_epoch=epoch.id
-          s.audio_target_ms=epoch.target
-          if #epoch.pending==0 then
-            table.remove(audioQueue,1)
-            s.audio_committed_epoch=epoch.id
-          else
-            coroutine.yield("sleep",now_ms()+8)
-          end
-        end
-      end
-      return 0
-    end)
+    s.audio_engine=audioEngine
 
     ctx.kernel.scheduler:add(proc,function()
       local ok,runErr=pcall(function()
@@ -1562,12 +1110,6 @@ return function(ctx)
               end
               s.av_stage=("prebuffer %d/%d segments"):format(ready,initialBufferSegments)
               coroutine.yield("sleep",now_ms()+15)
-            end
-            if s.active and not s.sync_tones_done then
-              s.av_stage="speaker calibration"
-              if not startup_sync_tones(speakers,s) then break end
-              s.sync_tones_done=true
-              coroutine.yield("sleep",now_ms()+120)
             end
           end
 
@@ -1654,16 +1196,18 @@ return function(ctx)
                   error(("audio packet %d has %d bytes; expected %d"):format(
                     aq,#audioRaw,seg.audio_bytes),0)
                 end
-                audioEpoch=audioEpoch+1
-                local pending={}
-                for _,sp in ipairs(speakers) do pending[#pending+1]=sp end
-                audioQueue[#audioQueue+1]={
-                  id=audioEpoch,audio=pcm_decode(audioRaw,s.volume),pending=pending,
-                  target=segmentTarget+(aq/fps)*1000,
-                }
+                local audio=pcm_decode(audioRaw,s.volume)
+                local epochId,enqueueErr=theaterAudio.enqueue(audioEngine,audio,#audio)
+                if not epochId then error(tostring(enqueueErr),0) end
                 audioQueuedPacket=aq
               end
-              s.audio_queue_depth=#audioQueue
+              local audioStatus=theaterAudio.status(audioEngine)
+              s.audio_queue_depth=audioStatus.queue_depth
+              s.audio_epoch=audioStatus.committed_epoch
+              s.audio_committed_epoch=audioStatus.committed_epoch
+              s.speaker_submit_total=audioStatus.speakers
+              s.speaker_submit_failed=audioStatus.head_pending
+              s.speaker_submit_ok=audioStatus.speakers-audioStatus.head_pending
 
               if now_ms()<target then coroutine.yield("sleep",math.floor(target)) end
               local late=now_ms()-target
