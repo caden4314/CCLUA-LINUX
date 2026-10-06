@@ -9,6 +9,7 @@ return function(ctx)
   local mainName=tostring(machine.theater_main_monitor or "monitor_7")
   local transportName=tostring(machine.theater_transport_monitor or "left")
   local controlName=tostring(machine.theater_control_monitor or "right")
+  local syncName=tostring(machine.theater_sync_monitor or "monitor_8")
   local boothSpeaker=tostring(machine.theater_booth_speaker or "bottom")
   local fps=math.max(2,math.min(20,tonumber(machine.theater_video_fps) or 20))
   local targetCols=tonumber(machine.theater_video_cols) or 0
@@ -581,6 +582,49 @@ return function(ctx)
     line(mon,h,"Touch scene/movie | Desktop for full control",colors.gray)
   end
 
+  local function render_sync_board()
+    local mon=wrap_monitor(syncName)
+    if not mon then return end
+    local w,h=mon.getSize()
+    local status={active=false}
+    if ccperf and type(ccperf.theaterAudioStatus)=="function" then
+      local ok,value=pcall(ccperf.theaterAudioStatus)
+      if ok and type(value)=="table" then status=value end
+    end
+    local spread=tonumber(status.spread_samples) or 0
+    local spreadMs=tonumber(status.spread_ms) or 0
+    local playing=tonumber(status.playing) or 0
+    local sources=tonumber(status.sources) or expectedRoomSpeakers
+    local lock=(status.active and playing==sources and spread<=96)
+    local stateLabel=not status.active and "WAITING"
+      or lock and "LOCKED"
+      or playing<sources and "RECOVERING"
+      or "DRIFT"
+    mon.setBackgroundColor(colors.black);mon.clear()
+    line(mon,1," CCLUA CINEMA // A/V SYNC",colors.white,colors.blue)
+    line(mon,3,("SYNC %-10s  SOURCES %2d/%2d"):format(stateLabel,playing,sources),
+      lock and colors.lime or status.active and colors.yellow or colors.gray)
+    line(mon,4,("AUDIO EPOCH   %d"):format(tonumber(status.epoch) or 0),colors.white)
+    line(mon,5,("SAMPLE SPREAD %d  (%.3f ms)"):format(spread,spreadMs),
+      spread<=96 and colors.lime or spread<=480 and colors.yellow or colors.red)
+    line(mon,6,("QUEUE SPREAD  %d   PROC %d"):format(
+      tonumber(status.queue_spread) or 0,tonumber(status.processed_spread) or 0),colors.lightGray)
+    line(mon,7,("SERVO ACTIVE  %d source(s)"):format(tonumber(status.adjusted_sources) or 0),colors.cyan)
+    line(mon,8,("CORRECTIONS   %d"):format(tonumber(status.servo_corrections) or 0),colors.cyan)
+    line(mon,9,("UNDERRUNS     %d"):format(tonumber(status.underruns) or 0),colors.orange)
+    line(mon,10,("NATURAL RESUME %d"):format(tonumber(status.natural_restarts) or 0),colors.orange)
+    if session and session.active then
+      local mediaMs=math.max(0,(current_position()-(session.start_position or 0))*1000)
+      line(mon,12,("MEDIA CLOCK   %9.1f ms"):format(mediaMs),colors.white)
+      line(mon,13,("VIDEO FRAME   %d @ %d FPS"):format(
+        tonumber(session.presented_frames) or 0,fps),colors.white)
+      line(mon,14,("VIDEO DROPS   %d"):format(tonumber(session.dropped_frames) or 0),
+        (tonumber(session.dropped_frames) or 0)>0 and colors.yellow or colors.lime)
+      line(mon,15,("BUFFER        %s"):format(tostring(session.av_stage or "starting")),colors.lightGray)
+    end
+    line(mon,h,"Live servo: no manual speaker restarts",colors.gray)
+  end
+
   local function render_main_idle()
     if session and session.active and state.state=="PLAYING" then return end
     restore_main_palette()
@@ -597,7 +641,12 @@ return function(ctx)
 
     local title=state.title or "CCLUA CINEMA"
     local subtitle
-    if state.state=="PAUSED" then
+    if state.state=="BUFFERING" then
+      local frames={"|","/","-","\\"}
+      local spin=frames[(math.floor(now_ms()/180)%#frames)+1]
+      local stage=session and tostring(session.av_stage or "preparing") or "preparing"
+      subtitle=("%s A/V SYNC // %s"):format(spin,stage:upper())
+    elseif state.state=="PAUSED" then
       subtitle="PAUSED  "..fmt_time(state.position).." / "..fmt_time(state.duration)
     elseif state.state=="ERROR" then
       subtitle="SYSTEM ERROR  "..tostring(state.error or "")
@@ -619,6 +668,7 @@ return function(ctx)
     local ok,err=pcall(function()
       render_transport()
       render_control()
+      render_sync_board()
       render_main_idle()
     end)
     if not ok then
@@ -649,6 +699,31 @@ return function(ctx)
       out[i]=math.max(-128,math.min(127,sample))
     end
     return out
+  end
+
+  local function startup_sync_tones(speakers,s)
+    local frequencies={523.25,659.25,783.99}
+    for toneIndex,freq in ipairs(frequencies) do
+      if not s.active then return false end
+      s.av_stage=("sync tone %d/%d"):format(toneIndex,#frequencies)
+      local audio={}
+      for i=1,2400 do
+        local envelope=math.min(1,i/160,(2401-i)/160)
+        audio[i]=math.floor(math.sin((i-1)*2*math.pi*freq/48000)*28*envelope)
+      end
+      local pending={}
+      for _,sp in ipairs(speakers) do pending[#pending+1]=sp end
+      while s.active and #pending>0 do
+        for i=#pending,1,-1 do
+          local sp=pending[i]
+          local okPlay,accepted=pcall(sp.obj.playAudio,audio,math.min(1.2,speakerOutputVolume))
+          if okPlay and accepted then table.remove(pending,i) end
+        end
+        if #pending>0 then coroutine.yield("sleep",now_ms()+8) end
+      end
+    end
+    s.av_stage="sync lock"
+    return s.active
   end
 
   local function stop_process(pid)
@@ -1416,6 +1491,41 @@ return function(ctx)
         mon.clear()
         local ox=math.floor((mw-cols)/2)+1
         local oy=math.floor((mh-rows)/2)+1
+        local audioQueue={}
+        local audioEpoch=0
+
+        local function pump_audio_queue()
+          local completed=0
+          while s.active and #audioQueue>0 and completed<4 do
+            local epoch=audioQueue[1]
+            local acceptedNow=0
+            local rejectedNow=0
+            for i=#epoch.pending,1,-1 do
+              local sp=epoch.pending[i]
+              local okPlay,accepted=pcall(sp.obj.playAudio,epoch.audio,speakerOutputVolume)
+              if okPlay and accepted then
+                table.remove(epoch.pending,i)
+                acceptedNow=acceptedNow+1
+              else
+                rejectedNow=rejectedNow+1
+                if not okPlay then
+                  ctx.kernel.log.write("warning","theaterd","speaker epoch retry failed",
+                    {speaker=sp.name,epoch=epoch.id,error=tostring(accepted)},proc.pid)
+                end
+              end
+            end
+            s.speaker_submit_ok=#speakers-#epoch.pending
+            s.speaker_submit_failed=#epoch.pending
+            s.speaker_submit_total=#speakers
+            s.audio_queue_depth=#audioQueue
+            s.audio_epoch=epoch.id
+            s.audio_target_ms=epoch.target
+            if #epoch.pending>0 then break end
+            table.remove(audioQueue,1)
+            completed=completed+1
+            s.audio_committed_epoch=epoch.id
+          end
+        end
 
         while s.active do
           if (s.play_index or 0)==0 and not s.go then
@@ -1430,6 +1540,12 @@ return function(ctx)
               end
               s.av_stage=("prebuffer %d/%d segments"):format(ready,initialBufferSegments)
               coroutine.yield("sleep",now_ms()+15)
+            end
+            if s.active and not s.sync_tones_done then
+              s.av_stage="speaker calibration"
+              if not startup_sync_tones(speakers,s) then break end
+              s.sync_tones_done=true
+              coroutine.yield("sleep",now_ms()+120)
             end
           end
 
@@ -1517,33 +1633,19 @@ return function(ctx)
                   packet,#audioRaw,seg.audio_bytes),0)
               end
               local audio=pcm_decode(audioRaw,s.volume)
-              -- Audio and video share this packet's media timestamp, but
-              -- video must never block behind an individual OpenAL speaker.
-              -- Submit the entire 22-speaker epoch once. If any source is
-              -- backpressured, drop that source's late epoch and let the next
-              -- 50 ms packet recover it; waiting for speaker_audio_empty here
-              -- used to freeze the corresponding video frame indefinitely.
-              local acceptedThisEpoch=0
-              local rejectedThisEpoch=0
-              for _,sp in ipairs(speakers) do
-                local okPlay,accepted=pcall(sp.obj.playAudio,audio,speakerOutputVolume)
-                if not okPlay then
-                  failedCount=failedCount+1
-                  rejectedThisEpoch=rejectedThisEpoch+1
-                  ctx.kernel.log.write("warning","theaterd","speaker playback failed",
-                    {speaker=sp.name,error=tostring(accepted)},proc.pid)
-                elseif accepted then
-                  acceptedCount=acceptedCount+1
-                  acceptedThisEpoch=acceptedThisEpoch+1
-                else
-                  rejectedThisEpoch=rejectedThisEpoch+1
-                end
-              end
-              s.speaker_submit_ok=acceptedThisEpoch
-              s.speaker_submit_failed=rejectedThisEpoch
-              s.speaker_submit_total=#speakers
-              s.audio_epoch=packet
-              s.audio_target_ms=target
+              -- Keep audio epochs strictly ordered across all 22 speakers.
+              -- Video remains independent: enqueue this 50 ms PCM block and
+              -- retry only the speakers which have not accepted the oldest
+              -- epoch yet. Never advance a speaker to epoch N+1 while another
+              -- speaker is still missing epoch N.
+              audioEpoch=audioEpoch+1
+              local pending={}
+              for _,sp in ipairs(speakers) do pending[#pending+1]=sp end
+              audioQueue[#audioQueue+1]={
+                id=audioEpoch,audio=audio,pending=pending,target=target,
+              }
+              pump_audio_queue()
+              s.audio_queue_depth=#audioQueue
               s.audio_late_ms=late
 
               -- Audio is the media clock. Present only a frame that is still
@@ -1876,6 +1978,8 @@ return function(ctx)
       hardware_snapshot()
       save_state()
       render_transport()
+      render_sync_board()
+      if state.state=="BUFFERING" then lastRenderKey.main=nil;render_main_idle() end
       refreshTimer=os.startTimer(0.25)
 
     elseif ev=="timer" and a==catalogTimer then

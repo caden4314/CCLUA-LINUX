@@ -434,8 +434,13 @@ for seq=1,5 do
   if seq<5 then
     mock_now=mock_now+20
     run_children_once()
-    assert(#speaker_calls==0,
-      ("audio started before startup segment %d/5 completed"):format(seq))
+    if seq<3 then
+      assert(#speaker_calls==0,
+        ("audio started before startup segment %d/5 completed"):format(seq))
+    else
+      assert(#speaker_calls==66,
+        ("expected three 22-speaker calibration tones after startup prebuffer, got %d"):format(#speaker_calls))
+    end
   end
 end
 
@@ -446,21 +451,36 @@ mock_now=mock_now+20
 run_children_once()
 assert(processes[child_order[1]].state=="sleeping","player should wait for synchronized start")
 
-mock_now=mock_now+125
+mock_now=mock_now+300
 run_children_once()
+mock_now=mock_now+125
+for _=1,3 do run_children_once() end
 
 local moviePalette=objects["monitor_7"].palette[1]
 assert(math.abs(moviePalette[1]-(0x10/255))<0.001)
 assert(math.abs(moviePalette[2]-(0x20/255))<0.001)
 assert(math.abs(moviePalette[3]-(0x30/255))<0.001)
 
-assert(#speaker_calls==22,("expected 22 speaker submissions, got %d"):format(#speaker_calls))
+assert(#speaker_calls==88,("expected 66 calibration + 22 feature submissions, got %d"):format(#speaker_calls))
 local expected_first={"speaker_7","speaker_2","speaker_8","speaker_15","speaker_20","speaker_18","speaker_0","speaker_1","speaker_6","speaker_5","speaker_4","speaker_3","speaker_9","speaker_10","speaker_11","speaker_12","speaker_13","speaker_14","speaker_16","speaker_17","speaker_19","speaker_21"}
-for i,name in ipairs(expected_first) do
-  assert(speaker_calls[i].name==name,
-    ("speaker order %d expected %s got %s"):format(i,name,tostring(speaker_calls[i].name)))
+local expected_set={}
+for _,name in ipairs(expected_first) do expected_set[name]=true end
+for tone=0,2 do
+  local seen={}
+  for i=1,22 do
+    local call=speaker_calls[tone*22+i]
+    assert(expected_set[call.name],"unexpected calibration speaker "..tostring(call.name))
+    assert(not seen[call.name],"duplicate calibration speaker "..tostring(call.name))
+    seen[call.name]=true
+    assert(call.volume==1.2,"calibration tone volume should be bounded")
+  end
 end
-for _,call in ipairs(speaker_calls) do
+local feature_seen={}
+for i=1,22 do
+  local call=speaker_calls[66+i]
+  assert(expected_set[call.name],"unexpected feature speaker "..tostring(call.name))
+  assert(not feature_seen[call.name],"duplicate feature speaker "..tostring(call.name))
+  feature_seen[call.name]=true
   assert(call.volume==3.0,"speaker output volume must stay at theater range")
   assert(call.first==32,("PCM master gain expected sample 32 got %s"):format(tostring(call.first)))
 end
