@@ -1,15 +1,13 @@
 {
-  "schema": 1,
-  "expected": 22,
-  "status": "needs-positive-identification",
-  "sections": [
-    {"id":"top_center","label":"Top Center","members":[],"eq":{"low_db":-1.5,"mid_db":1.0,"high_db":0.5}},
-    {"id":"top_center_lr","label":"Top Center R/L","members":[],"eq":{"low_db":-1.0,"mid_db":0.5,"high_db":0.5}},
-    {"id":"top_lr","label":"Top R/L","members":[],"eq":{"low_db":0.0,"mid_db":0.0,"high_db":0.5}},
-    {"id":"bottom_center","label":"Bottom Center","members":[],"eq":{"low_db":1.5,"mid_db":0.5,"high_db":-0.5}},
-    {"id":"bottom_lr","label":"Bottom R/L","members":[],"eq":{"low_db":1.0,"mid_db":0.0,"high_db":-0.5}},
-    {"id":"bottom_center_lr","label":"Bottom Center R/L","members":[],"optional":true,"eq":{"low_db":1.0,"mid_db":0.0,"high_db":-0.5}},
-    {"id":"left_top_bottom","label":"Left Top/Bottom","members":[],"eq":{"low_db":0.0,"mid_db":0.0,"high_db":0.0}},
-    {"id":"right_top_bottom","label":"Right Top/Bottom","members":[],"eq":{"low_db":0.0,"mid_db":0.0,"high_db":0.0}}
+  "schema":2,"expected":22,"status":"world-verified",
+  "source":"CC:Tweaked cable PeripheralId + Minecraft block-entity coordinates",
+  "sections":[
+    {"id":"top_center","label":"Top Center","members":["speaker_11","speaker_12"],"positions":[[39,61,-13],[40,61,-13]],"eq":{"low_db":-1.5,"mid_db":1.0,"high_db":0.5}},
+    {"id":"top_center_lr","label":"Top Center R/L","members":["speaker_10","speaker_13"],"positions":[[36,61,-13],[43,61,-13]],"eq":{"low_db":-1.0,"mid_db":0.5,"high_db":0.5}},
+    {"id":"top_lr","label":"Top R/L","members":["speaker_8","speaker_9","speaker_14","speaker_15"],"positions":[[32,61,-13],[33,61,-13],[46,61,-13],[47,61,-13]],"eq":{"low_db":0.0,"mid_db":0.0,"high_db":0.5}},
+    {"id":"bottom_center","label":"Bottom Center","members":["speaker_4","speaker_5"],"positions":[[40,51,-11],[39,51,-11]],"eq":{"low_db":1.5,"mid_db":0.5,"high_db":-0.5}},
+    {"id":"bottom_lr","label":"Bottom R/L","members":["speaker_2","speaker_3","speaker_6","speaker_7"],"positions":[[47,51,-11],[46,51,-11],[33,51,-11],[32,51,-11]],"eq":{"low_db":1.0,"mid_db":0.0,"high_db":-0.5}},
+    {"id":"left_top_bottom","label":"Left Top/Bottom","members":["speaker_18","speaker_19","speaker_20","speaker_21"],"positions":[[30,60,-7],[30,60,-6],[30,54,-7],[30,54,-6]],"eq":{"low_db":0.0,"mid_db":0.0,"high_db":0.0}},
+    {"id":"right_top_bottom","label":"Right Top/Bottom","members":["speaker_0","speaker_1","speaker_16","speaker_17"],"positions":[[49,54,-6],[49,60,-6],[49,54,-7],[49,60,-7]],"eq":{"low_db":0.0,"mid_db":0.0,"high_db":0.0}}
   ]
 }
