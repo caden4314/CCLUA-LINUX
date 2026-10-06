@@ -655,6 +655,7 @@ return function(ctx)
     stop_process(session.av_pid)
     stop_process(session.audio_pid)
     stop_process(session.video_pid)
+    for pid in pairs(session.segment_receivers or {}) do stop_process(pid) end
     for _,s in ipairs(room_speakers()) do pcall(s.obj.stop) end
     session=nil
   end
@@ -1286,6 +1287,42 @@ return function(ctx)
     return true
   end
 
+  local function spawn_segment_receiver(s,url,h)
+    if not s or not s.active then
+      if h and h.close then pcall(h.close) end
+      return nil,"session stopped"
+    end
+
+    local parent=ctx.process
+    local proc,err=ctx.kernel.process.create{
+      ppid=parent.pid,name="cclua-theater-segment-receiver",
+      uid=parent.uid,gid=parent.gid,groups=parent.groups,
+      cwd=parent.cwd,capabilities=parent.capabilities,
+      argv={"theater-segment-receiver",url},
+    }
+    if not proc then
+      if h and h.close then pcall(h.close) end
+      return nil,err
+    end
+
+    s.segment_receivers=s.segment_receivers or {}
+    s.segment_receivers[proc.pid]=true
+    ctx.kernel.scheduler:add(proc,function()
+      local ok,result=pcall(accept_segment_response,s,url,h)
+      s.segment_receivers[proc.pid]=nil
+      if not ok then
+        ctx.kernel.log.write("error","theaterd","segment receiver failed",
+          {error=tostring(result),url=url},proc.pid)
+        if s.active and os.queueEvent then
+          os.queueEvent("cclua_theater_stream_error",s.token,"av",tostring(result))
+        end
+        return 1
+      end
+      return 0
+    end)
+    return true
+  end
+
   local function spawn_segment_player(s,movie)
     local mon=wrap_monitor(mainName)
     if not mon then return nil,"main theater monitor missing" end
@@ -1733,6 +1770,8 @@ return function(ctx)
         local avp=session.av_pid and ctx.kernel.process.get(session.av_pid) or nil
         local buffered=0
         for _ in pairs(session.segments or {}) do buffered=buffered+1 end
+        local receivers=0
+        for _ in pairs(session.segment_receivers or {}) do receivers=receivers+1 end
         state.streams={
           av={
             pid=session.av_pid,state=avp and avp.state or "missing",
@@ -1742,6 +1781,7 @@ return function(ctx)
             audio_bytes=session.audio_bytes,
             play_index=session.play_index or 0,
             buffered_segments=buffered,
+            receiver_workers=receivers,
             inflight_index=session.segment_inflight and session.segment_inflight.index or nil,
             segment_seconds=session.segment_seconds,
             initial_buffer_segments=initialBufferSegments,
@@ -1802,9 +1842,9 @@ return function(ctx)
         end
       elseif session and session.active and session.segment_inflight
         and session.segment_inflight.url==url then
-        local ok,err=pcall(accept_segment_response,session,url,b)
+        local ok,err=spawn_segment_receiver(session,url,b)
         if not ok then
-          ctx.kernel.log.write("error","theaterd","segment response validation failed",
+          ctx.kernel.log.write("error","theaterd","segment receiver spawn failed",
             {error=tostring(err),url=url},ctx.process.pid)
           if os.queueEvent then
             os.queueEvent("cclua_theater_stream_error",session.token,"av",tostring(err))

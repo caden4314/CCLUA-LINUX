@@ -408,6 +408,7 @@ assert(retryUrl==firstUrl,"segment 0 retry URL changed unexpectedly")
 
 kind=drive("http_success",retryUrl,make_segment_handle(4),nil)
 assert(kind=="wait_event")
+run_children_once()
 local secondUrl=latest_segment_url(1)
 assert(secondUrl,"segment 1 was not prefetched")
 
@@ -418,6 +419,7 @@ assert(#speaker_calls==0,"audio started before the two-segment buffer was ready"
 
 kind=drive("http_success",secondUrl,make_segment_handle(4),nil)
 assert(kind=="wait_event")
+run_children_once()
 local thirdUrl=latest_segment_url(2)
 assert(thirdUrl,"segment 2 was not prefetched")
 
@@ -464,6 +466,7 @@ assert(saved_state.streams.av.buffered_segments>=1,
 
 kind=drive("http_success",thirdUrl,make_segment_handle(4),nil)
 assert(kind=="wait_event")
+run_children_once()
 kind=drive("timer",last_refresh_timer)
 assert(kind=="wait_event")
 assert(saved_state.streams.av.buffered_segments>=2,
