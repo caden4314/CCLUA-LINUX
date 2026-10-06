@@ -1,5 +1,6 @@
 local M={}
 local config=dofile("/usr/lib/cclua/config.lua")
+local native=dofile("/usr/lib/cclua/native.lua")
 
 local function count_map(value)
   local n=0
@@ -85,6 +86,12 @@ function M.snapshot(ctx)
       last_result=update.last_result,
       current_action=update.current_action,
       current_file=update.current_file,
+    },
+    native={
+      available=native.available(),
+      version=native.version(),
+      capabilities=native.capabilities(),
+      computer=native.computer(),
     },
     session={mode=session.mode,recovery=session.recovery==true},
     apps={

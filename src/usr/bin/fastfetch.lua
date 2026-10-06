@@ -38,6 +38,15 @@ return {main=function(ctx,args)
   row("Manager",value(s.network.manager).." RTT "..value(s.network.manager_rtt_ms).."ms")
   row("Update",s.update.state.." "..s.update.percent.."%")
   row("Image",value(s.update.current_commit):sub(1,16))
+  local nativeCaps=s.native and s.native.capabilities or {}
+  local nativeMode=s.native and s.native.available
+    and ("CCPerf "..value(s.native.version).." / API "..value(nativeCaps.api))
+    or "stock CC:Tweaked"
+  row("Native",nativeMode)
+  if s.native and s.native.available then
+    row("Timing",(nativeCaps.native_timer and "native" or "stock")..
+      " / clock "..(nativeCaps.native_clock and "us" or "ms"))
+  end
 
   if not plain and term and term.setTextColor then term.setTextColor(colors.white) end
   return s.system.error_code>0 and 1 or 0

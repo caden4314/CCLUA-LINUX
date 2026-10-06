@@ -180,6 +180,7 @@ function M.new(kernel)
     self.running=true
     local wakeTimer=nil
     local wakeDeadline=nil
+    local wakeTimerNative=false
 
     while self.running do
       self:dispatch({})
@@ -193,28 +194,58 @@ function M.new(kernel)
         end
       end
 
-      if soonest and os.startTimer then
+      local nativeTimers=type(ccperf)=="table"
+        and type(ccperf.startTimer)=="function"
+        and type(ccperf.cancelTimer)=="function"
+
+      local function cancel_wake_timer()
+        if not wakeTimer then return end
+        if wakeTimerNative and nativeTimers then
+          pcall(ccperf.cancelTimer,wakeTimer)
+        elseif os.cancelTimer then
+          pcall(os.cancelTimer,wakeTimer)
+        end
+        wakeTimer=nil
+        wakeDeadline=nil
+        wakeTimerNative=false
+      end
+
+      if soonest and (nativeTimers or os.startTimer) then
         if wakeTimer==nil or wakeDeadline~=soonest then
-          if wakeTimer and os.cancelTimer then pcall(os.cancelTimer,wakeTimer) end
-          local delay=math.max(0.05,(soonest-now)/1000)
-          wakeTimer=os.startTimer(delay)
+          cancel_wake_timer()
+          local delay=math.max(nativeTimers and 0.001 or 0.05,(soonest-now)/1000)
+          if nativeTimers then
+            wakeTimer=ccperf.startTimer(delay)
+            wakeTimerNative=true
+          else
+            wakeTimer=os.startTimer(delay)
+            wakeTimerNative=false
+          end
           wakeDeadline=soonest
         end
       elseif wakeTimer then
-        if os.cancelTimer then pcall(os.cancelTimer,wakeTimer) end
-        wakeTimer=nil
-        wakeDeadline=nil
+        cancel_wake_timer()
       end
 
       local ev={os.pullEventRaw()}
-      if ev[1]=="timer" and wakeTimer and ev[2]==wakeTimer then
+      if wakeTimer and (
+        (not wakeTimerNative and ev[1]=="timer" and ev[2]==wakeTimer)
+        or (wakeTimerNative and ev[1]=="ccperf_timer" and ev[2]==wakeTimer)
+      ) then
         wakeTimer=nil
         wakeDeadline=nil
+        wakeTimerNative=false
       end
       self:dispatch(ev)
     end
 
-    if wakeTimer and os.cancelTimer then pcall(os.cancelTimer,wakeTimer) end
+    if wakeTimer then
+      if wakeTimerNative and type(ccperf)=="table" and type(ccperf.cancelTimer)=="function" then
+        pcall(ccperf.cancelTimer,wakeTimer)
+      elseif os.cancelTimer then
+        pcall(os.cancelTimer,wakeTimer)
+      end
+    end
   end
   function s:stop()
     self.running=false
