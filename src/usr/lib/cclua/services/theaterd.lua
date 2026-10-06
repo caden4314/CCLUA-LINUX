@@ -621,6 +621,9 @@ return function(ctx)
       line(mon,14,("VIDEO DROPS   %d"):format(tonumber(session.dropped_frames) or 0),
         (tonumber(session.dropped_frames) or 0)>0 and colors.yellow or colors.lime)
       line(mon,15,("BUFFER        %s"):format(tostring(session.av_stage or "starting")),colors.lightGray)
+      line(mon,16,("AUDIO BACKLOG %d epoch(s)"):format(tonumber(session.audio_queue_depth) or 0),
+        (tonumber(session.audio_queue_depth) or 0)>3 and colors.red or colors.lime)
+      line(mon,17,("COMMITTED     %d"):format(tonumber(session.audio_committed_epoch) or 0),colors.lightGray)
     end
     line(mon,h,"Live servo: no manual speaker restarts",colors.gray)
   end
@@ -1474,6 +1477,12 @@ return function(ctx)
     s.rgb_width=cols*2
     s.rgb_height=rows*3
 
+    -- Audio delivery runs independently from the RGB presentation loop. The
+    -- video coroutine only appends ordered 50 ms epochs here; this worker
+    -- retries the oldest epoch until all 22 speakers accept it.
+    local audioQueue={}
+    local audioEpoch=0
+
     local parent=ctx.process
     local proc,err=ctx.kernel.process.create{
       ppid=parent.pid,name="cclua-theater-segment-player",
@@ -1484,6 +1493,50 @@ return function(ctx)
     if not proc then return nil,err end
     s.av_pid=proc.pid
 
+    local audioProc,audioErr=ctx.kernel.process.create{
+      ppid=parent.pid,name="cclua-theater-audio-pump",
+      uid=parent.uid,gid=parent.gid,groups=parent.groups,
+      cwd=parent.cwd,capabilities=parent.capabilities,
+      argv={"theater-audio-pump",tostring(movie.id)},
+    }
+    if not audioProc then
+      ctx.kernel.process.exit(proc,143,"killed")
+      return nil,audioErr
+    end
+    s.audio_pid=audioProc.pid
+    ctx.kernel.scheduler:add(audioProc,function()
+      while s.active do
+        local epoch=audioQueue[1]
+        if not epoch then
+          coroutine.yield("sleep",now_ms()+8)
+        else
+          for i=#epoch.pending,1,-1 do
+            local sp=epoch.pending[i]
+            local okPlay,accepted=pcall(sp.obj.playAudio,epoch.audio,speakerOutputVolume)
+            if okPlay and accepted then
+              table.remove(epoch.pending,i)
+            elseif not okPlay then
+              ctx.kernel.log.write("warning","theaterd","speaker epoch retry failed",
+                {speaker=sp.name,epoch=epoch.id,error=tostring(accepted)},audioProc.pid)
+            end
+          end
+          s.speaker_submit_ok=#speakers-#epoch.pending
+          s.speaker_submit_failed=#epoch.pending
+          s.speaker_submit_total=#speakers
+          s.audio_queue_depth=#audioQueue
+          s.audio_epoch=epoch.id
+          s.audio_target_ms=epoch.target
+          if #epoch.pending==0 then
+            table.remove(audioQueue,1)
+            s.audio_committed_epoch=epoch.id
+          else
+            coroutine.yield("sleep",now_ms()+8)
+          end
+        end
+      end
+      return 0
+    end)
+
     ctx.kernel.scheduler:add(proc,function()
       local ok,runErr=pcall(function()
         mon.setBackgroundColor(colors.black)
@@ -1491,41 +1544,6 @@ return function(ctx)
         mon.clear()
         local ox=math.floor((mw-cols)/2)+1
         local oy=math.floor((mh-rows)/2)+1
-        local audioQueue={}
-        local audioEpoch=0
-
-        local function pump_audio_queue()
-          local completed=0
-          while s.active and #audioQueue>0 and completed<4 do
-            local epoch=audioQueue[1]
-            local acceptedNow=0
-            local rejectedNow=0
-            for i=#epoch.pending,1,-1 do
-              local sp=epoch.pending[i]
-              local okPlay,accepted=pcall(sp.obj.playAudio,epoch.audio,speakerOutputVolume)
-              if okPlay and accepted then
-                table.remove(epoch.pending,i)
-                acceptedNow=acceptedNow+1
-              else
-                rejectedNow=rejectedNow+1
-                if not okPlay then
-                  ctx.kernel.log.write("warning","theaterd","speaker epoch retry failed",
-                    {speaker=sp.name,epoch=epoch.id,error=tostring(accepted)},proc.pid)
-                end
-              end
-            end
-            s.speaker_submit_ok=#speakers-#epoch.pending
-            s.speaker_submit_failed=#epoch.pending
-            s.speaker_submit_total=#speakers
-            s.audio_queue_depth=#audioQueue
-            s.audio_epoch=epoch.id
-            s.audio_target_ms=epoch.target
-            if #epoch.pending>0 then break end
-            table.remove(audioQueue,1)
-            completed=completed+1
-            s.audio_committed_epoch=epoch.id
-          end
-        end
 
         while s.active do
           if (s.play_index or 0)==0 and not s.go then
@@ -1644,7 +1662,6 @@ return function(ctx)
               audioQueue[#audioQueue+1]={
                 id=audioEpoch,audio=audio,pending=pending,target=target,
               }
-              pump_audio_queue()
               s.audio_queue_depth=#audioQueue
               s.audio_late_ms=late
 
@@ -1652,6 +1669,7 @@ return function(ctx)
               -- close to its matching PCM epoch; late frames are discarded
               -- instead of being shown after their sound has already played.
               if late<120 then
+                s.presented_frames=(s.presented_frames or 0)+1
                 local video=seg.raw:sub(packetOffset,packetOffset+seg.frame_bytes-1)
                 if seg.color_mode=="rgb24" and s.rgb24 then
                   if not s.rgb_initialized then
